@@ -13,52 +13,48 @@
 
 struct nba_lun;
 
-struct nba
-{
-    struct nvm_tgt_instance instance;
+struct nba {
+	struct nvm_tgt_instance instance;
 
-    unsigned long nr_pages;
-    unsigned long total_blocks;
-    unsigned long nr_luns;
+	unsigned long nr_pages;
+	unsigned long total_blocks;
+	unsigned long nr_luns;
 
-    struct nba_lun *luns;
+	struct nba_lun *luns;
 
-    mempool_t *rq_pool;
+	mempool_t *rq_pool;
 
-    struct nvm_dev *dev;
-    struct gendisk *disk;
+	struct nvm_dev *dev;
+	struct gendisk *disk;
 };
 
 
-struct nba_lun
-{
-    struct nba *api;
+struct nba_lun {
+	struct nba *api;
 
-    struct nvm_lun	*parent;
-    struct nvm_block	*blocks;
+	struct nvm_lun	*parent;
+	struct nvm_block	*blocks;
 
-    unsigned long nr_blocks;
+	unsigned long nr_blocks;
 };
 
-struct nba_block
-{
-    unsigned long lun;
+struct nba_block {
+	unsigned long lun;
 
-    sector_t phys_addr;
+	sector_t phys_addr;
 
-    unsigned long id;
+	unsigned long id;
 
-    void *internals;
+	void *internals;
 };
 
-struct nba_channel
-{
-        unsigned long int lun_idx;
-        unsigned short int chnl_idx;
+struct nba_channel {
+	unsigned long int lun_idx;
+	unsigned short int chnl_idx;
 
-        unsigned int gran_write;
-        unsigned int gran_read;
-        unsigned int gran_erase;
+	unsigned int gran_write;
+	unsigned int gran_read;
+	unsigned int gran_erase;
 };
 
 #define NVMBLOCKPUT         21525
