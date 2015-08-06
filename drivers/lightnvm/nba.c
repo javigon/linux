@@ -11,9 +11,12 @@ static inline sector_t nvm_get_laddr(struct bio *bio)
 
 static int nba_submit_io(struct nba *api, struct bio *bio, struct nvm_rq *rqd)
 {
-	rqd->phys_sector = nvm_get_laddr(bio) + NR_PHY_IN_LOG;
+	uint8_t npages = nvm_get_pages(bio);
+
+	rqd->ppa = nvm_get_laddr(bio) + NR_PHY_IN_LOG;
 	rqd->bio = bio;
 	rqd->ins = &api->instance;
+	rqd->npages = npages;
 
 	if (nvm_submit_io(api->dev, rqd))
 	{
