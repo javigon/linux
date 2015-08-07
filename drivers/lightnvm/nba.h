@@ -57,15 +57,16 @@ struct nba_channel {
 	unsigned int gran_erase;
 };
 
-#define NVMBLOCKPUT         21525
-#define NVMBLOCKRRGET       21526
-#define NVMLUNSNRGET        21527
-#define NVMBLOCKSNRGET      21528
-#define NVMBLOCKERASE       21529
-#define NVMPAGESNRGET       21530
-#define NVMBLOCKGETBYADDR   21531
-#define NVMBLOCKGETBYID	    21532
-#define NVMPAGESIZEGET      21533
-#define NVMCHANNELSNRGET    21534
+/* TODO: Define commands with meaningful ids */
+#define NVM_BLOCK_PUT		21525
+#define NVM_BLOCK_GET_NEXT	21526
+#define NVM_BLOCK_GET_BY_ADDR	21531
+#define NVM_BLOCK_GET_BY_ID	21532
+#define NVM_LUNS_NR_GET		21527
+#define NVM_BLOCKS_NR_GET	21528
+#define NVM_BLOCK_ERASE		21529
+#define NVM_PAGES_NR_GET	21530
+#define NVM_PAGE_SIZE_GET	21533
+#define NVM_CHANNELS_NR_GET	21534
 
 #endif
