@@ -5,13 +5,13 @@ static int nba_ioctl(struct block_device *bdev, fmode_t mode, unsigned int cmd,
 {
 	struct nba		*api;
 
-	struct nvm_block    *process_blk;
+	struct nvm_block    *block;
 	struct nvm_dev      *process_dev;
-	struct nvm_lun	*process_lun;
+	struct nvm_lun	*lun;
 	struct nvm_id_chnl  *process_chnl;
 
-	struct nba_lun      *process_nba_lun;
-	struct nba_block    *process_nba_blk;
+	struct nba_lun      *nba_lun;
+	struct nba_block    *nba_block;
 	struct nba_channel	*process_nba_channel;
 
 
@@ -34,92 +34,92 @@ static int nba_ioctl(struct block_device *bdev, fmode_t mode, unsigned int cmd,
 	//puts a block to storage
 	//input is a nba_block
 	case NVMBLOCKPUT: {
-		process_nba_blk = (struct nba_block*)arg;
-		process_blk = process_nba_blk->internals;
+		nba_block = (struct nba_block*)arg;
+		block = nba_block->internals;
 
-		nvm_put_blk(api->dev, process_blk);
+		nvm_put_blk(api->dev, block);
 	}
 	return 0;
 
 	//erases a block arg is a nba_block
 	case NVMBLOCKERASE: {
-		process_nba_blk = (struct nba_block *)arg;
-		process_blk = (struct nvm_block *)process_nba_blk->internals;
+		nba_block = (struct nba_block *)arg;
+		block = (struct nvm_block *)nba_block->internals;
 
-		nvm_erase_blk(api->dev, process_blk);
-		nvm_put_blk(api->dev, process_blk);
+		nvm_erase_blk(api->dev, block);
+		nvm_put_blk(api->dev, block);
 	}
 	return 0;
 
 	//gets a block from a specified id on array
 	//input is a nba_block
 	case NVMBLOCKGETBYID: {
-		process_nba_blk = (struct nba_block *)arg;
+		nba_block = (struct nba_block *)arg;
 
-		if(process_nba_blk->lun >= api->nr_luns) {
+		if(nba_block->lun >= api->nr_luns) {
 			NBA_PRINT("out of bounds");
 			return -EINVAL;
 		}
 
-		process_nba_lun = &api->luns[process_nba_blk->lun];
+		nba_lun = &api->luns[nba_block->lun];
 
-		process_lun = process_nba_lun->parent;
+		lun = nba_lun->parent;
 
-		if(process_nba_blk->id >= process_nba_lun->nr_blocks) {
+		if(nba_block->id >= nba_lun->nr_blocks) {
 			NBA_PRINT("out of bounds");
 			return -EINVAL;
 		}
 
-		process_blk = &process_nba_lun->blocks[process_nba_blk->id];
+		block = &nba_lun->blocks[nba_block->id];
 
-		process_nba_blk->phys_addr = process_lun->nr_pages_per_blk * process_nba_blk->id;
-		process_nba_blk->internals = process_blk;
+		nba_block->phys_addr = lun->nr_pages_per_blk * nba_block->id;
+		nba_block->internals = block;
 	}
 	return 0;
 
 	//gets a block from a specified address on flash
 	//input is a nba_block
 	case NVMBLOCKGETBYADDR: {
-		process_nba_blk = (struct nba_block *)arg;
+		nba_block = (struct nba_block *)arg;
 
-		if(process_nba_blk->lun >= api->nr_luns) {
+		if(nba_block->lun >= api->nr_luns) {
 			NBA_PRINT("out of bounds");
 			return -EINVAL;
 		}
 
-		process_nba_lun = &api->luns[process_nba_blk->lun];
+		nba_lun = &api->luns[nba_block->lun];
 
-		process_lun = process_nba_lun->parent;
+		lun = nba_lun->parent;
 
-		temp_long = process_nba_blk->phys_addr / process_lun->nr_pages_per_blk;
+		temp_long = nba_block->phys_addr / lun->nr_pages_per_blk;
 
-		if(temp_long >= process_nba_lun->nr_blocks) {
+		if(temp_long >= nba_lun->nr_blocks) {
 			NBA_PRINT("out of bounds");
 			return -EINVAL;
 		}
 
-		process_blk = &process_nba_lun->blocks[temp_long];
+		block = &nba_lun->blocks[temp_long];
 
-		process_nba_blk->id = process_blk->id;
-		process_nba_blk->internals = process_blk;
+		nba_block->id = block->id;
+		nba_block->internals = block;
 	}
 	return 0;
 
 	//gets the next free block from lightnvm's list
 	case NVMBLOCKRRGET: {
-		process_nba_blk = (struct nba_block *)arg;
+		nba_block = (struct nba_block *)arg;
 
-		if(process_nba_blk->lun >= api->nr_luns) {
+		if(nba_block->lun >= api->nr_luns) {
 			NBA_PRINT("out of bounds");
 			return -EINVAL;
 		}
 
-		process_nba_lun = &api->luns[process_nba_blk->lun];
+		nba_lun = &api->luns[nba_block->lun];
 
-		process_blk = nvm_get_blk(api->dev, process_nba_lun->parent, 0);
+		block = nvm_get_blk(api->dev, nba_lun->parent, 0);
 
-		process_nba_blk->id = process_blk->id;
-		process_nba_blk->internals = process_blk;
+		nba_block->id = block->id;
+		nba_block->internals = block;
 	}
 	return 0;
 
@@ -152,11 +152,11 @@ static int nba_ioctl(struct block_device *bdev, fmode_t mode, unsigned int cmd,
 			return -EINVAL;
 		}
 
-		process_nba_lun = &api->luns[temp_long];
+		nba_lun = &api->luns[temp_long];
 
-		process_lun = process_nba_lun->parent;
+		lun = nba_lun->parent;
 
-		(*(unsigned long *)arg) = process_lun->nr_pages_per_blk;
+		(*(unsigned long *)arg) = lun->nr_pages_per_blk;
 	}
 	return 0;
 
@@ -170,9 +170,9 @@ static int nba_ioctl(struct block_device *bdev, fmode_t mode, unsigned int cmd,
 			return -EINVAL;
 		}
 
-		process_nba_lun = &api->luns[temp_long];
+		nba_lun = &api->luns[temp_long];
 
-		process_dev = process_nba_lun->parent->dev;
+		process_dev = nba_lun->parent->dev;
 
 		(*(unsigned long *)arg) = process_dev->identity.nchannels;
 	}
@@ -188,9 +188,9 @@ static int nba_ioctl(struct block_device *bdev, fmode_t mode, unsigned int cmd,
 			return -EINVAL;
 		}
 
-		process_nba_lun = &api->luns[process_nba_channel->lun_idx];
+		nba_lun = &api->luns[process_nba_channel->lun_idx];
 
-		process_dev = process_nba_lun->parent->dev;
+		process_dev = nba_lun->parent->dev;
 
 		if(process_nba_channel->chnl_idx >= process_dev->identity.nchannels) {
 			NBA_PRINT("out of bounds");
