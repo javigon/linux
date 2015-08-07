@@ -82,23 +82,21 @@ static void nba_free(struct nba *api)
 {
 	if(api) {
 		nba_luns_free(api);
-
 		kfree(api);
 	}
 }
 
 static int nba_luns_init(struct nba *api, int lun_begin, int lun_end)
 {
-	struct nvm_dev      *dev = api->dev;
-	struct nvm_lun	*luns;
-	struct nvm_lun      *lun;
-	struct nvm_block	*block;
+	struct nvm_dev *dev = api->dev;
+	struct nvm_lun *luns;
+	struct nvm_lun *lun;
+	struct nvm_block *block;
 
 	struct nba_lun *rlun;
 
 	unsigned long j;
 	unsigned long i;
-
 	int ret = 0;
 
 	luns = dev->bm->get_luns(dev, lun_begin, lun_end);
@@ -125,10 +123,10 @@ static int nba_luns_init(struct nba *api, int lun_begin, int lun_end)
 		api->total_blocks += lun->nr_blocks;
 		api->nr_pages += lun->nr_blocks * lun->nr_pages_per_blk;
 
-		rlun->blocks = vzalloc(sizeof(struct nvm_block) * rlun->nr_blocks);
+		rlun->blocks = vzalloc(sizeof(struct nvm_block) *
+								rlun->nr_blocks);
 		if(!rlun->blocks) {
 			ret = -ENOMEM;
-
 			goto out;
 		}
 
@@ -154,7 +152,8 @@ out:
 
 static struct kmem_cache *nba_rq_cache;
 
-static void *nba_init(struct nvm_dev *dev, struct gendisk *tdisk, int lun_begin, int lun_end)
+static void *nba_init(struct nvm_dev *dev, struct gendisk *tdisk, int lun_begin,
+								int lun_end)
 {
 	struct request_queue *bqueue = dev->q;
 	struct request_queue *tqueue = tdisk->queue;
@@ -182,9 +181,8 @@ static void *nba_init(struct nvm_dev *dev, struct gendisk *tdisk, int lun_begin,
 		goto err;
 	}
 
-	nba_rq_cache = kmem_cache_create("nba_rq",
-	                                 sizeof(struct nvm_rq),
-	                                 0, 0, NULL);
+	nba_rq_cache = kmem_cache_create("nba_rq", sizeof(struct nvm_rq), 0, 0,
+									NULL);
 
 	api->rq_pool = mempool_create_slab_pool(64, nba_rq_cache);
 	if (!api->rq_pool) {
@@ -197,9 +195,8 @@ static void *nba_init(struct nvm_dev *dev, struct gendisk *tdisk, int lun_begin,
 	blk_queue_logical_block_size(tqueue, queue_physical_block_size(bqueue));
 	blk_queue_max_hw_sectors(tqueue, queue_max_hw_sectors(bqueue));
 
-	NBA_PRINT("initialized api with %lu luns, %lu blocks and %lu pages",    api->nr_luns,
-	          api->total_blocks,
-	          api->nr_pages);
+	NBA_PRINT("initialized api with %lu luns, %lu blocks and %lu pages",
+				api->nr_luns, api->total_blocks, api->nr_pages);
 	return api;
 
 err:
