@@ -1,5 +1,26 @@
 #include "nba.h"
 
+/*
+ * TODO: move .ioctl to .unlocked_ioctl and implement locking within the module
+ */
+
+static DEFINE_SPINLOCK(dev_list_lock);
+
+static int nba_check_device(struct block_device *bdev)
+{
+	struct nba *nb;
+	int ret = 0;
+
+	/* TODO: kref?*/
+	spin_lock(&dev_list_lock);
+	nb = bdev->bd_disk->private_data;
+	if (!nb)
+		ret = -ENXIO;
+	spin_unlock(&dev_list_lock);
+
+	return ret;
+}
+
 static int nba_ioctl(struct block_device *bdev, fmode_t mode, unsigned int cmd,
                      unsigned long arg)
 {
@@ -220,7 +241,7 @@ static int nba_compat_ioctl(struct block_device *bdev, fmode_t mode,
 
 static int nba_open(struct block_device *bdev, fmode_t mode)
 {
-	return 0;
+	return nba_check_device(bdev);
 }
 
 static void nba_release(struct gendisk *disk, fmode_t mode)
