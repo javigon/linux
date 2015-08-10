@@ -2,23 +2,22 @@
 
 extern const struct block_device_operations nba_fops;
 
-static struct nvm_tgt_type tt_nba;
 
 static inline sector_t nvm_get_laddr(struct bio *bio)
 {
 	return bio->bi_iter.bi_sector / NR_PHY_IN_LOG;
 }
 
-static int nba_submit_io(struct nba *api, struct bio *bio, struct nvm_rq *rqd)
+static int nba_submit_io(struct nba *nba, struct bio *bio, struct nvm_rq *rqd)
 {
 	uint8_t npages = nvm_get_pages(bio);
 
 	rqd->ppa = nvm_get_laddr(bio) + NR_PHY_IN_LOG;
 	rqd->bio = bio;
-	rqd->ins = &api->instance;
+	rqd->ins = &nba->instance;
 	rqd->npages = npages;
 
-	if (nvm_submit_io(api->dev, rqd)) {
+	if (nvm_submit_io(nba->dev, rqd)) {
 		return NVM_IO_ERR;
 	}
 
@@ -27,23 +26,23 @@ static int nba_submit_io(struct nba *api, struct bio *bio, struct nvm_rq *rqd)
 
 static void nba_make_rq(struct request_queue *q, struct bio *bio)
 {
-	struct nba *api;
+	struct nba *nba;
 	struct nvm_rq *rqd;
 
 	if (bio->bi_rw & REQ_DISCARD) {
 		return;
 	}
 
-	api = q->queuedata;
+	nba = q->queuedata;
 
-	rqd = mempool_alloc(api->rq_pool, GFP_KERNEL);
+	rqd = mempool_alloc(nba->rq_pool, GFP_KERNEL);
 	if (!rqd) {
 		pr_err_ratelimited("nba: not able to queue bio.");
 		bio_io_error(bio);
 		return;
 	}
 
-	switch (nba_submit_io(api, bio, rqd)) {
+	switch (nba_submit_io(nba, bio, rqd)) {
 	case NVM_IO_OK:
 		return;
 	case NVM_IO_ERR:
@@ -53,42 +52,42 @@ static void nba_make_rq(struct request_queue *q, struct bio *bio)
 		break;
 	}
 
-	mempool_free(rqd, api->rq_pool);
+	mempool_free(rqd, nba->rq_pool);
 }
 
 static void nba_end_io(struct nvm_rq *rqd, int error)
 {
-	struct nba *api = container_of(rqd->ins, struct nba, instance);
+	struct nba *nba = container_of(rqd->ins, struct nba, instance);
 
-	mempool_free(rqd, api->rq_pool);
+	mempool_free(rqd, nba->rq_pool);
 }
 
 static sector_t nba_capacity(void *private)
 {
-	struct nba *api = private;
+	struct nba *nba = private;
 
-	return (api->nr_pages) / NR_PHY_IN_LOG - NR_PHY_IN_LOG;
+	return (nba->nr_pages) / NR_PHY_IN_LOG - NR_PHY_IN_LOG;
 }
 
-static void nba_luns_free(struct nba *api)
+static void nba_luns_free(struct nba *nba)
 {
-	if(api->luns) {
-		kfree(api->luns);
-		api->luns = NULL;
+	if(nba->luns) {
+		kfree(nba->luns);
+		nba->luns = NULL;
 	}
 }
 
-static void nba_free(struct nba *api)
+static void nba_free(struct nba *nba)
 {
-	if(api) {
-		nba_luns_free(api);
-		kfree(api);
+	if(nba) {
+		nba_luns_free(nba);
+		kfree(nba);
 	}
 }
 
-static int nba_luns_init(struct nba *api, int lun_begin, int lun_end)
+static int nba_luns_init(struct nba *nba, int lun_begin, int lun_end)
 {
-	struct nvm_dev *dev = api->dev;
+	struct nvm_dev *dev = nba->dev;
 	struct nvm_lun *luns;
 	struct nvm_lun *lun;
 	struct nvm_block *block;
@@ -104,24 +103,24 @@ static int nba_luns_init(struct nba *api, int lun_begin, int lun_end)
 		return -EINVAL;
 	}
 
-	api->luns = kcalloc(api->nr_luns, sizeof(struct nba_lun), GFP_KERNEL);
-	if(!api->luns) {
+	nba->luns = kcalloc(nba->nr_luns, sizeof(struct nba_lun), GFP_KERNEL);
+	if(!nba->luns) {
 		return -ENOMEM;
 	}
 
-	for(i = 0; i < api->nr_luns; ++i) {
+	for(i = 0; i < nba->nr_luns; ++i) {
 		lun = &luns[i];
 
-		rlun = &api->luns[i];
+		rlun = &nba->luns[i];
 
-		rlun->api = api;
+		rlun->nba = nba;
 
 		rlun->parent = lun;
 
 		rlun->nr_blocks = lun->nr_blocks;
 
-		api->total_blocks += lun->nr_blocks;
-		api->nr_pages += lun->nr_blocks * lun->nr_pages_per_blk;
+		nba->total_blocks += lun->nr_blocks;
+		nba->nr_pages += lun->nr_blocks * lun->nr_pages_per_blk;
 
 		rlun->blocks = vzalloc(sizeof(struct nvm_block) *
 								rlun->nr_blocks);
@@ -150,6 +149,7 @@ out:
 	return ret;
 }
 
+static struct nvm_tgt_type tt_nba;
 static struct kmem_cache *nba_rq_cache;
 
 static void *nba_init(struct nvm_dev *dev, struct gendisk *tdisk, int lun_begin,
@@ -157,25 +157,25 @@ static void *nba_init(struct nvm_dev *dev, struct gendisk *tdisk, int lun_begin,
 {
 	struct request_queue *bqueue = dev->q;
 	struct request_queue *tqueue = tdisk->queue;
-	struct nba *api;
+	struct nba *nba;
 	int ret;
 
-	api = kzalloc(sizeof(struct nba), GFP_KERNEL);
-	if (!api) {
+	nba = kzalloc(sizeof(struct nba), GFP_KERNEL);
+	if (!nba) {
 		ret = -ENOMEM;
 		goto err;
 	}
 
-	api->instance.tt = &tt_nba;
-	api->dev = dev;
-	api->disk = tdisk;
+	nba->instance.tt = &tt_nba;
+	nba->dev = dev;
+	nba->disk = tdisk;
 
-	api->luns = NULL;
-	api->nr_luns = lun_end - lun_begin + 1;
-	api->total_blocks = 0;
-	api->nr_pages = 0;
+	nba->luns = NULL;
+	nba->nr_luns = lun_end - lun_begin + 1;
+	nba->total_blocks = 0;
+	nba->nr_pages = 0;
 
-	ret = nba_luns_init(api, lun_begin, lun_end);
+	ret = nba_luns_init(nba, lun_begin, lun_end);
 	if(ret) {
 		NBA_PRINT("error initializing luns");
 		goto err;
@@ -184,8 +184,8 @@ static void *nba_init(struct nvm_dev *dev, struct gendisk *tdisk, int lun_begin,
 	nba_rq_cache = kmem_cache_create("nba_rq", sizeof(struct nvm_rq), 0, 0,
 									NULL);
 
-	api->rq_pool = mempool_create_slab_pool(64, nba_rq_cache);
-	if (!api->rq_pool) {
+	nba->rq_pool = mempool_create_slab_pool(64, nba_rq_cache);
+	if (!nba->rq_pool) {
 		ret = -ENOMEM;
 		goto err;
 	}
@@ -195,20 +195,20 @@ static void *nba_init(struct nvm_dev *dev, struct gendisk *tdisk, int lun_begin,
 	blk_queue_logical_block_size(tqueue, queue_physical_block_size(bqueue));
 	blk_queue_max_hw_sectors(tqueue, queue_max_hw_sectors(bqueue));
 
-	NBA_PRINT("initialized api with %lu luns, %lu blocks and %lu pages",
-				api->nr_luns, api->total_blocks, api->nr_pages);
-	return api;
+	NBA_PRINT("initialized nba with %lu luns, %lu blocks and %lu pages",
+				nba->nr_luns, nba->total_blocks, nba->nr_pages);
+	return nba;
 
 err:
-	nba_free(api);
+	nba_free(nba);
 	return ERR_PTR(ret);
 }
 
 static void nba_exit(void *private)
 {
-	struct nba *api = private;
+	struct nba *nba = private;
 
-	nba_free(api);
+	nba_free(nba);
 }
 
 static struct nvm_tgt_type tt_nba = {
@@ -235,4 +235,4 @@ static void nba_module_exit (void)
 module_init(nba_module_init);
 module_exit(nba_module_exit);
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("Block API for IO");
+MODULE_DESCRIPTION("Block nba for IO");

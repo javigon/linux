@@ -30,7 +30,7 @@ struct nba {
 
 
 struct nba_lun {
-	struct nba *api;
+	struct nba *nba;
 
 	struct nvm_lun	*parent;
 	struct nvm_block	*blocks;
