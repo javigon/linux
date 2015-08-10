@@ -148,14 +148,6 @@ static int nba_block_erase(struct nba *nba, struct nba_block __user *u_nba_b)
 	return 0;
 }
 
-static int nba_nluns_get(struct nba *nba, struct nba_block __user *u_nba_b)
-{
-	if (copy_to_user(u_nba_b, &nba->nr_luns, sizeof(nba->nr_luns)))
-			return -EFAULT;
-
-	return 0;
-}
-
 static int nba_nblocks_in_lun(struct nba *nba, unsigned long __user *u_param)
 {
 	unsigned long lun_id, nblocks;
@@ -254,6 +246,14 @@ static int nba_page_size(struct nba *nba, struct nba_block __user *u_nba_b)
 
 	if (copy_to_user(u_nba_b, &nba_channel, sizeof(nba_channel)))
 		return -EFAULT;
+
+	return 0;
+}
+
+static int nba_nluns_get(struct nba *nba, struct nba_block __user *u_nba_b)
+{
+	if (copy_to_user(u_nba_b, &nba->nr_luns, sizeof(nba->nr_luns)))
+			return -EFAULT;
 
 	return 0;
 }
