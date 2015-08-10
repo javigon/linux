@@ -156,11 +156,11 @@ static int nba_nluns_get(struct nba *nba, struct nba_block __user *u_nba_b)
 	return 0;
 }
 
-static int nba_nblocks_in_lun(struct nba *nba, struct nba_block __user *u_nba_b)
+static int nba_nblocks_in_lun(struct nba *nba, unsigned long __user *u_param)
 {
 	unsigned long lun_id, nblocks;
 
-	if (copy_from_user(&lun_id, u_nba_b, sizeof(lun_id)))
+	if (copy_from_user(&lun_id, u_param, sizeof(lun_id)))
 		return -EFAULT;
 
 	if(lun_id >= nba->nr_luns)
@@ -168,19 +168,19 @@ static int nba_nblocks_in_lun(struct nba *nba, struct nba_block __user *u_nba_b)
 
 	nblocks = nba->luns[lun_id].nr_blocks;
 
-	if (copy_to_user(u_nba_b, &nblocks, sizeof(nblocks)))
+	if (copy_to_user(u_param, &nblocks, sizeof(nblocks)))
 		return -EFAULT;
 
 	return 0;
 }
 
-static int nba_pages_per_block(struct nba *nba, struct nba_block __user *u_nba_b)
+static int nba_pages_per_block(struct nba *nba, unsigned long __user *u_param)
 {
 	struct nba_lun *nba_lun;
 	struct nvm_lun *lun;
 	unsigned long lun_id;
 
-	if (copy_from_user(&lun_id, u_nba_b, sizeof(lun_id)))
+	if (copy_from_user(&lun_id, u_param, sizeof(lun_id)))
 		return -EFAULT;
 
 	if(lun_id >= nba->nr_luns)
@@ -189,7 +189,7 @@ static int nba_pages_per_block(struct nba *nba, struct nba_block __user *u_nba_b
 	nba_lun = &nba->luns[lun_id];
 	lun = nba_lun->parent;
 
-	if (copy_to_user(u_nba_b, &lun->nr_pages_per_blk,
+	if (copy_to_user(u_param, &lun->nr_pages_per_blk,
 						sizeof(lun->nr_pages_per_blk)))
 		return -EFAULT;
 
@@ -200,13 +200,13 @@ static int nba_pages_per_block(struct nba *nba, struct nba_block __user *u_nba_b
  * TODO: Check what this is used for. A lun belongs to a channel; it cannot be
  * spread among several channels
  */
-static int nba_nchannels(struct nba *nba, struct nba_block __user *u_nba_b)
+static int nba_nchannels(struct nba *nba, unsigned long __user *u_param)
 {
 	struct nba_lun *nba_lun;
 	struct nvm_dev *dev;
 	unsigned long lun_id;
 
-	if (copy_from_user(&lun_id, u_nba_b, sizeof(lun_id)))
+	if (copy_from_user(&lun_id, u_param, sizeof(lun_id)))
 		return -EFAULT;
 
 	if(lun_id >= nba->nr_luns)
@@ -218,7 +218,7 @@ static int nba_nchannels(struct nba *nba, struct nba_block __user *u_nba_b)
 	/* dev = nba_lun->parent->dev; */
 	dev = nba->dev;
 
-	if (copy_to_user(u_nba_b, &dev->identity.nchannels,
+	if (copy_to_user(u_param, &dev->identity.nchannels,
 						sizeof(dev->identity.nchannels)))
 		return -EFAULT;
 
