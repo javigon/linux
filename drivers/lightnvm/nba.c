@@ -4,21 +4,55 @@ static struct kmem_cache *nba_rq_cache;
 static DECLARE_RWSEM(nba_lock);
 extern const struct block_device_operations nba_fops;
 
-static inline sector_t nvm_get_laddr(struct bio *bio)
+static inline sector_t nba_get_laddr(struct bio *bio)
 {
 	return bio->bi_iter.bi_sector / NR_PHY_IN_LOG;
 }
 
+static int nba_setup_rq(struct nba *nba, struct bio *bio, struct nvm_rq *rqd,
+							uint8_t npages)
+{
+	sector_t laddr = nba_get_laddr(bio);
+	int i;
+
+	if (npages > 1) {
+		rqd->ppa_list = nvm_alloc_ppalist(nba->dev, GFP_KERNEL,
+							&rqd->dma_ppa_list);
+		if (!rqd->ppa_list) {
+			pr_err("nba: not able to allocate ppa list\n");
+			return NVM_IO_ERR;
+		}
+
+		for (i = 0; i < npages; i++) {
+			BUG_ON(!(laddr + i >= 0 && laddr + i < nba->nr_pages));
+			rqd->ppa_list[i] = laddr + i + NR_PHY_IN_LOG;
+		}
+
+		return NVM_IO_OK;
+	}
+
+	rqd->ppa = nba_get_laddr(bio) + NR_PHY_IN_LOG;
+	return NVM_IO_OK;
+}
+
 static int nba_submit_io(struct nba *nba, struct bio *bio, struct nvm_rq *rqd)
 {
+	int err;
 	uint8_t npages = nba_get_pages(bio);
 
-	rqd->ppa = nvm_get_laddr(bio) + NR_PHY_IN_LOG;
+	err = nba_setup_rq(nba, bio, rqd, npages);
+	if (err)
+		return err;
+
+
+	bio_get(bio);
 	rqd->bio = bio;
 	rqd->ins = &nba->instance;
 	rqd->npages = npages;
 
-	if (nvm_submit_io(nba->dev, rqd)) {
+	err = nvm_submit_io(nba->dev, rqd);
+	if (err) {
+		pr_err("rrpc: IO submission failed: %d\n", err);
 		return NVM_IO_ERR;
 	}
 
@@ -47,6 +81,9 @@ static void nba_make_rq(struct request_queue *q, struct bio *bio)
 	case NVM_IO_OK:
 		return;
 	case NVM_IO_ERR:
+		if (rqd->ppa_list)
+			nvm_free_ppalist(nba->dev, rqd->ppa_list,
+							rqd->dma_ppa_list);
 		bio_io_error(bio);
 		break;
 	default:
@@ -59,6 +96,12 @@ static void nba_make_rq(struct request_queue *q, struct bio *bio)
 static void nba_end_io(struct nvm_rq *rqd, int error)
 {
 	struct nba *nba = container_of(rqd->ins, struct nba, instance);
+	uint8_t npages = rqd->npages;
+
+	bio_put(rqd->bio);
+
+	if (npages > 1)
+		nvm_free_ppalist(nba->dev, rqd->ppa_list, rqd->dma_ppa_list);
 
 	mempool_free(rqd, nba->rq_pool);
 }
