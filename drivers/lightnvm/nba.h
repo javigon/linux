@@ -69,4 +69,7 @@ struct nba_channel {
 #define NVM_PAGE_SIZE_GET	21533
 #define NVM_CHANNELS_NR_GET	21534
 
+#define NVM_DEVSECTSIZE_GET	21535
+#define NVM_DEVMAXSECT_GET	21536
+
 #endif

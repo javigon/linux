@@ -3,6 +3,7 @@
 #include <linux/bio.h>
 #include <linux/module.h>
 #include <linux/kthread.h>
+#include <linux/compat.h>
 #include <linux/vmalloc.h>
 
 #include <linux/lightnvm.h>
@@ -248,6 +249,11 @@ static int nba_page_size(struct nba *nba, struct nba_block __user *u_nba_b)
 	return 0;
 }
 
+static int nba_compat_put_uint(unsigned long arg, unsigned int val)
+{
+	return put_user(val, (compat_int_t __user *)compat_ptr(arg));
+}
+
 static int nba_ioctl(struct block_device *bdev, fmode_t mode, unsigned int cmd,
 							unsigned long arg)
 {
@@ -274,10 +280,12 @@ static int nba_ioctl(struct block_device *bdev, fmode_t mode, unsigned int cmd,
 		return nba_nchannels(nba, (void __user*)arg);
 	case NVM_PAGE_SIZE_GET:
 		return nba_page_size(nba, (void __user*)arg);
-	default: {
-		NBA_PRINT("unknown command");
-	}
-	return -EINVAL;
+	case NVM_DEVSECTSIZE_GET:
+		return nba_compat_put_uint(arg, nvm_dev_sector_size(nba->dev));
+	case NVM_DEVMAXSECT_GET:
+		return nba_compat_put_uint(arg, nvm_dev_max_sectors(nba->dev));
+	default:
+		return -ENOTTY;
 	}
 }
 

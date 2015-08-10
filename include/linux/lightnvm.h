@@ -298,6 +298,16 @@ static inline unsigned long nvm_get_rq_flags(struct request *rq)
 	return (unsigned long)rq->cmd;
 }
 
+static inline unsigned int nvm_dev_sector_size(struct nvm_dev *dev)
+{
+        return (unsigned int)dev->ops->dev_sector_size;
+}
+
+static inline unsigned int nvm_dev_max_sectors(struct nvm_dev *dev)
+{
+        return (unsigned int)dev->ops->max_phys_sect;
+}
+
 #else /* CONFIG_NVM */
 
 struct nvm_dev_ops;
