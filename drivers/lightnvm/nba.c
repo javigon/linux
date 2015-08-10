@@ -1,7 +1,8 @@
 #include "nba.h"
 
+static struct kmem_cache *nba_rq_cache;
+static DECLARE_RWSEM(nba_lock);
 extern const struct block_device_operations nba_fops;
-
 
 static inline sector_t nvm_get_laddr(struct bio *bio)
 {
@@ -69,17 +70,22 @@ static sector_t nba_capacity(void *private)
 	return (nba->nr_pages) / NR_PHY_IN_LOG - NR_PHY_IN_LOG;
 }
 
+static void nba_core_free(struct nba *nba)
+{
+	if (nba->rq_pool)
+		mempool_destroy(nba->rq_pool);
+}
+
 static void nba_luns_free(struct nba *nba)
 {
-	if(nba->luns) {
+	if(nba->luns)
 		kfree(nba->luns);
-		nba->luns = NULL;
-	}
 }
 
 static void nba_free(struct nba *nba)
 {
 	if(nba) {
+		nba_core_free(nba);
 		nba_luns_free(nba);
 		kfree(nba);
 	}
@@ -149,8 +155,25 @@ out:
 	return ret;
 }
 
+static int nba_core_init(struct nba *nba)
+{
+	down_write(&nba_lock);
+	nba_rq_cache = kmem_cache_create("nba_rq", sizeof(struct nvm_rq), 0, 0,
+									NULL);
+	if (!nba_rq_cache) {
+		up_write(&nba_lock);
+		return -ENOMEM;
+	}
+	up_write(&nba_lock);
+
+	nba->rq_pool = mempool_create_slab_pool(64, nba_rq_cache);
+	if (!nba->rq_pool)
+		return -ENOMEM;
+
+	return 0;
+}
+
 static struct nvm_tgt_type tt_nba;
-static struct kmem_cache *nba_rq_cache;
 
 static void *nba_init(struct nvm_dev *dev, struct gendisk *tdisk, int lun_begin,
 								int lun_end)
@@ -177,30 +200,29 @@ static void *nba_init(struct nvm_dev *dev, struct gendisk *tdisk, int lun_begin,
 
 	ret = nba_luns_init(nba, lun_begin, lun_end);
 	if(ret) {
-		NBA_PRINT("error initializing luns");
-		goto err;
+		pr_err("nvm: nba: could not initialize luns\n");
+		goto clean;
 	}
 
-	nba_rq_cache = kmem_cache_create("nba_rq", sizeof(struct nvm_rq), 0, 0,
-									NULL);
-
-	nba->rq_pool = mempool_create_slab_pool(64, nba_rq_cache);
-	if (!nba->rq_pool) {
-		ret = -ENOMEM;
-		goto err;
+	ret = nba_core_init(nba);
+	if (ret) {
+		pr_err("nvm: nba: could not initialize core\n");
+		goto clean;
 	}
 
 	tdisk->fops = &nba_fops;
 
+	/* inherit the size from the underlying device */
 	blk_queue_logical_block_size(tqueue, queue_physical_block_size(bqueue));
 	blk_queue_max_hw_sectors(tqueue, queue_max_hw_sectors(bqueue));
 
-	NBA_PRINT("initialized nba with %lu luns, %lu blocks and %lu pages",
+	pr_info("nvm: nba initialized nba %lu luns, %lu blocks and %lu pages",
 				nba->nr_luns, nba->total_blocks, nba->nr_pages);
-	return nba;
 
-err:
+	return nba;
+clean:
 	nba_free(nba);
+err:
 	return ERR_PTR(ret);
 }
 
