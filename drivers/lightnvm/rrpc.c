@@ -1216,7 +1216,7 @@ static void *rrpc_init(struct nvm_dev *dev, struct gendisk *tdisk,
 	ret = rrpc_luns_init(rrpc, lun_begin, lun_end);
 	if (ret) {
 		pr_err("nvm: could not initialize luns\n");
-		goto err;
+		goto clean;
 	}
 
 	rrpc->poffset = rrpc->luns[0].parent->nr_blocks *
@@ -1226,31 +1226,31 @@ static void *rrpc_init(struct nvm_dev *dev, struct gendisk *tdisk,
 	ret = rrpc_core_init(rrpc);
 	if (ret) {
 		pr_err("nvm: rrpc: could not initialize core\n");
-		goto err;
+		goto clean;
 	}
 
 	ret = rrpc_map_init(rrpc);
 	if (ret) {
 		pr_err("nvm: rrpc: could not initialize maps\n");
-		goto err;
+		goto clean;
 	}
 
 	ret = rrpc_blocks_init(rrpc);
 	if (ret) {
 		pr_err("nvm: rrpc: could not initialize state for blocks\n");
-		goto err;
+		goto clean;
 	}
 
 	ret = rrpc_luns_configure(rrpc);
 	if (ret) {
 		pr_err("nvm: rrpc: not enough blocks available in LUNs.\n");
-		goto err;
+		goto clean;
 	}
 
 	ret = rrpc_gc_init(rrpc);
 	if (ret) {
 		pr_err("nvm: rrpc: could not initialize gc\n");
-		goto err;
+		goto clean;
 	}
 
 	/* inherit the size from the underlying device */
@@ -1263,8 +1263,9 @@ static void *rrpc_init(struct nvm_dev *dev, struct gendisk *tdisk,
 	mod_timer(&rrpc->gc_timer, jiffies + msecs_to_jiffies(10));
 
 	return rrpc;
-err:
+clean:
 	rrpc_free(rrpc);
+err:
 	return ERR_PTR(ret);
 }
 
