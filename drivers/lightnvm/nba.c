@@ -11,7 +11,7 @@ static inline sector_t nvm_get_laddr(struct bio *bio)
 
 static int nba_submit_io(struct nba *nba, struct bio *bio, struct nvm_rq *rqd)
 {
-	uint8_t npages = nvm_get_pages(bio);
+	uint8_t npages = nba_get_pages(bio);
 
 	rqd->ppa = nvm_get_laddr(bio) + NR_PHY_IN_LOG;
 	rqd->bio = bio;
@@ -141,13 +141,15 @@ static int nba_luns_init(struct nba *nba, int lun_begin, int lun_end)
 			block->id = j;
 			block->lun = lun;
 
-			spin_lock_init(&block->lock);
+			/* FIXME */
+			/* spin_lock_init(&block->lock); */
 			INIT_LIST_HEAD(&block->list);
 
-			bitmap_zero(block->invalid_pages, lun->nr_pages_per_blk);
-			block->next_page = 0;
-			block->nr_invalid_pages = 0;
-			atomic_set(&block->data_cmnt_size, 0);
+			/* FIXME */
+			/* bitmap_zero(block->invalid_pages, lun->nr_pages_per_blk); */
+			/* block->next_page = 0; */
+			/* block->nr_invalid_pages = 0; */
+			/* atomic_set(&block->data_cmnt_size, 0); */
 		}
 	}
 

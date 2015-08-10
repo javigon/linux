@@ -196,6 +196,10 @@ static int nba_pages_per_block(struct nba *nba, struct nba_block __user *u_nba_b
 	return 0;
 }
 
+/*
+ * TODO: Check what this is used for. A lun belongs to a channel; it cannot be
+ * spread among several channels
+ */
 static int nba_nchannels(struct nba *nba, struct nba_block __user *u_nba_b)
 {
 	struct nba_lun *nba_lun;
@@ -209,7 +213,10 @@ static int nba_nchannels(struct nba *nba, struct nba_block __user *u_nba_b)
 		return -EINVAL;
 
 	nba_lun = &nba->luns[lun_id];
-	dev = nba_lun->parent->dev;
+
+	/* FIXME */
+	/* dev = nba_lun->parent->dev; */
+	dev = nba->dev;
 
 	if (copy_to_user(u_nba_b, &dev->identity.nchannels,
 						sizeof(dev->identity.nchannels)))
@@ -233,7 +240,9 @@ static int nba_page_size(struct nba *nba, struct nba_block __user *u_nba_b)
 
 	nba_lun = &nba->luns[nba_channel.lun_idx];
 
-	dev = nba_lun->parent->dev;
+	/* FIXME */
+	/* dev = nba_lun->parent->dev; */
+	dev = nba->dev;
 	if(nba_channel.chnl_idx >= dev->identity.nchannels)
 		return -EINVAL;
 

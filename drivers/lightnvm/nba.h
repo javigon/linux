@@ -11,6 +11,11 @@
 #include <linux/lightnvm.h>
 #include "nba_debug.h"
 
+#define NBA_SECTOR (512)
+#define NBA_EXPOSED_PAGE_SIZE (4096)
+
+#define NR_PHY_IN_LOG (NBA_EXPOSED_PAGE_SIZE / NBA_SECTOR)
+
 struct nba_lun;
 
 struct nba {
@@ -56,6 +61,11 @@ struct nba_channel {
 	unsigned int gran_read;
 	unsigned int gran_erase;
 };
+
+static inline unsigned int nba_get_pages(struct bio *bio)
+{
+	return  bio->bi_iter.bi_size / NBA_EXPOSED_PAGE_SIZE;
+}
 
 /* TODO: Define commands with meaningful ids */
 #define NVM_BLOCK_PUT		21525
