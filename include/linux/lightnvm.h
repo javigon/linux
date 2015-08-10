@@ -135,7 +135,7 @@ struct nvm_dev_ops {
 	nvm_alloc_ppalist_fn	*alloc_ppalist;
 	nvm_free_ppalist_fn	*free_ppalist;
 
-	int			dev_sector_size;
+	unsigned int		dev_sector_size;
 	uint8_t			max_phys_sect;
 };
 
