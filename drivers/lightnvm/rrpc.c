@@ -603,7 +603,6 @@ static void rrpc_end_io(struct nvm_rq *rqd, int error)
 	if (npages > 1)
 		nvm_free_ppalist(rrpc->dev, rqd->ppa_list, rqd->dma_ppa_list);
 
-
 	mempool_free(rqd, rrpc->rq_pool);
 }
 
