@@ -6,7 +6,7 @@ extern const struct block_device_operations nba_fops;
 
 static inline sector_t nba_get_laddr(struct bio *bio)
 {
-	return bio->bi_iter.bi_sector / NR_PHY_IN_LOG;
+	return bio->bi_iter.bi_sector;
 }
 
 static int nba_setup_rq(struct nba *nba, struct bio *bio, struct nvm_rq *rqd,
@@ -31,7 +31,7 @@ static int nba_setup_rq(struct nba *nba, struct bio *bio, struct nvm_rq *rqd,
 		return NVM_IO_OK;
 	}
 
-	rqd->ppa = nba_get_laddr(bio) + NR_PHY_IN_LOG;
+	rqd->ppa = nba_get_laddr(bio);
 	return NVM_IO_OK;
 }
 
@@ -43,7 +43,6 @@ static int nba_submit_io(struct nba *nba, struct bio *bio, struct nvm_rq *rqd)
 	err = nba_setup_rq(nba, bio, rqd, npages);
 	if (err)
 		return err;
-
 
 	bio_get(bio);
 	rqd->bio = bio;
