@@ -547,8 +547,7 @@ static struct nvm_dev_ops nvme_nvm_dev_ops = {
 	.alloc_ppalist		= nvme_nvm_alloc_ppalist,
 	.free_ppalist		= nvme_nvm_free_ppalist,
 
-	/* .max_phys_sect		= 64, */
-	.max_phys_sect		= 1,
+	.max_phys_sect		= 64,
 };
 
 int nvme_nvm_register(struct request_queue *q, char *disk_name)

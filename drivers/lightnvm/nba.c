@@ -25,13 +25,14 @@ static int nba_setup_rq(struct nba *nba, struct bio *bio, struct nvm_rq *rqd,
 
 		for (i = 0; i < npages; i++) {
 			BUG_ON(!(laddr + i >= 0 && laddr + i < nba->nr_pages));
-			rqd->ppa_list[i] = laddr + i + NR_PHY_IN_LOG;
+			rqd->ppa_list[i] = laddr + i;
 		}
 
 		return NVM_IO_OK;
 	}
 
-	rqd->ppa = nba_get_laddr(bio);
+	rqd->ppa = laddr;
+
 	return NVM_IO_OK;
 }
 
@@ -63,9 +64,8 @@ static void nba_make_rq(struct request_queue *q, struct bio *bio)
 	struct nba *nba;
 	struct nvm_rq *rqd;
 
-	if (bio->bi_rw & REQ_DISCARD) {
+	if (bio->bi_rw & REQ_DISCARD)
 		return;
-	}
 
 	nba = q->queuedata;
 
