@@ -31,16 +31,34 @@ static int nba_check_device(struct block_device *bdev)
 	return ret;
 }
 
+/* We assume that all valid pages in the block have been moved by the
+ * application FTL using the direct flash target
+ *
+ * TODO: Specific return values
+ */
 static int nba_block_put(struct nba *nba, struct nba_block __user *u_nba_b)
 {
 	struct nba_block nba_block;
+	struct nba_lun *nba_lun;
 	struct nvm_block *block;
+	struct nvm_lun *lun;
 
 	if (copy_from_user(&nba_block, u_nba_b, sizeof(nba_block)))
 		return -EFAULT;
 
-	block = nba_block.internals;
+	if (nba_block.lun >= nba->nr_luns)
+		return -EINVAL;
+
+	nba_lun = &nba->luns[nba_block.lun];
+	lun = nba_lun->parent;
+	if (nba_block.id >= lun->nr_blocks)
+		return -EINVAL;
+
+	block = &lun->blocks[nba_block.id];
+
+	nvm_erase_blk(nba->dev, block);
 	nvm_put_blk(nba->dev, block);
+	nba_lun->nr_free_blocks++;
 
 	return 0;
 }
@@ -61,8 +79,13 @@ static int nba_block_get_next(struct nba *nba, struct nba_block __user *u_nba_b)
 	nba_lun = &nba->luns[nba_block.lun];
 
 	block = nvm_get_blk(nba->dev, nba_lun->parent, 0);
+	if (!block)
+		return -EFAULT;
 
-	nba_block.id = block->id;
+	//TODO: This should be moved to an internal function - keep track of
+	//internal ids?
+	nba_lun->nr_free_blocks--;
+	nba_block.id = block->id;  //Blocks have a global id
 	nba_block.internals = block;
 
 	if (copy_to_user(u_nba_b, &nba_block, sizeof(nba_block)))
