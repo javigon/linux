@@ -165,23 +165,23 @@ static int nba_luns_init(struct nba *nba, int lun_begin, int lun_end)
 
 		rlun->parent = lun;
 
-		rlun->nr_blocks = lun->nr_blocks;
+		rlun->nr_blocks = lun->nr_free_blocks;
+		rlun->nr_free_blocks = lun->nr_free_blocks;
 
-		nba->total_blocks += lun->nr_blocks;
-		nba->nr_pages += lun->nr_blocks * lun->nr_pages_per_blk;
+		nba->total_blocks += lun->nr_free_blocks;
+		nba->nr_pages += lun->nr_free_blocks * lun->nr_pages_per_blk;
 
+		//FIXME: This allocation is a momentary fix until we fix the
+		//block id issue
 		rlun->blocks = vzalloc(sizeof(struct nvm_block) *
-								rlun->nr_blocks);
+								lun->nr_blocks);
 		if(!rlun->blocks) {
 			ret = -ENOMEM;
 			goto out;
 		}
 
-		for(j = 0; j < lun->nr_blocks; ++j) {
+		for(j = 0; j < lun->nr_free_blocks; ++j) {
 			block = &rlun->blocks[j];
-
-			block->id = j;
-			block->lun = lun;
 
 			/* FIXME */
 			/* spin_lock_init(&block->lock); */
