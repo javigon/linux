@@ -41,6 +41,7 @@ struct nba_lun {
 	struct nvm_block	*blocks;
 
 	unsigned long nr_blocks;
+	unsigned long nr_free_blocks;
 };
 
 struct nba_block {
@@ -81,5 +82,7 @@ static inline unsigned int nba_get_pages(struct bio *bio)
 
 #define NVM_DEVSECTSIZE_GET	21535
 #define NVM_DEVMAXSECT_GET	21536
+
+#define NVM_BLOCKS_NR_FREE_GET	21520
 
 #endif

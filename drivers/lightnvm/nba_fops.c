@@ -148,6 +148,24 @@ static int nba_block_erase(struct nba *nba, struct nba_block __user *u_nba_b)
 	return 0;
 }
 
+static int nba_n_free_blocks_in_lun(struct nba *nba, unsigned long __user *u_param)
+{
+	unsigned long lun_id, nblocks;
+
+	if (copy_from_user(&lun_id, u_param, sizeof(lun_id)))
+		return -EFAULT;
+
+	if(lun_id >= nba->nr_luns)
+		return -EINVAL;
+
+	nblocks = nba->luns[lun_id].nr_free_blocks;
+
+	if (copy_to_user(u_param, &nblocks, sizeof(nblocks)))
+		return -EFAULT;
+
+	return 0;
+}
+
 static int nba_nblocks_in_lun(struct nba *nba, unsigned long __user *u_param)
 {
 	unsigned long lun_id, nblocks;
@@ -283,6 +301,8 @@ static int nba_ioctl(struct block_device *bdev, fmode_t mode, unsigned int cmd,
 		return nba_nluns_get(nba, (void __user*)arg);
 	case NVM_BLOCKS_NR_GET:
 		return nba_nblocks_in_lun(nba, (void __user*)arg);
+	case NVM_BLOCKS_NR_FREE_GET:
+		return nba_n_free_blocks_in_lun(nba, (void __user*)arg);
 	case NVM_PAGES_NR_GET:
 		return nba_pages_per_block(nba, (void __user*)arg);
 	case NVM_CHANNELS_NR_GET:
