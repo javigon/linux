@@ -64,6 +64,8 @@ static int hb_luns_init(struct nvm_dev *dev, struct bm_hb *bm)
 				(chnl->laddr_end - chnl->laddr_begin + 1) /
 				(chnl->gran_erase / chnl->gran_read);
 		lun->vlun.nr_free_blocks = lun->vlun.nr_blocks;
+		lun->vlun.nr_available_blocks =
+				lun->vlun.nr_blocks - lun->reserved_blocks;
 		lun->vlun.nr_pages_per_blk =
 				chnl->gran_erase / chnl->gran_write *
 					(chnl->gran_write / dev->sector_size);
@@ -151,6 +153,7 @@ static int hb_block_map(u64 slba, u64 nlb, u64 *entries, void *private)
 			list_move_tail(&blk->list, &lun->used_list);
 			blk->type = 1;
 			lun->vlun.nr_free_blocks--;
+			lun->vlun.nr_available_blocks--;
 		}
 	}
 
@@ -273,6 +276,7 @@ static struct nvm_block *hb_get_blk(struct nvm_dev *dev, struct nvm_lun *vlun,
 	list_move_tail(&blk->list, &lun->used_list);
 
 	lun->vlun.nr_free_blocks--;
+	lun->vlun.nr_available_blocks--;
 
 	spin_unlock(&vlun->lock);
 out:
@@ -288,6 +292,7 @@ static void hb_put_blk(struct nvm_dev *dev, struct nvm_block *blk)
 
 	list_move_tail(&blk->list, &lun->free_list);
 	lun->vlun.nr_free_blocks++;
+	lun->vlun.nr_available_blocks++;
 
 	spin_unlock(&vlun->lock);
 }

@@ -145,6 +145,9 @@ struct nvm_lun {
 	int nr_pages_per_blk;
 	unsigned int nr_blocks;		/* end_block - start_block. */
 	unsigned int nr_free_blocks;	/* Number of unused blocks */
+	unsigned int nr_available_blocks;/* Number of blocks available to
+					    targets. This can be used by the GC
+					    to apply aggressive policies */
 
 	struct nvm_block *blocks;
 
