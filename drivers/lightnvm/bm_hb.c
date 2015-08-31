@@ -164,6 +164,8 @@ static int hb_blocks_init(struct nvm_dev *dev, struct bm_hb *bm)
 {
 	struct bm_lun *lun;
 	struct nvm_block *block;
+	unsigned long long free_blks = 0, bad_blks = 0;
+	struct list_head *tmp;
 	sector_t lun_iter, blk_iter, cur_block_id = 0;
 	int ret;
 
@@ -194,6 +196,14 @@ static int hb_blocks_init(struct nvm_dev *dev, struct bm_hb *bm)
 			if (ret)
 				pr_err("bm_hb: could not read BB table\n");
 		}
+
+		/* Check that we account for all blocks. This includes block 0,
+		 * which is used by the device*/
+		list_for_each(tmp, &lun->free_list)
+			free_blks++;
+		list_for_each(tmp, &lun->bb_list)
+			bad_blks++;
+		BUG_ON(free_blks + bad_blks + 1 != lun->vlun.nr_blocks);
 	}
 
 	if (dev->ops->get_l2p_tbl) {
