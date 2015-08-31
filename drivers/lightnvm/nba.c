@@ -109,7 +109,7 @@ static sector_t nba_capacity(void *private)
 {
 	struct nba *nba = private;
 
-	return (nba->nr_pages) / NR_PHY_IN_LOG - NR_PHY_IN_LOG;
+	return nba->nr_real_pages * NR_PHY_IN_LOG;
 }
 
 static void nba_core_free(struct nba *nba)
@@ -170,6 +170,7 @@ static int nba_luns_init(struct nba *nba, int lun_begin, int lun_end)
 
 		nba->total_blocks += lun->nr_free_blocks;
 		nba->nr_pages += lun->nr_free_blocks * lun->nr_pages_per_blk;
+		nba->nr_real_pages += lun->nr_blocks * lun->nr_pages_per_blk;
 
 		//FIXME: This allocation is a momentary fix until we fix the
 		//block id issue

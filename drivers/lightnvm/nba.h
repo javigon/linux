@@ -22,6 +22,7 @@ struct nba {
 	struct nvm_tgt_instance instance;
 
 	unsigned long nr_pages;
+	unsigned long nr_real_pages;
 	unsigned long total_blocks;
 	unsigned long nr_luns;
 
