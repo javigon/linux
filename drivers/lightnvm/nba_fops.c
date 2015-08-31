@@ -64,10 +64,12 @@ static int nba_block_put(struct nba *nba, struct nba_block __user *u_nba_b)
 }
 
 /* Get next block from LIGHTNVM's BM free block list */
+//TODO: Define ioctl-specific return values?
 static int nba_block_get_next(struct nba *nba, struct nba_block __user *u_nba_b)
 {
 	struct nba_block nba_block;
 	struct nba_lun *nba_lun;
+	struct nvm_lun *lun;
 	struct nvm_block *block;
 
 	if (copy_from_user(&nba_block, u_nba_b, sizeof(nba_block)))
@@ -77,6 +79,7 @@ static int nba_block_get_next(struct nba *nba, struct nba_block __user *u_nba_b)
 		return -EINVAL;
 
 	nba_lun = &nba->luns[nba_block.lun];
+	lun = nba_lun->parent;
 
 	block = nvm_get_blk(nba->dev, nba_lun->parent, 0);
 	if (!block)
@@ -86,6 +89,7 @@ static int nba_block_get_next(struct nba *nba, struct nba_block __user *u_nba_b)
 	//internal ids?
 	nba_lun->nr_free_blocks--;
 	nba_block.id = block->id;  //Blocks have a global id
+	nba_block.phys_addr = lun->nr_pages_per_blk * nba_block.id;
 	nba_block.internals = block;
 
 	if (copy_to_user(u_nba_b, &nba_block, sizeof(nba_block)))
