@@ -166,11 +166,11 @@ static int nba_luns_init(struct nba *nba, int lun_begin, int lun_end)
 
 		rlun->parent = lun;
 
-		rlun->nr_blocks = lun->nr_free_blocks;
-		rlun->nr_free_blocks = lun->nr_free_blocks;
+		rlun->nr_blocks = lun->nr_available_blocks;
+		rlun->nr_free_blocks = lun->nr_available_blocks;
 
-		nba->total_blocks += lun->nr_free_blocks;
-		nba->nr_pages += lun->nr_free_blocks * lun->nr_pages_per_blk;
+		nba->total_blocks += lun->nr_available_blocks;
+		nba->nr_pages += lun->nr_available_blocks * lun->nr_pages_per_blk;
 		nba->nr_real_pages += lun->nr_blocks * lun->nr_pages_per_blk;
 
 		//FIXME: This allocation is a momentary fix until we fix the
@@ -182,7 +182,7 @@ static int nba_luns_init(struct nba *nba, int lun_begin, int lun_end)
 			goto out;
 		}
 
-		for(j = 0; j < lun->nr_free_blocks; ++j) {
+		for(j = 0; j < rlun->nr_free_blocks; ++j) {
 			block = &rlun->blocks[j];
 
 			/* FIXME */
