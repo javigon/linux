@@ -9,6 +9,11 @@ static inline sector_t nba_get_laddr(struct bio *bio)
 	return bio->bi_iter.bi_sector / NR_PHY_IN_LOG;
 }
 
+static inline sector_t nba_get_sector(sector_t laddr)
+{
+	return laddr * NR_PHY_IN_LOG;
+}
+
 static int nba_setup_rq(struct nba *nba, struct bio *bio, struct nvm_rq *rqd,
 							uint8_t npages)
 {
@@ -31,8 +36,7 @@ static int nba_setup_rq(struct nba *nba, struct bio *bio, struct nvm_rq *rqd,
 		return NVM_IO_OK;
 	}
 
-	/* Logic address == physic address */
-	rqd->ppa = laddr;
+	rqd->ppa = nba_get_sector(laddr);
 
 	return NVM_IO_OK;
 }
