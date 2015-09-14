@@ -45,6 +45,18 @@ struct nba_lun {
 	unsigned long nr_free_blocks;
 };
 
+struct vblock {
+	unsigned long id;
+	unsigned long owner_id;
+	unsigned long nppas;
+	unsigned long ppa_bitmap;
+	sector_t bppa;
+	void *priv;	// Might not be necessary
+	unsigned int vlun_id;
+	uint8_t flags;
+};
+
+// TODO: This will go. Only for legacy ioctls
 struct nba_block {
 	unsigned long lun;
 

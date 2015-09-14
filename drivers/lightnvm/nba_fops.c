@@ -36,25 +36,25 @@ static int nba_check_device(struct block_device *bdev)
  *
  * TODO: Specific return values
  */
-static int nba_block_put(struct nba *nba, struct nba_block __user *u_nba_b)
+static int nba_block_put(struct nba *nba, struct vblock __user *u_vblock)
 {
-	struct nba_block nba_block;
+	struct vblock vblock;
 	struct nba_lun *nba_lun;
 	struct nvm_block *block;
 	struct nvm_lun *lun;
 
-	if (copy_from_user(&nba_block, u_nba_b, sizeof(nba_block)))
+	if (copy_from_user(&vblock, u_vblock, sizeof(vblock)))
 		return -EFAULT;
 
-	if (nba_block.lun >= nba->nr_luns)
+	if (vblock.vlun_id >= nba->nr_luns)
 		return -EINVAL;
 
-	nba_lun = &nba->luns[nba_block.lun];
+	nba_lun = &nba->luns[vblock.vlun_id];
 	lun = nba_lun->parent;
-	if (nba_block.id >= lun->nr_blocks)
+	if (vblock.id >= lun->nr_blocks)
 		return -EINVAL;
 
-	block = &lun->blocks[nba_block.id];
+	block = &lun->blocks[vblock.id];
 
 	nvm_erase_blk(nba->dev, block);
 	nvm_put_blk(nba->dev, block);
@@ -65,20 +65,20 @@ static int nba_block_put(struct nba *nba, struct nba_block __user *u_nba_b)
 
 /* Get next block from LIGHTNVM's BM free block list */
 //TODO: Define ioctl-specific return values?
-static int nba_block_get_next(struct nba *nba, struct nba_block __user *u_nba_b)
+static int nba_block_get_next(struct nba *nba, struct vblock __user *u_vblock)
 {
-	struct nba_block nba_block;
+	struct vblock vblock;
 	struct nba_lun *nba_lun;
 	struct nvm_lun *lun;
 	struct nvm_block *block;
 
-	if (copy_from_user(&nba_block, u_nba_b, sizeof(nba_block)))
+	if (copy_from_user(&vblock, u_vblock, sizeof(vblock)))
 		return -EFAULT;
 
-	if (nba_block.lun >= nba->nr_luns)
+	if (vblock.vlun_id >= nba->nr_luns)
 		return -EINVAL;
 
-	nba_lun = &nba->luns[nba_block.lun];
+	nba_lun = &nba->luns[vblock.vlun_id];
 	lun = nba_lun->parent;
 
 	block = nvm_get_blk(nba->dev, nba_lun->parent, 0);
@@ -88,16 +88,21 @@ static int nba_block_get_next(struct nba *nba, struct nba_block __user *u_nba_b)
 	//TODO: This should be moved to an internal function - keep track of
 	//internal ids?
 	nba_lun->nr_free_blocks--;
-	nba_block.id = block->id;  //Blocks have a global id
-	nba_block.phys_addr = lun->nr_pages_per_blk * nba_block.id;
-	nba_block.internals = block;
 
-	if (copy_to_user(u_nba_b, &nba_block, sizeof(nba_block)))
+	vblock.id = block->id;  //Blocks have a global id
+	vblock.bppa = lun->nr_pages_per_blk * vblock.id;
+	vblock.nppas = lun->nr_pages_per_blk;
+	vblock.ppa_bitmap = 0x0; //To be used
+	vblock.flags = 0x0; //To be used
+	vblock.priv = block;
+
+	if (copy_to_user(u_vblock, &vblock, sizeof(vblock)))
 		return -EFAULT;
 
 	return 0;
 }
 
+//TODO: This will go
 static int nba_block_get_by_id(struct nba *nba, struct nba_block __user *u_nba_b)
 {
 	struct nba_block nba_block;
@@ -123,43 +128,10 @@ static int nba_block_get_by_id(struct nba *nba, struct nba_block __user *u_nba_b
 
 	if (copy_to_user(u_nba_b, &nba_block, sizeof(nba_block)))
 		return -EFAULT;
-
 	return 0;
 }
 
-static int nba_block_get_by_addr(struct nba *nba,
-					struct nba_block __user *u_nba_b)
-{
-	struct nba_block nba_block;
-	struct nba_lun *nba_lun;
-	struct nvm_block *block;
-	struct nvm_lun *lun;
-	unsigned long block_nr;
-
-	if (copy_from_user(&nba_block, u_nba_b, sizeof(nba_block)))
-		return -EFAULT;
-
-	if (nba_block.lun >= nba->nr_luns)
-		return -EINVAL;
-
-	nba_lun = &nba->luns[nba_block.lun];
-	lun = nba_lun->parent;
-
-	block_nr = nba_block.phys_addr / lun->nr_pages_per_blk;
-	if (block_nr >= nba_lun->nr_blocks)
-		return -EINVAL;
-
-	block = &nba_lun->blocks[block_nr];
-
-	nba_block.id = block->id;
-	nba_block.internals = block;
-
-	if (copy_to_user(u_nba_b, &nba_block, sizeof(nba_block)))
-		return -EFAULT;
-
-	return 0;
-}
-
+//TODO: This will go
 static int nba_block_erase(struct nba *nba, struct nba_block __user *u_nba_b)
 {
 	struct nba_block nba_block;
@@ -211,6 +183,7 @@ static int nba_nblocks_in_lun(struct nba *nba, unsigned long __user *u_param)
 	return 0;
 }
 
+//TODO: This will go
 static int nba_pages_per_block(struct nba *nba, unsigned long __user *u_param)
 {
 	struct nba_lun *nba_lun;
@@ -262,14 +235,15 @@ static int nba_nchannels(struct nba *nba, unsigned long __user *u_param)
 	return 0;
 }
 
-static int nba_page_size(struct nba *nba, struct nba_block __user *u_nba_b)
+//TODO: This will go
+static int nba_page_size(struct nba *nba, struct nba_channel __user *u_nba_c)
 {
 	struct nba_channel nba_channel;
 	struct nba_lun *nba_lun;
 	struct nvm_id_chnl *channel;
 	struct nvm_dev *dev;
 
-	if (copy_from_user(&nba_channel, u_nba_b, sizeof(nba_channel)))
+	if (copy_from_user(&nba_channel, u_nba_c, sizeof(nba_channel)))
 		return -EFAULT;
 
 	if(nba_channel.lun_idx >= nba->nr_luns)
@@ -289,23 +263,23 @@ static int nba_page_size(struct nba *nba, struct nba_block __user *u_nba_b)
 	nba_channel.gran_read = channel->gran_read;
 	nba_channel.gran_erase = channel->gran_erase;
 
-	if (copy_to_user(u_nba_b, &nba_channel, sizeof(nba_channel)))
+	if (copy_to_user(u_nba_c, &nba_channel, sizeof(nba_channel)))
 		return -EFAULT;
-
-	return 0;
-}
-
-static int nba_nluns_get(struct nba *nba, struct nba_block __user *u_nba_b)
-{
-	if (copy_to_user(u_nba_b, &nba->nr_luns, sizeof(nba->nr_luns)))
-			return -EFAULT;
 
 	return 0;
 }
 
 static int nba_compat_put_uint(unsigned long arg, unsigned int val)
 {
-	return put_user(val, (compat_int_t __user *)compat_ptr(arg));
+	return put_user(val, (compat_uint_t __user *)compat_ptr(arg));
+}
+
+static int nba_nluns(struct nba *nba, unsigned long __user *u_param)
+{
+	if (copy_to_user(u_param, &nba->nr_luns, sizeof(unsigned long)))
+		return -EFAULT;
+
+	return 0;
 }
 
 static int nba_ioctl(struct block_device *bdev, fmode_t mode, unsigned int cmd,
@@ -320,12 +294,10 @@ static int nba_ioctl(struct block_device *bdev, fmode_t mode, unsigned int cmd,
 		return nba_block_get_next(nba, (void __user*)arg);
 	case NVM_BLOCK_GET_BY_ID:
 		return nba_block_get_by_id(nba, (void __user*)arg);
-	case NVM_BLOCK_GET_BY_ADDR:
-		return nba_block_get_by_addr(nba, (void __user*)arg);
 	case NVM_BLOCK_ERASE:
 		return nba_block_erase(nba, (void __user*)arg);
 	case NVM_LUNS_NR_GET:
-		return nba_nluns_get(nba, (void __user*)arg);
+		return nba_nluns(nba, (void __user*)arg);
 	case NVM_BLOCKS_NR_GET:
 		return nba_nblocks_in_lun(nba, (void __user*)arg);
 	case NVM_BLOCKS_NR_FREE_GET:
