@@ -84,6 +84,7 @@ static inline unsigned int nba_get_pages(struct bio *bio)
 /* TODO: Define commands with meaningful ids */
 #define NVM_BLOCK_PUT		21525
 #define NVM_BLOCK_GET_NEXT	21526
+#define NVM_BLOCK_GET_META	21537
 #define NVM_BLOCK_GET_BY_ADDR	21531
 #define NVM_BLOCK_GET_BY_ID	21532
 #define NVM_LUNS_NR_GET		21527

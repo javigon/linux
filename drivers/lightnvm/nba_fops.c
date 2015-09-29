@@ -102,6 +102,38 @@ static int nba_block_get_next(struct nba *nba, struct vblock __user *u_vblock)
 	return 0;
 }
 
+static int nba_block_get_meta(struct nba *nba, struct nba_block __user *u_vblock)
+{
+	struct vblock vblock;
+	struct nba_lun *nba_lun;
+	struct nvm_block *block;
+	struct nvm_lun *lun;
+
+	if (copy_from_user(&vblock, u_vblock, sizeof(vblock)))
+		return -EFAULT;
+
+	if (vblock.vlun_id >= nba->nr_luns)
+		return -EINVAL;
+
+	nba_lun = &nba->luns[vblock.vlun_id];
+	lun = nba_lun->parent;
+	if (vblock.id >= lun->nr_blocks)
+		return -EINVAL;
+
+	block = &lun->blocks[vblock.id];
+	vblock.id = block->id;  //Blocks have a global id
+	vblock.bppa = lun->nr_pages_per_blk * vblock.id;
+	vblock.nppas = lun->nr_pages_per_blk;
+	vblock.ppa_bitmap = 0x0; //To be used
+	vblock.flags = 0x0; //To be used
+	vblock.priv = block;
+
+	if (copy_to_user(u_vblock, &vblock, sizeof(vblock)))
+		return -EFAULT;
+
+	return 0;
+}
+
 //TODO: This will go
 static int nba_block_get_by_id(struct nba *nba, struct nba_block __user *u_nba_b)
 {
@@ -292,6 +324,8 @@ static int nba_ioctl(struct block_device *bdev, fmode_t mode, unsigned int cmd,
 		return nba_block_put(nba, (void __user*)arg);
 	case NVM_BLOCK_GET_NEXT:
 		return nba_block_get_next(nba, (void __user*)arg);
+	case NVM_BLOCK_GET_META:
+		return nba_block_get_meta(nba, (void __user*)arg);
 	case NVM_BLOCK_GET_BY_ID:
 		return nba_block_get_by_id(nba, (void __user*)arg);
 	case NVM_BLOCK_ERASE:
