@@ -203,7 +203,6 @@ static int hb_blocks_init(struct nvm_dev *dev, struct bm_hb *bm)
 			free_blks++;
 		list_for_each(tmp, &lun->bb_list)
 			bad_blks++;
-		BUG_ON(free_blks + bad_blks + 1 != lun->vlun.nr_blocks);
 	}
 
 	if (dev->ops->get_l2p_tbl) {
