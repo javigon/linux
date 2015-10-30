@@ -451,6 +451,28 @@ static int nvm_ioctl_dev_get_max_sec(struct dflash *dflash, void __user *arg)
 	return 0;
 }
 
+static int nvm_ioctl_nblocks_lun(struct dflash *dflash, void __user *arg)
+{
+	struct nvm_dev *dev = dflash->dev;
+	uint32_t nblocks = dev->blks_per_lun;
+
+	if (copy_to_user(arg, &nblocks, sizeof(nblocks)))
+		return -EFAULT;
+
+	return 0;
+}
+
+static int nvm_ioctl_npages_block(struct dflash *dflash, void __user *arg)
+{
+	struct nvm_dev *dev = dflash->dev;
+	uint32_t npages = dev->pgs_per_blk;
+
+	if (copy_to_user(arg, &npages, sizeof(npages)))
+		return -EFAULT;
+
+	return 0;
+}
+
 static int dflash_ioctl(struct block_device *bdev, fmode_t mode, unsigned int cmd,
 							unsigned long arg)
 {
@@ -468,6 +490,10 @@ static int dflash_ioctl(struct block_device *bdev, fmode_t mode, unsigned int cm
 		return nvm_ioctl_dev_get_page_size(dflash, argp);
 	case NVM_DEV_MAX_SEC:
 		return nvm_ioctl_dev_get_max_sec(dflash, argp);
+	case NVM_DEV_NBLOCKS_LUN:
+		return nvm_ioctl_nblocks_lun(dflash, argp);
+	case NVM_DEV_NPAGES_BLOCK:
+		return nvm_ioctl_npages_block(dflash, argp);
 	default:
 		return -ENOTTY;
 	}
