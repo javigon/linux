@@ -428,6 +428,17 @@ extern void nvm_unregister(char *);
 
 extern int nvm_submit_io(struct nvm_dev *, struct nvm_rq *);
 extern int nvm_erase_blk(struct nvm_dev *, struct nvm_block *);
+
+static inline unsigned int nvm_dev_page_size(struct nvm_dev *dev)
+{
+	return (unsigned int)(dev->sec_per_pg * dev->sec_size);
+}
+
+static inline unsigned int nvm_dev_max_sectors(struct nvm_dev *dev)
+{
+	return (unsigned int)dev->ops->max_phys_sect;
+}
+
 #else /* CONFIG_NVM */
 struct nvm_dev_ops;
 
