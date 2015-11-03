@@ -25,8 +25,8 @@ static struct kmem_cache *dflash_rq_cache;
 static DECLARE_RWSEM(dflash_lock);
 extern const struct block_device_operations dflash_fops;
 
-static int dflash_setup_rq(struct dflash *dflash, struct bio *bio, struct nvm_rq *rqd,
-							uint8_t npages)
+static int dflash_setup_rq(struct dflash *dflash, struct bio *bio,
+					struct nvm_rq *rqd, uint8_t npages)
 {
 	struct nvm_dev *dev = dflash->dev;
 	struct ppa_addr ppa;
@@ -88,7 +88,8 @@ static int dflash_setup_rq(struct dflash *dflash, struct bio *bio, struct nvm_rq
 	return NVM_IO_OK;
 }
 
-static int dflash_submit_io(struct dflash *dflash, struct bio *bio, struct nvm_rq *rqd)
+static int dflash_submit_io(struct dflash *dflash, struct bio *bio,
+							struct nvm_rq *rqd)
 {
 	int err;
 	uint8_t npages = dflash_get_pages(bio);
@@ -209,7 +210,8 @@ static int dflash_luns_init(struct dflash *dflash, int lun_begin, int lun_end)
 
 	int ret = 0;
 
-	dflash->luns = kcalloc(dflash->nr_luns, sizeof(struct dflash_lun), GFP_KERNEL);
+	dflash->luns = kcalloc(dflash->nr_luns, sizeof(struct dflash_lun),
+								GFP_KERNEL);
 	if(!dflash->luns) {
 		return -ENOMEM;
 	}
@@ -256,8 +258,8 @@ out:
 static int dflash_core_init(struct dflash *dflash)
 {
 	down_write(&dflash_lock);
-	dflash_rq_cache = kmem_cache_create("dflash_rq", sizeof(struct nvm_rq), 0, 0,
-									NULL);
+	dflash_rq_cache = kmem_cache_create("dflash_rq", sizeof(struct nvm_rq),
+							0, 0, NULL);
 	if (!dflash_rq_cache) {
 		up_write(&dflash_lock);
 		return -ENOMEM;
@@ -273,8 +275,8 @@ static int dflash_core_init(struct dflash *dflash)
 
 static struct nvm_tgt_type tt_dflash;
 
-static void *dflash_init(struct nvm_dev *dev, struct gendisk *tdisk, int lun_begin,
-								int lun_end)
+static void *dflash_init(struct nvm_dev *dev, struct gendisk *tdisk,
+						int lun_begin, int lun_end)
 {
 	struct request_queue *bqueue = dev->q;
 	struct request_queue *tqueue = tdisk->queue;
@@ -313,7 +315,8 @@ static void *dflash_init(struct nvm_dev *dev, struct gendisk *tdisk, int lun_beg
 	blk_queue_max_hw_sectors(tqueue, queue_max_hw_sectors(bqueue));
 
 	pr_info("nvm: dflash initialized dflash %lu luns, %lu blocks and %lu pages\n",
-				dflash->nr_luns, dflash->nr_luns * dev->blks_per_lun,
+				dflash->nr_luns,
+				dflash->nr_luns * dev->blks_per_lun,
 				dflash->nr_luns * dev->sec_per_lun);
 
 	return dflash;
