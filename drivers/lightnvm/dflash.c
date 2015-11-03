@@ -473,8 +473,29 @@ static int nvm_ioctl_npages_block(struct dflash *dflash, void __user *arg)
 	return 0;
 }
 
-static int dflash_ioctl(struct block_device *bdev, fmode_t mode, unsigned int cmd,
-							unsigned long arg)
+#ifdef CONFIG_NVM_DEBUG
+static int nvm_ioctl_nfree_blocks(struct dflash *dflash, void __user *arg)
+{
+	unsigned int nblocks;
+	unsigned long lun_id;
+
+	if (copy_from_user(&lun_id, arg, sizeof(lun_id)))
+		return -EFAULT;
+
+	if (lun_id >= dflash->nr_luns)
+		return -EINVAL;
+
+	nblocks = dflash->luns[lun_id].nr_free_blocks;
+
+	if (copy_to_user(arg, &nblocks, sizeof(nblocks)))
+		return -EFAULT;
+
+	return 0;
+}
+#endif
+
+static int dflash_ioctl(struct block_device *bdev, fmode_t mode,
+					unsigned int cmd, unsigned long arg)
 {
 	struct dflash *dflash = bdev->bd_disk->private_data;
 	void __user *argp = (void __user *)arg;
@@ -494,6 +515,10 @@ static int dflash_ioctl(struct block_device *bdev, fmode_t mode, unsigned int cm
 		return nvm_ioctl_nblocks_lun(dflash, argp);
 	case NVM_DEV_NPAGES_BLOCK:
 		return nvm_ioctl_npages_block(dflash, argp);
+#ifdef CONFIG_NVM_DEBUG
+	case NVM_DEV_NFREE_BLOCKS:
+		return nvm_ioctl_nfree_blocks(dflash, argp);
+#endif
 	default:
 		return -ENOTTY;
 	}
