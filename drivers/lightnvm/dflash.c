@@ -184,13 +184,13 @@ static void dflash_core_free(struct dflash *dflash)
 
 static void dflash_luns_free(struct dflash *dflash)
 {
-	if(dflash->luns)
+	if (dflash->luns)
 		kfree(dflash->luns);
 }
 
 static void dflash_free(struct dflash *dflash)
 {
-	if(dflash) {
+	if (dflash) {
 		dflash_core_free(dflash);
 		dflash_luns_free(dflash);
 		kfree(dflash);
@@ -212,13 +212,13 @@ static int dflash_luns_init(struct dflash *dflash, int lun_begin, int lun_end)
 
 	dflash->luns = kcalloc(dflash->nr_luns, sizeof(struct dflash_lun),
 								GFP_KERNEL);
-	if(!dflash->luns) {
+	if (!dflash->luns) {
 		return -ENOMEM;
 	}
 
 	dflash->nr_pages = dev->sec_per_lun * dflash->nr_luns;
 
-	for(i = 0; i < dflash->nr_luns; ++i) {
+	for (i = 0; i < dflash->nr_luns; ++i) {
 		lun = dev->mt->get_lun(dev, lun_begin + i);
 
 		rlun = &dflash->luns[i];
@@ -231,12 +231,12 @@ static int dflash_luns_init(struct dflash *dflash, int lun_begin, int lun_end)
 		//block id issue
 		rlun->blocks = vzalloc(sizeof(struct nvm_block) *
 							dev->blks_per_lun);
-		if(!rlun->blocks) {
+		if (!rlun->blocks) {
 			ret = -ENOMEM;
 			goto out;
 		}
 
-		for(j = 0; j < rlun->nr_free_blocks; ++j) {
+		for (j = 0; j < rlun->nr_free_blocks; ++j) {
 			block = &rlun->blocks[j];
 
 			/* FIXME */
@@ -296,7 +296,7 @@ static void *dflash_init(struct nvm_dev *dev, struct gendisk *tdisk,
 	dflash->nr_luns = lun_end - lun_begin + 1;
 
 	ret = dflash_luns_init(dflash, lun_begin, lun_end);
-	if(ret) {
+	if (ret) {
 		pr_err("nvm: dflash: could not initialize luns\n");
 		goto clean;
 	}
@@ -332,7 +332,6 @@ static void dflash_exit(void *private)
 
 	dflash_free(dflash);
 }
-
 
 /*
  * TODO: move .ioctl to .unlocked_ioctl and implement locking within the module
