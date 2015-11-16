@@ -120,13 +120,13 @@ static int dflash_submit_io(struct dflash *dflash, struct bio *bio,
 	return NVM_IO_OK;
 }
 
-static void dflash_make_rq(struct request_queue *q, struct bio *bio)
+static blk_qc_t dflash_make_rq(struct request_queue *q, struct bio *bio)
 {
 	struct dflash *dflash;
 	struct nvm_rq *rqd;
 
 	if (bio->bi_rw & REQ_DISCARD)
-		return;
+		return BLK_QC_T_NONE;
 
 	dflash = q->queuedata;
 
@@ -134,13 +134,13 @@ static void dflash_make_rq(struct request_queue *q, struct bio *bio)
 	if (!rqd) {
 		pr_err_ratelimited("dflash: not able to queue bio.");
 		bio_io_error(bio);
-		return;
+		return BLK_QC_T_NONE;
 	}
 	memset(rqd, 0, sizeof(struct nvm_rq));
 
 	switch (dflash_submit_io(dflash, bio, rqd)) {
 	case NVM_IO_OK:
-		return;
+		return BLK_QC_T_NONE;
 	case NVM_IO_DONE:
 		bio_endio(bio);
 		break;
@@ -152,6 +152,7 @@ static void dflash_make_rq(struct request_queue *q, struct bio *bio)
 	}
 
 	mempool_free(rqd, dflash->rq_pool);
+	return BLK_QC_T_NONE;
 }
 
 static int dflash_end_io(struct nvm_rq *rqd, int error)
