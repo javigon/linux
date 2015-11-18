@@ -828,9 +828,9 @@ static long nvm_ctl_ioctl(struct file *file, uint cmd, unsigned long arg)
 		return nvm_ioctl_info(file, argp);
 	case NVM_GET_DEVICES:
 		return nvm_ioctl_get_devices(file, argp);
-	case NVM_DEV_CREATE:
+	case NVM_DEV_CREATE_TGT:
 		return nvm_ioctl_dev_create(file, argp);
-	case NVM_DEV_REMOVE:
+	case NVM_DEV_REMOVE_TGT:
 		return nvm_ioctl_dev_remove(file, argp);
 	case NVM_DEV_GET_PROP:
 		return nvm_ioctl_dev_get_prop(file, argp);
