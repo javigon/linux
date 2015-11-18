@@ -438,65 +438,6 @@ static int dflash_ioctl_block_get_info(struct dflash *dflash, void __user *arg)
 	return 0;
 }
 
-static int nvm_ioctl_dev_get_page_size(struct dflash *dflash, void __user *arg)
-{
-	uint32_t max_sectors = nvm_dev_max_sectors(dflash->dev);
-	if (copy_to_user(arg, &max_sectors, sizeof(uint32_t)))
-		return -EFAULT;
-	return 0;
-}
-
-static int nvm_ioctl_dev_get_max_sec(struct dflash *dflash, void __user *arg)
-{
-	uint32_t page_size = nvm_dev_page_size(dflash->dev);
-	if (copy_to_user(arg, &page_size, sizeof(uint32_t)))
-		return -EFAULT;
-	return 0;
-}
-
-static int nvm_ioctl_nblocks_lun(struct dflash *dflash, void __user *arg)
-{
-	struct nvm_dev *dev = dflash->dev;
-	uint32_t nblocks = dev->blks_per_lun;
-
-	if (copy_to_user(arg, &nblocks, sizeof(nblocks)))
-		return -EFAULT;
-
-	return 0;
-}
-
-static int nvm_ioctl_npages_block(struct dflash *dflash, void __user *arg)
-{
-	struct nvm_dev *dev = dflash->dev;
-	uint32_t npages = dev->pgs_per_blk;
-
-	if (copy_to_user(arg, &npages, sizeof(npages)))
-		return -EFAULT;
-
-	return 0;
-}
-
-#ifdef CONFIG_NVM_DEBUG
-static int nvm_ioctl_nfree_blocks(struct dflash *dflash, void __user *arg)
-{
-	unsigned int nblocks;
-	unsigned long lun_id;
-
-	if (copy_from_user(&lun_id, arg, sizeof(lun_id)))
-		return -EFAULT;
-
-	if (lun_id >= dflash->nr_luns)
-		return -EINVAL;
-
-	nblocks = dflash->luns[lun_id].nr_free_blocks;
-
-	if (copy_to_user(arg, &nblocks, sizeof(nblocks)))
-		return -EFAULT;
-
-	return 0;
-}
-#endif
-
 static int dflash_ioctl(struct block_device *bdev, fmode_t mode,
 					unsigned int cmd, unsigned long arg)
 {
