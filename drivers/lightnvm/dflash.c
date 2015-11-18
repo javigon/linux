@@ -406,7 +406,7 @@ static int dflash_ioctl_put_block(struct dflash *dflash, void __user *arg)
 	return 0;
 }
 
-static int dflash_ioctl_block_get_meta(struct dflash *dflash, void __user *arg)
+static int dflash_ioctl_block_get_info(struct dflash *dflash, void __user *arg)
 {
 	struct vblock vblock;
 	struct dflash_lun *dflash_lun;
@@ -508,20 +508,8 @@ static int dflash_ioctl(struct block_device *bdev, fmode_t mode,
 		return dflash_ioctl_get_block(dflash, argp);
 	case NVM_PR_PUT_BLOCK:
 		return dflash_ioctl_put_block(dflash, argp);
-	case NVM_PR_GET_BLOCK_META:
-		return dflash_ioctl_block_get_meta(dflash, argp);
-	case NVM_DEV_PAGE_SIZE:
-		return nvm_ioctl_dev_get_page_size(dflash, argp);
-	case NVM_DEV_MAX_SEC:
-		return nvm_ioctl_dev_get_max_sec(dflash, argp);
-	case NVM_DEV_NBLOCKS_LUN:
-		return nvm_ioctl_nblocks_lun(dflash, argp);
-	case NVM_DEV_NPAGES_BLOCK:
-		return nvm_ioctl_npages_block(dflash, argp);
-#ifdef CONFIG_NVM_DEBUG
-	case NVM_DEV_NFREE_BLOCKS:
-		return nvm_ioctl_nfree_blocks(dflash, argp);
-#endif
+	case NVM_PR_GET_BLOCK_INFO:
+		return dflash_ioctl_block_get_info(dflash, argp);
 	default:
 		return -ENOTTY;
 	}
