@@ -788,6 +788,37 @@ static long nvm_ioctl_dev_remove(struct file *file, void __user *arg)
 	return __nvm_configure_remove(&remove);
 }
 
+static long nvm_ioctl_dev_get_prop(struct file *file, void __user *arg)
+{
+	struct nvm_ioctl_dev_prop properties;
+	struct nvm_dev *dev;
+
+	if (!capable(CAP_SYS_ADMIN))
+		return -EPERM;
+
+	if (copy_from_user(&properties, arg, sizeof(struct nvm_ioctl_dev_prop)))
+		return -EFAULT;
+
+	properties.dev[DISK_NAME_LEN - 1] = '\0';
+
+	dev = nvm_find_nvm_dev(properties.dev);
+	if (!dev) {
+		pr_err("nvm: device not found\n");
+		return -EINVAL;
+	}
+
+	if (!dev->mt)
+		return 0;
+
+	properties.page_size = nvm_dev_page_size(dev);
+	properties.max_io_size = nvm_dev_max_sectors(dev);
+
+	if (copy_to_user(arg, &properties, sizeof(struct nvm_ioctl_dev_prop)))
+		return -EFAULT;
+
+	return 0;
+}
+
 static long nvm_ctl_ioctl(struct file *file, uint cmd, unsigned long arg)
 {
 	void __user *argp = (void __user *)arg;
@@ -801,6 +832,8 @@ static long nvm_ctl_ioctl(struct file *file, uint cmd, unsigned long arg)
 		return nvm_ioctl_dev_create(file, argp);
 	case NVM_DEV_REMOVE:
 		return nvm_ioctl_dev_remove(file, argp);
+	case NVM_DEV_GET_PROP:
+		return nvm_ioctl_dev_get_prop(file, argp);
 	}
 	return 0;
 }
