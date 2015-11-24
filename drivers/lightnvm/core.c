@@ -531,6 +531,16 @@ static int __nvm_configure_remove(struct nvm_ioctl_tgt_remove *remove)
 	return 0;
 }
 
+static void __nvm_get_info_target(struct nvm_target *tgt, struct nvm_dev *dev,
+					struct nvm_ioctl_tgt_info *tgt_info)
+{
+	tgt_info->version[0] = tgt->type->version[0];
+	tgt_info->version[1] = tgt->type->version[1];
+	tgt_info->version[2] = tgt->type->version[2];
+	strncpy(tgt_info->target.tgttype, tgt->type->name, DISK_NAME_LEN);
+	strncpy(tgt_info->target.dev, dev->name, DISK_NAME_LEN);
+}
+
 #ifdef CONFIG_NVM_DEBUG
 static int nvm_configure_show(const char *val)
 {
@@ -828,11 +838,50 @@ static long nvm_ioctl_dev_get_info(struct file *file, void __user *arg)
 	return 0;
 }
 
+static long nvm_ioctl_tgt_get_info(struct file *file, void __user *arg)
+{
+	struct nvm_target *t = NULL;
+	struct nvm_dev *dev;
+	struct nvm_ioctl_tgt_info tgt_info;
+	int ret = -1;
+
+	if (!capable(CAP_SYS_ADMIN))
+		return -EPERM;
+
+	if (copy_from_user(&tgt_info, arg, sizeof(struct nvm_ioctl_tgt_info)))
+		return -EFAULT;
+
+	tgt_info.target.tgtname[DISK_NAME_LEN - 1] = '\0';
+
+	down_write(&nvm_lock);
+	list_for_each_entry(dev, &nvm_devices, devices)
+		list_for_each_entry(t, &dev->online_targets, list) {
+			if (!strcmp(tgt_info.target.tgtname, t->disk->disk_name)) {
+				__nvm_get_info_target(t, dev, &tgt_info);
+				ret = 0;
+				break;
+			}
+		}
+	up_write(&nvm_lock);
+
+	if (ret) {
+		pr_err("nvm: target \"%s\" doesn't exist.\n",
+							tgt_info.target.tgtname);
+		return -EINVAL;
+	}
+
+	if (copy_to_user(arg, &tgt_info, sizeof(struct nvm_ioctl_tgt_info)))
+		return -EFAULT;
+
+	return 0;
+}
+
 static long nvm_ctl_ioctl(struct file *file, uint cmd, unsigned long arg)
 {
 	void __user *argp = (void __user *)arg;
 
 	switch (cmd) {
+	/* device - general */
 	case NVM_INFO:
 		return nvm_ioctl_info(file, argp);
 	case NVM_GET_DEVICES:
@@ -843,6 +892,9 @@ static long nvm_ctl_ioctl(struct file *file, uint cmd, unsigned long arg)
 		return nvm_ioctl_dev_remove(file, argp);
 	case NVM_DEV_GET_INFO:
 		return nvm_ioctl_dev_get_info(file, argp);
+	/* target - specific */
+	case NVM_TGT_GET_INFO:
+		return nvm_ioctl_tgt_get_info(file, argp);
 	}
 	return 0;
 }
