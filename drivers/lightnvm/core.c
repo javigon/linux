@@ -515,8 +515,7 @@ static int __nvm_configure_remove(struct nvm_ioctl_tgt_remove *remove)
 	down_write(&nvm_lock);
 	list_for_each_entry(dev, &nvm_devices, devices)
 		list_for_each_entry(t, &dev->online_targets, list) {
-			if (!strcmp(remove->tgtname,
-							t->disk->disk_name)) {
+			if (!strcmp(remove->tgtname, t->disk->disk_name)) {
 				nvm_remove_target(t);
 				ret = 0;
 				break;
