@@ -17,6 +17,7 @@ enum {
 #include <linux/types.h>
 #include <linux/file.h>
 #include <linux/dmapool.h>
+#include <uapi/linux/lightnvm.h>
 
 enum {
 	/* HW Responsibilities */
@@ -241,6 +242,15 @@ struct nvm_block {
 	int type;
 };
 
+/* system block cpu representation */
+struct nvm_sb_info {
+	unsigned long		seqnr;
+	unsigned long		erase_cnt;
+	unsigned int		version;
+	char			mmtype[NVM_MMTYPE_LEN];
+	struct ppa_addr		fs_ppa;
+};
+
 struct nvm_dev {
 	struct nvm_dev_ops *ops;
 
@@ -284,6 +294,8 @@ struct nvm_dev {
 	/* Backend device */
 	struct request_queue *q;
 	char name[DISK_NAME_LEN];
+
+	struct mutex mlock;
 };
 
 static inline struct ppa_addr generic_to_dev_addr(struct nvm_dev *dev,
@@ -439,6 +451,24 @@ extern void nvm_free_rqd_ppalist(struct nvm_dev *, struct nvm_rq *);
 extern int nvm_erase_ppa(struct nvm_dev *, struct ppa_addr);
 extern int nvm_erase_blk(struct nvm_dev *, struct nvm_block *);
 extern int nvm_submit_ppa(struct nvm_dev *, struct ppa_addr, int, void *, int);
+
+/* sysblk.c */
+#define NVM_SYSBLK_MAGIC 0x4E564D53 /* "NVMS" */
+
+/* system block on disk representation */
+struct nvm_system_block {
+	__be32			magic;		/* magic signature */
+	__be32			seqnr;		/* sequence number */
+	__be32			erase_cnt;	/* erase count */
+	__be16			version;	/* version number */
+	u8			mmtype[NVM_MMTYPE_LEN]; /* media manager name */
+	__be64			fs_ppa;		/* PPA for media manager
+						 * superblock */
+};
+
+extern int nvm_get_sysblock(struct nvm_dev *, struct nvm_sb_info *);
+extern int nvm_update_sysblock(struct nvm_dev *, struct nvm_sb_info *);
+extern int nvm_init_sysblock(struct nvm_dev *, struct nvm_sb_info *);
 #else /* CONFIG_NVM */
 struct nvm_dev_ops;
 
