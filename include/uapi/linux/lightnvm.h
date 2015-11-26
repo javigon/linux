@@ -100,6 +100,12 @@ struct nvm_ioctl_remove {
 	__u32 flags;
 };
 
+struct nvm_ioctl_init_dev {
+	char dev[DISK_NAME_LEN];		/* open-channel SSD device */
+	char mmname[NVM_TTYPE_NAME_MAX];
+
+	__u32 flags;
+};
 
 /* The ioctl type, 'L', 0x20 - 0x2F documented in ioctl-number.txt */
 enum {
@@ -110,6 +116,7 @@ enum {
 	/* device level cmds */
 	NVM_DEV_CREATE_CMD,
 	NVM_DEV_REMOVE_CMD,
+	NVM_DEV_INIT_CMD,
 };
 
 #define NVM_IOCTL 'L' /* 0x4c */
@@ -122,6 +129,8 @@ enum {
 						struct nvm_ioctl_create)
 #define NVM_DEV_REMOVE		_IOW(NVM_IOCTL, NVM_DEV_REMOVE_CMD, \
 						struct nvm_ioctl_remove)
+#define NVM_DEV_INIT		_IOW(NVM_IOCTL, NVM_DEV_INIT_CMD, \
+						struct nvm_ioctl_init)
 
 #define NVM_VERSION_MAJOR	1
 #define NVM_VERSION_MINOR	0

@@ -438,6 +438,22 @@ extern void nvm_free_rqd_ppalist(struct nvm_dev *, struct nvm_rq *);
 extern int nvm_erase_ppa(struct nvm_dev *, struct ppa_addr);
 extern int nvm_erase_blk(struct nvm_dev *, struct nvm_block *);
 extern int nvm_submit_ppa(struct nvm_dev *, struct ppa_addr, int, void *, int);
+
+/* sysblk.c */
+#define NVM_HDR_SIZE 8
+/* on disk representation */
+struct nvm_sysblk {
+	__u8		header[NVM_HDR_SIZE];
+	__u64		seqnr;
+	__u8		version;
+	__u8		mmtype;
+	__u8		resvd[6];
+	__u64		fs_ppa;
+};
+
+extern int nvm_get_sysblock(struct nvm_dev *, struct nvm_sysblk *);
+extern int nvm_update_sysblock(struct nvm_dev *, struct nvm_sysblk *);
+extern int nvm_init_sysblock(struct nvm_dev *, struct nvm_sysblk *);
 #else /* CONFIG_NVM */
 struct nvm_dev_ops;
 
