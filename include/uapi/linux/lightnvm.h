@@ -119,6 +119,17 @@ struct nvm_ioctl_lun_info {
 	// TODO
 };
 
+/* nvm_ioctl_vblock flags */
+enum {
+	NVM_VBLOCK_RETURN_META = 1,
+};
+
+struct nvm_ioctl_prov_info {
+	__u32 nr_free_blocks;
+	__u32 nr_inuse_blocks;
+	__u32 nr_bad_blocks;
+};
+
 struct nvm_ioctl_vblock {
 	__u64 id;
 	__u64 bppa;
@@ -127,6 +138,7 @@ struct nvm_ioctl_vblock {
 	__u32 nppas;
 	__u16 ppa_bitmap;
 	__u16 flags;
+	struct nvm_ioctl_prov_info prov;
 };
 
 /* The ioctl type, 'L', 0x20 - 0x2F documented in ioctl-number.txt */

@@ -368,7 +368,14 @@ static int dflash_ioctl_get_block(struct dflash *dflash, void __user *arg)
 	vblock.bppa = dev->sec_per_blk * vblock.id;
 	vblock.nppas = dev->pgs_per_blk * dev->sec_per_pg;
 	vblock.ppa_bitmap = 0x0; //To be used
-	vblock.flags = 0x0; //To be used
+
+	if (vblock.flags & NVM_VBLOCK_RETURN_META) {
+		spin_lock(&lun->lock);
+		vblock.prov.nr_free_blocks = lun->nr_free_blocks;
+		vblock.prov.nr_inuse_blocks = lun->nr_inuse_blocks;
+		vblock.prov.nr_bad_blocks = lun->nr_bad_blocks;
+		spin_unlock(&lun->lock);
+	}
 
 	nvm_erase_blk(dflash->dev, block);
 
