@@ -63,6 +63,8 @@ enum {
 
 struct nvm_ioctl_dev_prop {
 	__u32 page_size;
+	__u32 nr_planes;
+	__u32 nr_luns;
 	__u32 max_io_size;
 };
 
@@ -113,11 +115,7 @@ struct nvm_ioctl_tgt_remove {
 	__u32 flags;
 };
 
-struct nvm_ioctl_beams {
-	__u32 nr_beams;
-};
-
-struct nvm_ioctl_vblock_prop {
+struct nvm_ioctl_lun_info {
 	// TODO
 };
 
@@ -143,11 +141,8 @@ enum {
 	NVM_DEV_REMOVE_TGT_CMD,
 
 	/* target level cmds */
-	NVM_TGT_GET_BEAMS_CMD, //todo
 	NVM_TGT_GET_INFO_CMD, //todo
-
-	/* beam level cmds */
-	NVM_BEAM_GET_BLK_PROP_CMD, /* TODO: Describe beam to application (QoS) */
+	NVM_LUN_GET_INFO_CMD, /* TODO: Describe lun to application (QoS) */
 
 	/* provisioning cmds */
 	NVM_PR_GET_BLOCK_CMD,
@@ -168,12 +163,10 @@ enum {
 						struct nvm_ioctl_tgt_remove)
 #define NVM_DEV_GET_INFO	_IOR(NVM_IOCTL, NVM_DEV_GET_INFO_CMD, \
 						struct nvm_ioctl_dev_info)
-#define NVM_TGT_GET_BEAMS	_IOR(NVM_IOCTL, NVM_TGT_GET_BEAMS_CMD, \
-						struct nvm_ioctl_beams)
 #define NVM_TGT_GET_INFO	_IOW(NVM_IOCTL, NVM_TGT_GET_INFO_CMD, \
 						struct nvm_ioctl_tgt_info)
-#define NVM_BEAM_GET_BLK_PROP	_IOR(NVM_IOCTL, NVM_BEAM_GET_BLK_PROP_CMD, \
-						struct nvm_ioctl_vblock_prop)
+#define NVM_LUN_GET_INFO	_IOR(NVM_IOCTL, NVM_LUN_GET_INFO_CMD, \
+						struct nvm_ioctl_lun_info)
 #define NVM_PR_GET_BLOCK	_IOWR(NVM_IOCTL, NVM_PR_GET_BLOCK_CMD, \
 						struct nvm_ioctl_vblock)
 #define NVM_PR_GET_BLOCK_INFO	_IOWR(NVM_IOCTL, NVM_PR_GET_BLOCK_INFO_CMD, \

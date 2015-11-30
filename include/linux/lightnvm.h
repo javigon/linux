@@ -434,6 +434,16 @@ static inline unsigned int nvm_dev_page_size(struct nvm_dev *dev)
 	return (unsigned int)(dev->sec_per_pg * dev->sec_size);
 }
 
+static inline unsigned int nvm_dev_nr_planes(struct nvm_dev *dev)
+{
+	return (1 << dev->plane_mode);
+}
+
+static inline unsigned int nvm_dev_nr_luns(struct nvm_dev *dev)
+{
+	return (unsigned int)(dev->nr_luns);
+}
+
 static inline unsigned int nvm_dev_max_sectors(struct nvm_dev *dev)
 {
 	return (unsigned int)dev->ops->max_phys_sect;

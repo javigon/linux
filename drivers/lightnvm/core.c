@@ -830,6 +830,8 @@ static long nvm_ioctl_dev_get_info(struct file *file, void __user *arg)
 	}
 
 	dev_info.prop.page_size = nvm_dev_page_size(dev);
+	dev_info.prop.nr_planes = nvm_dev_nr_planes(dev);
+	dev_info.prop.nr_luns  = nvm_dev_nr_luns(dev);
 	dev_info.prop.max_io_size = nvm_dev_max_sectors(dev);
 
 	if (copy_to_user(arg, &dev_info, sizeof(struct nvm_ioctl_dev_info)))
