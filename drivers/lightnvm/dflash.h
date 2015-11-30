@@ -37,16 +37,6 @@
 
 #define NR_PHY_IN_LOG (dflash_EXPOSED_PAGE_SIZE / dflash_SECTOR)
 
-struct vblock {
-	uint64_t id;
-	sector_t bppa;
-	uint32_t vlun_id;
-	uint32_t owner_id;
-	uint32_t nppas;
-	uint16_t ppa_bitmap;
-	uint16_t flags;
-};
-
 struct dflash_lun;
 
 struct dflash {

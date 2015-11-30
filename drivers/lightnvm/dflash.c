@@ -341,7 +341,7 @@ static DEFINE_SPINLOCK(dev_list_lock);
 
 static int dflash_ioctl_get_block(struct dflash *dflash, void __user *arg)
 {
-	struct vblock vblock;
+	struct nvm_ioctl_vblock vblock;
 	struct dflash_lun *dflash_lun;
 	struct nvm_dev *dev = dflash->dev;
 	struct nvm_lun *lun;
@@ -381,7 +381,7 @@ static int dflash_ioctl_get_block(struct dflash *dflash, void __user *arg)
 static int dflash_ioctl_put_block(struct dflash *dflash, void __user *arg)
 {
 	struct nvm_dev *dev = dflash->dev;
-	struct vblock vblock;
+	struct nvm_ioctl_vblock vblock;
 	struct dflash_lun *dflash_lun;
 	struct nvm_block *block;
 	struct nvm_lun *lun;
@@ -408,7 +408,7 @@ static int dflash_ioctl_put_block(struct dflash *dflash, void __user *arg)
 
 static int dflash_ioctl_block_get_info(struct dflash *dflash, void __user *arg)
 {
-	struct vblock vblock;
+	struct nvm_ioctl_vblock vblock;
 	struct dflash_lun *dflash_lun;
 	struct nvm_dev *dev = dflash->dev;
 	struct nvm_lun *lun;
