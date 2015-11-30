@@ -496,6 +496,13 @@ static int nvme_nvm_submit_io(struct nvm_dev *dev, struct nvm_rq *rqd)
 	rq->cmd_len = sizeof(struct nvme_nvm_command);
 	rq->special = (void *)0;
 
+	if (rqd->flags & NVM_IO_F_SYNC) {
+		int err = blk_execute_rq(q, NULL, rq, 0);
+		kfree(cmd);
+		blk_mq_free_request(rq);
+		return err;
+	}
+
 	rq->end_io_data = rqd;
 
 	blk_execute_rq_nowait(q, NULL, rq, 0, nvme_nvm_end_io);

@@ -61,6 +61,9 @@ enum {
 	NVM_BLK_T_GRWN_BAD	= 0x2,
 	NVM_BLK_T_DEV		= 0x4,
 	NVM_BLK_T_HOST		= 0x8,
+
+	/* NVM Request Flags */
+	NVM_IO_F_SYNC		= 0x1,
 };
 
 struct nvm_id_group {
