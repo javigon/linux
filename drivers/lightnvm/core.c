@@ -288,6 +288,37 @@ int nvm_erase_ppa(struct nvm_dev *dev, struct ppa_addr ppa)
 }
 EXPORT_SYMBOL(nvm_erase_ppa);
 
+int nvm_submit_ppa(struct nvm_dev *dev, struct ppa_addr ppa, int opcode,
+							void *buf, int len)
+{
+	struct nvm_rq rqd;
+	struct bio *bio;
+	int ret;
+
+	bio = bio_map_kern(dev->q, buf, len, GFP_KERNEL);
+	if (IS_ERR_OR_NULL(bio))
+		return -ENOMEM;
+
+	memset(&rqd, 0, sizeof(struct nvm_rq));
+	ret = nvm_set_rqd_ppalist(dev, &rqd, &ppa, 1);
+	if (ret) {
+		bio_put(bio);
+		return ret;
+	}
+
+	rqd.opcode = opcode;
+	rqd.flags = NVM_IO_F_SYNC;
+	rqd.bio = bio;
+	nvm_generic_to_addr_mode(dev, &rqd);
+
+	ret = dev->ops->submit_io(dev, &rqd);
+
+	nvm_free_rqd_ppalist(dev, &rqd);
+
+	return ret;
+}
+EXPORT_SYMBOL(nvm_submit_ppa);
+
 static int nvm_core_init(struct nvm_dev *dev)
 {
 	struct nvm_id *id = &dev->identity;

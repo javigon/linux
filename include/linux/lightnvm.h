@@ -438,6 +438,7 @@ extern int nvm_set_rqd_ppalist(struct nvm_dev *, struct nvm_rq *,
 extern void nvm_free_rqd_ppalist(struct nvm_dev *, struct nvm_rq *);
 extern int nvm_erase_ppa(struct nvm_dev *, struct ppa_addr);
 extern int nvm_erase_blk(struct nvm_dev *, struct nvm_block *);
+extern int nvm_submit_ppa(struct nvm_dev *, struct ppa_addr, int, void *, int);
 #else /* CONFIG_NVM */
 struct nvm_dev_ops;
 
