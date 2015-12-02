@@ -341,19 +341,37 @@ static DEFINE_SPINLOCK(dev_list_lock);
 
 static int dflash_ioctl_get_block(struct dflash *dflash, void __user *arg)
 {
-	struct nvm_ioctl_vblock vblock;
+	struct nvm_ioctl_provisioning prov = {
+		.vblock = NULL,
+		.lun_status = NULL,
+	};
+	struct nvm_ioctl_vblock *vblock;
+	struct nvm_ioctl_lun_status *lun_status;
 	struct dflash_lun *dflash_lun;
 	struct nvm_dev *dev = dflash->dev;
 	struct nvm_lun *lun;
 	struct nvm_block *block;
+	int lun_id;
 
-	if (copy_from_user(&vblock, arg, sizeof(vblock)))
+	if (copy_from_user(&prov, arg, sizeof(prov)))
 		return -EFAULT;
 
-	if (vblock.vlun_id >= dflash->nr_luns)
+	if (!(prov.flags & NVM_PROV_SPEC_LUN) &&
+					!(prov.flags & NVM_PROV_RAND_LUN))
 		return -EINVAL;
 
-	dflash_lun = &dflash->luns[vblock.vlun_id];
+	vblock = prov.vblock;
+	lun_status = prov.lun_status;
+
+	if (prov.flags & NVM_PROV_SPEC_LUN) {
+		if (vblock->vlun_id >= dflash->nr_luns)
+			return -EINVAL;
+	} else {
+		lun_id = 0; //TODO: Implement function to choose lun
+		vblock->vlun_id = 0;
+	}
+
+	dflash_lun = &dflash->luns[lun_id];
 	lun = dflash_lun->parent;
 
 	block = nvm_get_blk(dflash->dev, dflash_lun->parent, 0);
@@ -364,22 +382,22 @@ static int dflash_ioctl_get_block(struct dflash *dflash, void __user *arg)
 	//internal ids?
 	dflash_lun->nr_free_blocks--;
 
-	vblock.id = block->id;  //Blocks have a global id
-	vblock.bppa = dev->sec_per_blk * vblock.id;
-	vblock.nppas = dev->pgs_per_blk * dev->sec_per_pg;
-	vblock.ppa_bitmap = 0x0; //To be used
+	vblock->id = block->id;  //Blocks have a global id
+	vblock->bppa = dev->sec_per_blk * vblock->id;
+	vblock->nppas = dev->pgs_per_blk * dev->sec_per_pg;
+	vblock->ppa_bitmap = 0x0; //To be used
 
-	if (vblock.flags & NVM_VBLOCK_RETURN_META) {
+	if (prov.flags & NVM_PROV_LUN_STATE) {
 		spin_lock(&lun->lock);
-		vblock.prov.nr_free_blocks = lun->nr_free_blocks;
-		vblock.prov.nr_inuse_blocks = lun->nr_inuse_blocks;
-		vblock.prov.nr_bad_blocks = lun->nr_bad_blocks;
+		lun_status->nr_free_blocks = lun->nr_free_blocks;
+		lun_status->nr_inuse_blocks = lun->nr_inuse_blocks;
+		lun_status->nr_bad_blocks = lun->nr_bad_blocks;
 		spin_unlock(&lun->lock);
 	}
 
 	nvm_erase_blk(dflash->dev, block);
 
-	if (copy_to_user(arg, &vblock, sizeof(vblock)))
+	if (copy_to_user(arg, &prov, sizeof(prov)))
 		return -EFAULT;
 
 	return 0;
@@ -387,25 +405,41 @@ static int dflash_ioctl_get_block(struct dflash *dflash, void __user *arg)
 
 static int dflash_ioctl_put_block(struct dflash *dflash, void __user *arg)
 {
+	struct nvm_ioctl_provisioning prov = {
+		.vblock = NULL,
+		.lun_status = NULL,
+	};
+	struct nvm_ioctl_vblock *vblock;
+	struct nvm_ioctl_lun_status *lun_status;
 	struct nvm_dev *dev = dflash->dev;
-	struct nvm_ioctl_vblock vblock;
 	struct dflash_lun *dflash_lun;
 	struct nvm_block *block;
 	struct nvm_lun *lun;
 
-	if (copy_from_user(&vblock, arg, sizeof(vblock)))
+	if (copy_from_user(&prov, arg, sizeof(prov)))
 		return -EFAULT;
 
-	if (vblock.vlun_id >= dflash->nr_luns)
+	vblock = prov.vblock;
+	lun_status = prov.lun_status;
+
+	if (vblock->vlun_id >= dflash->nr_luns)
 		return -EINVAL;
 
-	dflash_lun = &dflash->luns[vblock.vlun_id];
+	dflash_lun = &dflash->luns[vblock->vlun_id];
 	lun = dflash_lun->parent;
-	if (vblock.id <= (lun->id * dev->blks_per_lun) ||
-				vblock.id > ((lun->id + 1) * dev->blks_per_lun))
+	if (vblock->id <= (lun->id * dev->blks_per_lun) ||
+				vblock->id > ((lun->id + 1) * dev->blks_per_lun))
 		return -EINVAL;
 
-	block = &lun->blocks[vblock.id % dev->blks_per_lun];
+	block = &lun->blocks[vblock->id % dev->blks_per_lun];
+
+	if (prov.flags & NVM_PROV_LUN_STATE) {
+		spin_lock(&lun->lock);
+		lun_status->nr_free_blocks = lun->nr_free_blocks;
+		lun_status->nr_inuse_blocks = lun->nr_inuse_blocks;
+		lun_status->nr_bad_blocks = lun->nr_bad_blocks;
+		spin_unlock(&lun->lock);
+	}
 
 	nvm_put_blk(dev, block);
 	dflash_lun->nr_free_blocks++;
@@ -415,31 +449,47 @@ static int dflash_ioctl_put_block(struct dflash *dflash, void __user *arg)
 
 static int dflash_ioctl_block_get_info(struct dflash *dflash, void __user *arg)
 {
-	struct nvm_ioctl_vblock vblock;
+	struct nvm_ioctl_provisioning prov = {
+		.vblock = NULL,
+		.lun_status = NULL,
+	};
+	struct nvm_ioctl_vblock *vblock;
+	struct nvm_ioctl_lun_status *lun_status;
 	struct dflash_lun *dflash_lun;
 	struct nvm_dev *dev = dflash->dev;
 	struct nvm_lun *lun;
 	struct nvm_block *block;
 
-	if (copy_from_user(&vblock, arg, sizeof(vblock)))
+	if (copy_from_user(&prov, arg, sizeof(prov)))
 		return -EFAULT;
 
-	if (vblock.vlun_id >= dflash->nr_luns)
+	vblock = prov.vblock;
+	lun_status = prov.lun_status;
+
+	if (vblock->vlun_id >= dflash->nr_luns)
 		return -EINVAL;
 
-	dflash_lun = &dflash->luns[vblock.vlun_id];
+	dflash_lun = &dflash->luns[vblock->vlun_id];
 	lun = dflash_lun->parent;
-	if (vblock.id >= lun->nr_free_blocks)
+	if (vblock->id >= lun->nr_free_blocks)
 		return -EINVAL;
 
-	block = &lun->blocks[vblock.id];
-	vblock.id = block->id;
-	vblock.bppa = dev->sec_per_blk * vblock.id;
-	vblock.nppas = dev->pgs_per_blk * dev->sec_per_pg;
-	vblock.ppa_bitmap = 0x0; //To be used
-	vblock.flags = 0x0; //To be used
+	block = &lun->blocks[vblock->id];
+	vblock->id = block->id;
+	vblock->bppa = dev->sec_per_blk * vblock->id;
+	vblock->nppas = dev->pgs_per_blk * dev->sec_per_pg;
+	vblock->ppa_bitmap = 0x0; //To be used
+	vblock->flags = 0x0; //To be used
 
-	if (copy_to_user(arg, &vblock, sizeof(vblock)))
+	if (prov.flags & NVM_PROV_LUN_STATE) {
+		spin_lock(&lun->lock);
+		lun_status->nr_free_blocks = lun->nr_free_blocks;
+		lun_status->nr_inuse_blocks = lun->nr_inuse_blocks;
+		lun_status->nr_bad_blocks = lun->nr_bad_blocks;
+		spin_unlock(&lun->lock);
+	}
+
+	if (copy_to_user(arg, &prov, sizeof(prov)))
 		return -EFAULT;
 
 	return 0;
