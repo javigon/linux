@@ -19,8 +19,9 @@
 
 #include <linux/lightnvm.h>
 
-#define MAX_HOST_BLKS 8
-#define MAX_SYSBLKS 3 /* remember to update mapping scheme if changing */
+#define MAX_SYSBLKS 3	/* remember to update mapping scheme on change */
+#define MAX_HOST_BLKS 8	/* 8 blks with 256 pages and 3000 erases enable ~6M
+			 * updates */
 
 struct sysblk_scan {
 	int nr_ppas;
@@ -42,8 +43,6 @@ static int sysblk_get_host_blks(struct ppa_addr ppa, int nr_blks, u8 *blks,
 			return -EINVAL;
 		}
 		ppa.g.blk = i;
-
-		printk("found blk: %llu\n", ppa.ppa);
 
 		sysblks->ppas[sysblks->nr_ppas].ppa = ppa.ppa;
 		sysblks->nr_ppas++;
@@ -89,10 +88,10 @@ static int nvm_find_all_sysblocks(struct nvm_dev *dev,
 int nvm_get_sysblock(struct nvm_dev *dev, struct nvm_sysblk *sblk)
 {
 	struct sysblk_scan sysblks;
-	struct nvm_sysblk *sblkcur;
-	int i, pg, sblksz, found;
-	int ret = 0;
-	void *sblkbuf;
+	struct nvm_sysblk *cur;
+	int i, pg, bufsz, found;
+	int ret = -ENOMEM;
+	void *buf;
 
 	/* 1. get bad block list
 	 * 2. filter on host-specific (type 3)
@@ -103,15 +102,20 @@ int nvm_get_sysblock(struct nvm_dev *dev, struct nvm_sysblk *sblk)
 	if (!dev->ops->get_bb_tbl)
 		return -EINVAL;
 
+	mutex_lock(&dev->mlock);
+
 	ret = nvm_find_all_sysblocks(dev, &sysblks);
 	if (ret)
-		return ret;
+		goto err_sysblk;
 
-	sblksz = dev->sec_size * dev->sec_per_pg * dev->nr_planes;
-	sblkbuf = kzalloc(sblksz + sizeof(struct nvm_sysblk), GFP_KERNEL);
-	if (!sblkbuf)
-		return -ENOMEM;
-	sblkcur = sblkbuf + sblksz;
+	bufsz = dev->sec_size * dev->sec_per_pg * dev->nr_planes;
+	buf = kmalloc(bufsz + sizeof(struct nvm_sysblk), GFP_KERNEL);
+	if (!buf)
+		goto err_sysblk;
+
+	cur = kzalloc(sizeof(struct nvm_sysblk), GFP_KERNEL);
+	if (!cur)
+		goto err_cur;
 
 	for (i = 0; i < sysblks.nr_ppas; i++) {
 		struct ppa_addr ppa = sysblks.ppas[i];
@@ -119,26 +123,30 @@ int nvm_get_sysblock(struct nvm_dev *dev, struct nvm_sysblk *sblk)
 		/* perform linear scan through the block */
 		for (pg = 0; pg < dev->pgs_per_blk; pg++) {
 			ppa.g.pg = pg;
-			ret = nvm_submit_ppa(dev, ppa, NVM_OP_PREAD, sblkbuf,
-									sblksz);
-			if (ret) {
+
+			ret = nvm_submit_ppa(dev, ppa, NVM_OP_PREAD, buf,
+									bufsz);
+			if (ret)
 				break; /* if we can't read it, continue to the
 					* next blk */
-			}
 
-			memcpy(sblkcur, sblkbuf, sizeof(struct nvm_sysblk));
+			memcpy(cur, buf, sizeof(struct nvm_sysblk));
 
-			if (strcmp(sblkcur->header, "SYSBLOCK") != 0)
+			if (strncmp(cur->header, "SYSBLOCK", 8) != 0)
 				break; /* last valid page already iterated */
 
-			if (sblkcur->seqnr > sblk->seqnr)
-				memcpy(sblk, sblkcur,
-						sizeof(struct nvm_sysblk));
+			if (cur->seqnr > sblk->seqnr)
+				memcpy(sblk, cur, sizeof(struct nvm_sysblk));
 
-			printk("wooo\n");
 			found = 1;
 		}
 	}
+
+	kfree(cur);
+err_cur:
+	kfree(buf);
+err_sysblk:
+	mutex_unlock(&dev->mlock);
 
 	if (found)
 		return 0;
@@ -174,7 +182,7 @@ static int nvm_place_sysblks(struct nvm_dev *dev, struct ppa_addr *sysblk_ppa)
 	switch (dev->nr_chnls) {
 		case 2:
 			sysblk_ppa[1].g.ch = 1;
-			/* fallthrough */
+			/* fall-through */
 		case 1:
 			sysblk_ppa[0].g.ch = 0;
 			break;
@@ -214,8 +222,8 @@ int nvm_init_sysblock(struct nvm_dev *dev, struct nvm_sysblk *sblk)
 {
 	struct ppa_addr sysblk_ppa[MAX_SYSBLKS];
 	struct nvm_rq rqd;
-	void *sblkbuf;
-	int i, ret, sblksz;
+	void *buf;
+	int i, ret, bufsz;
 	int nr_sysblks;
 	int success = 0;
 
@@ -228,11 +236,13 @@ int nvm_init_sysblock(struct nvm_dev *dev, struct nvm_sysblk *sblk)
 	if (!dev->ops->get_bb_tbl)
 		return -EINVAL;
 
-	sblksz = dev->sec_size * dev->sec_per_pg * dev->nr_planes;
-	sblkbuf = kzalloc(sblksz, GFP_KERNEL);
-	if (!sblkbuf)
-		return -ENOMEM;
-	memcpy(sblkbuf, sblk, sizeof(struct nvm_sysblk));
+	mutex_lock(&dev->mlock);
+
+	bufsz = dev->sec_size * dev->sec_per_pg * dev->nr_planes;
+	buf = kzalloc(bufsz, GFP_KERNEL);
+	if (!buf)
+		goto err_buf;
+	memcpy(buf, sblk, sizeof(struct nvm_sysblk));
 
 	nr_sysblks = nvm_place_sysblks(dev, sysblk_ppa);
 
@@ -261,8 +271,8 @@ int nvm_init_sysblock(struct nvm_dev *dev, struct nvm_sysblk *sblk)
 		}
 
 		/* write system block */
-		ret = nvm_submit_ppa(dev, sysblk_ppa[i], NVM_OP_PWRITE, sblkbuf,
-									sblksz);
+		ret = nvm_submit_ppa(dev, sysblk_ppa[i], NVM_OP_PWRITE, buf,
+									bufsz);
 		if (ret) {
 			pr_err("nvm: sysblk failed program [ch%u lun%u blk%u]\n",
 						sysblk_ppa[i].g.ch,
@@ -272,8 +282,8 @@ int nvm_init_sysblock(struct nvm_dev *dev, struct nvm_sysblk *sblk)
 		}
 
 		/* verify system block */
-		ret = nvm_submit_ppa(dev, sysblk_ppa[i], NVM_OP_PREAD,
-							sblkbuf, sblksz);
+		ret = nvm_submit_ppa(dev, sysblk_ppa[i], NVM_OP_PREAD, buf,
+									bufsz);
 		if (ret) {
 			pr_err("nvm: sysblk failed read [ch%u lun%u blk%u]\n",
 						sysblk_ppa[i].g.ch,
@@ -282,7 +292,7 @@ int nvm_init_sysblock(struct nvm_dev *dev, struct nvm_sysblk *sblk)
 			break;
 		}
 
-		if (memcmp(sblkbuf, sblk, sizeof(struct nvm_sysblk))) {
+		if (memcmp(buf, sblk, sizeof(struct nvm_sysblk))) {
 			pr_err("nvm: sysblk failed read [ch%u lun%u blk%u]\n",
 						sysblk_ppa[i].g.ch,
 						sysblk_ppa[i].g.lun,
@@ -309,6 +319,8 @@ int nvm_init_sysblock(struct nvm_dev *dev, struct nvm_sysblk *sblk)
 		}
 	}
 
-	kfree(sblkbuf);
+	kfree(buf);
+err_buf:
+	mutex_unlock(&dev->mlock);
 	return ret;
 }

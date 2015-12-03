@@ -283,6 +283,8 @@ struct nvm_dev {
 	/* Backend device */
 	struct request_queue *q;
 	char name[DISK_NAME_LEN];
+
+	struct mutex mlock;
 };
 
 static inline struct ppa_addr generic_to_dev_addr(struct nvm_dev *dev,
