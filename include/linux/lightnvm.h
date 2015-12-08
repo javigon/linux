@@ -443,20 +443,31 @@ extern int nvm_submit_ppa(struct nvm_dev *, struct ppa_addr, int, void *, int);
 
 /* sysblk.c */
 #define NVM_HDR_SIZE 8
-/* on disk representation */
-struct nvm_sysblk {
-	__u8		header[NVM_HDR_SIZE];
-	__u64		seqnr;
-	__u8		version;
-	__u8		mmtype;
-	__u16		erase_cnt;
-	__u8		resvd[4];
-	__u64		fs_ppa;
+#define NVM_SYSBLK_MAGIC 0x4E564D53 /* "NVMS" */
+
+/* system block on disk representation */
+struct nvm_system_block {
+	__be32			magic;		/* magic signature */
+	__be32			seqnr;		/* sequence number */
+	__be32			erase_cnt;	/* erase count */
+	__be16			version;	/* version number */
+	__be16			mmtype;		/* media manager type */
+	__be64			fs_ppa;		/* PPA for media manager
+						 * superblock */
 };
 
-extern int nvm_get_sysblock(struct nvm_dev *, struct nvm_sysblk *);
-extern int nvm_update_sysblock(struct nvm_dev *, struct nvm_sysblk *);
-extern int nvm_init_sysblock(struct nvm_dev *, struct nvm_sysblk *);
+/* system block cpu representation */
+struct nvm_sb_info {
+	unsigned long		seqnr;
+	unsigned long		erase_cnt;
+	unsigned int		version;
+	unsigned int		mmtype;
+	struct ppa_addr		fs_ppa;
+};
+
+extern int nvm_get_sysblock(struct nvm_dev *, struct nvm_sb_info *);
+extern int nvm_update_sysblock(struct nvm_dev *, struct nvm_sb_info *);
+extern int nvm_init_sysblock(struct nvm_dev *, struct nvm_sb_info *);
 #else /* CONFIG_NVM */
 struct nvm_dev_ops;
 

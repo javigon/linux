@@ -24,16 +24,36 @@
 			      * enables ~1.5M updates per sysblk unit */
 
 struct sysblk_scan {
-	int nr_rows;
-	int nr_ppas;
 	/* A row is a collection of flash blocks for a system block. */
+	int nr_rows;
 	int row;
+
+	int nr_ppas;
 	struct ppa_addr ppas[MAX_SYSBLKS * MAX_BLKS_PR_SYSBLK];/* all sysblks */
 };
 
 static inline int scan_ppa_idx(struct sysblk_scan *s, int row, int blkid)
 {
 	return (row * s->nr_rows) + blkid;
+}
+
+void nvm_sysblk_to_cpu(struct nvm_sb_info *info, struct nvm_system_block *sb)
+{
+	info->seqnr = be32_to_cpu(sb->seqnr);
+	info->erase_cnt = be32_to_cpu(sb->erase_cnt);
+	info->version = be16_to_cpu(sb->version);
+	info->mmtype = be16_to_cpu(sb->mmtype);
+	info->fs_ppa.ppa = be64_to_cpu(sb->fs_ppa);
+}
+
+void nvm_cpu_to_sysblk(struct nvm_system_block *sb, struct nvm_sb_info *info)
+{
+	sb->magic = cpu_to_be32(NVM_SYSBLK_MAGIC);
+	sb->seqnr = cpu_to_be32(info->seqnr);
+	sb->erase_cnt = cpu_to_be32(info->erase_cnt);
+	sb->version = cpu_to_be16(info->version);
+	sb->mmtype = cpu_to_be16(info->mmtype);
+	sb->fs_ppa = cpu_to_be64(info->fs_ppa.ppa);
 }
 
 static int nvm_setup_sysblks(struct nvm_dev *dev, struct ppa_addr *sysblk_ppa)
@@ -80,7 +100,7 @@ static int sysblk_get_host_blks(struct ppa_addr ppa, int nr_blks, u8 *blks,
 
 		ppa.g.blk = i;
 
-		s->ppas[scan_ppa_idx(s, s->row, nr_sysblk)].ppa = ppa.ppa;
+		s->ppas[scan_ppa_idx(s, s->row, nr_sysblk)] = ppa;
 		s->nr_ppas++;
 		nr_sysblk++;
 	}
@@ -88,25 +108,24 @@ static int sysblk_get_host_blks(struct ppa_addr ppa, int nr_blks, u8 *blks,
 	return 0;
 }
 
-static int nvm_get_all_sysblks(struct nvm_dev *dev, struct ppa_addr *ppas,
-				int nr_ppas, struct sysblk_scan *s)
+static int nvm_get_all_sysblks(struct nvm_dev *dev, struct sysblk_scan *s,
+						struct ppa_addr *row_ppas)
 {
 	struct ppa_addr dev_ppa;
 	int i, ret;
 
 	s->nr_ppas = 0;
-	s->nr_rows = nr_ppas;
 
-	for (i = 0; i < nr_ppas; i++) {
-		dev_ppa = generic_to_dev_addr(dev, ppas[i]);
+	for (i = 0; i < s->nr_rows; i++) {
+		dev_ppa = generic_to_dev_addr(dev, row_ppas[i]);
 		s->row = i;
 
 		ret = dev->ops->get_bb_tbl(dev, dev_ppa, dev->blks_per_lun,
 						sysblk_get_host_blks, s);
 		if (ret) {
 			pr_err("nvm: failed bb tbl for ch%u lun%u\n",
-								ppas[i].g.ch,
-								ppas[i].g.blk);
+							row_ppas[i].g.ch,
+							row_ppas[i].g.blk);
 			return ret;
 		}
 	}
@@ -123,9 +142,9 @@ static int nvm_get_all_sysblks(struct nvm_dev *dev, struct ppa_addr *ppas,
  *	<0- error.
  */
 static int nvm_scan_block(struct nvm_dev *dev, struct ppa_addr *ppa,
-							struct nvm_sysblk *sblk)
+						struct nvm_system_block *sblk)
 {
-	struct nvm_sysblk *cur;
+	struct nvm_system_block *cur;
 	int pg, cursz, ret, found = 0;
 
 	/* the full buffer for a flash page is allocated. Only the first of it
@@ -144,11 +163,11 @@ static int nvm_scan_block(struct nvm_dev *dev, struct ppa_addr *ppa,
 			break; /* if we can't read it, continue to the
 				* next blk */
 
-		if (strncmp(cur->header, "SYSBLOCK", 8) != 0)
-			break; /* last valid page already iterated */
+		if (be32_to_cpu(cur->magic) != NVM_SYSBLK_MAGIC)
+			break; /* last valid page already found */
 
-		if (cur->seqnr > sblk->seqnr)
-			memcpy(sblk, cur, sizeof(struct nvm_sysblk));
+		if (be32_to_cpu(cur->seqnr) > be32_to_cpu(sblk->seqnr))
+			memcpy(sblk, cur, sizeof(struct nvm_system_block));
 
 		found = 1;
 	}
@@ -158,36 +177,38 @@ static int nvm_scan_block(struct nvm_dev *dev, struct ppa_addr *ppa,
 	return found;
 }
 
-int nvm_get_sysblock(struct nvm_dev *dev, struct nvm_sysblk *sblk)
+int nvm_get_sysblock(struct nvm_dev *dev, struct nvm_sb_info *info)
 {
 	struct ppa_addr sysblk_ppa[MAX_SYSBLKS];
 	struct sysblk_scan s;
-	struct nvm_sysblk *cur;
-	int i, j, rows, found;
+	struct nvm_system_block *cur;
+	int i, j, found = 0;
 	int ret = -ENOMEM;
 
-	/* 1. get bad block list
-	 * 2. filter on host-specific (type 3)
-	 * 3. iterate through all and find the highest seq nr.
-	 * 4. return superblock information
+	/*
+	 * 1. setup sysblk locations
+	 * 2. get bad block list
+	 * 3. filter on host-specific (type 3)
+	 * 4. iterate through all and find the highest seq nr.
+	 * 5. return superblock information
 	 */
 
 	if (!dev->ops->get_bb_tbl)
 		return -EINVAL;
 
-	rows = nvm_setup_sysblks(dev, sysblk_ppa);
+	s.nr_rows = nvm_setup_sysblks(dev, sysblk_ppa);
 
 	mutex_lock(&dev->mlock);
-	ret = nvm_get_all_sysblks(dev, sysblk_ppa, rows, &s);
+	ret = nvm_get_all_sysblks(dev, &s, sysblk_ppa);
 	if (ret)
 		goto err_sysblk;
 
-	cur = kzalloc(sizeof(struct nvm_sysblk), GFP_KERNEL);
+	cur = kzalloc(sizeof(struct nvm_system_block), GFP_KERNEL);
 	if (!cur)
 		goto err_sysblk;
 
 	/* find the latest block across all sysblocks */
-	for (i = 0; i < MAX_SYSBLKS; i++) {
+	for (i = 0; i < s.nr_rows; i++) {
 		for (j = 0; j < MAX_BLKS_PR_SYSBLK; j++) {
 			struct ppa_addr ppa = s.ppas[scan_ppa_idx(&s, i, j)];
 
@@ -199,16 +220,17 @@ int nvm_get_sysblock(struct nvm_dev *dev, struct nvm_sysblk *sblk)
 		}
 	}
 
+	nvm_sysblk_to_cpu(info, cur);
 	kfree(cur);
 err_sysblk:
 	mutex_unlock(&dev->mlock);
 
 	if (found)
-		return 0;
+		return 1;
 	return ret;
 }
 
-int nvm_update_sysblock(struct nvm_dev *dev, struct nvm_sysblk *new)
+int nvm_update_sysblock(struct nvm_dev *dev, struct nvm_sb_info *new)
 {
 	/* 1. for each latest superblock on lun0, lun1/2, lunX
 	 * 2. if room
@@ -223,21 +245,22 @@ int nvm_update_sysblock(struct nvm_dev *dev, struct nvm_sysblk *new)
 	 */
 	struct ppa_addr sysblk_ppa[MAX_SYSBLKS];
 	struct sysblk_scan s;
-	struct nvm_sysblk *cur;
-	int i, j, found, rows;
+	struct nvm_system_block *cur;
+	int i, j, found;
 	int ret = -ENOMEM;
 
 	if (!dev->ops->get_bb_tbl)
 		return -EINVAL;
 
-	rows = nvm_setup_sysblks(dev, sysblk_ppa);
+	s.nr_rows = nvm_setup_sysblks(dev, sysblk_ppa);
 
 	mutex_lock(&dev->mlock);
-	ret = nvm_get_all_sysblks(dev, sysblk_ppa, rows, &s);
+	ret = nvm_get_all_sysblks(dev, &s, sysblk_ppa);
 	if (ret)
 		goto err_sysblk;
 
-	cur = kzalloc(sizeof(struct nvm_sysblk) * MAX_SYSBLKS, GFP_KERNEL);
+	cur = kzalloc(sizeof(struct nvm_system_block) * MAX_SYSBLKS,
+								GFP_KERNEL);
 	if (!cur)
 		goto err_sysblk;
 
@@ -324,21 +347,19 @@ static int sysblk_get_free_blks(struct ppa_addr ppa, int nr_blks, u8 *blks,
 	return -EINVAL;
 }
 
-static int nvm_mark_all_sysblks(struct nvm_dev *dev, struct ppa_addr *ppas,
-								int nr_ppas)
+static int nvm_mark_all_sysblks(struct nvm_dev *dev, struct sysblk_scan *s,
+							struct ppa_addr *ppas)
 {
 	struct nvm_rq rqd;
 	struct ppa_addr dev_ppa;
-	struct sysblk_scan s;
-
 	int i, ret;
 
-	for (i = 0; i < nr_ppas; i++) {
+	for (i = 0; i < s->nr_rows; i++) {
 		dev_ppa = generic_to_dev_addr(dev, ppas[i]);
 
-		s.row = i;
+		s->row = i;
 		ret = dev->ops->get_bb_tbl(dev, dev_ppa, dev->blks_per_lun,
-						sysblk_get_free_blks, &s);
+						sysblk_get_free_blks, s);
 		if (ret) {
 			pr_err("nvm: sysblk failed bb tbl for ch%u lun%u\n",
 								ppas[i].g.ch,
@@ -347,15 +368,15 @@ static int nvm_mark_all_sysblks(struct nvm_dev *dev, struct ppa_addr *ppas,
 		}
 	}
 
-	if (s.nr_ppas > dev->ops->max_phys_sect) {
+	if (s->nr_ppas > dev->ops->max_phys_sect) {
 		pr_err("nvm: unable to update all sysblocks atomically\n");
 		return -EINVAL;
 	}
 
 	memset(&rqd, 0, sizeof(struct nvm_rq));
 
-	/* FIXME: Make a ppa list to be sent off to the device */
-	nvm_set_rqd_ppalist(dev, &rqd, s.ppas, s.nr_ppas);
+	nvm_set_rqd_ppalist(dev, &rqd, s->ppas, s->nr_ppas);
+	nvm_generic_to_addr_mode(dev, &rqd);
 
 	ret = dev->ops->set_bb_tbl(dev->q, &rqd, NVM_BLK_T_HOST);
 	nvm_free_rqd_ppalist(dev, &rqd);
@@ -367,43 +388,48 @@ static int nvm_mark_all_sysblks(struct nvm_dev *dev, struct ppa_addr *ppas,
 	return 0;
 }
 
-int nvm_init_sysblock(struct nvm_dev *dev, struct nvm_sysblk *sblk)
+int nvm_init_sysblock(struct nvm_dev *dev, struct nvm_sb_info *info)
 {
 	struct ppa_addr sysblk_ppa[MAX_SYSBLKS];
 	struct sysblk_scan s;
+	struct nvm_system_block nvmsb;
 	void *buf;
 	int i, ret, bufsz;
-	int rows;
 
-	/* 1. get bad block list
-	 * 2. select master block from lun0, lun1/2, lunX -> first available blk
-	 *    a. write data to block
-	 *    b. mark block type host-based device 
+	/*
+	 * 1. select master block from lun0, lun1/2, lunX -> first available blk
+	 * 2. get bad block list
+	 * 3. mark MAX_SYSBLKS block as host-based device allocated.
+	 * 4. write and verify data to block
 	 */
 
 	if (!dev->ops->get_bb_tbl)
 		return -EINVAL;
 
+	nvm_cpu_to_sysblk(&nvmsb, info);
+
+	/* buffer for flash page */
 	bufsz = dev->sec_size * dev->sec_per_pg * dev->nr_planes;
 	buf = kmalloc(bufsz, GFP_KERNEL);
 	if (!buf)
 		return -ENOMEM;
-	memcpy(buf, sblk, sizeof(struct nvm_sysblk));
+	memcpy(buf, &nvmsb, sizeof(struct nvm_system_block));
 
-	rows = nvm_setup_sysblks(dev, sysblk_ppa);
+	memset(&s, 0, sizeof(struct sysblk_scan));
+	s.nr_rows = nvm_setup_sysblks(dev, sysblk_ppa);
 
 	mutex_lock(&dev->mlock);
 
-	/* premark all host system blocks */
-	ret = nvm_mark_all_sysblks(dev, sysblk_ppa, rows);
+	/* mark all host system flash blocks */
+	ret = nvm_mark_all_sysblks(dev, &s, sysblk_ppa);
 	if (ret)
 		goto err_mark;
 
 	/* Write and verify */
-	for (i = 0; i < rows; i++) {
+	for (i = 0; i < s.nr_rows; i++) {
 		struct ppa_addr ppa;
 
-		ppa.ppa = s.ppas[scan_ppa_idx(&s, i, 0)].ppa;
+		ppa = s.ppas[scan_ppa_idx(&s, i, 0)];
 		ret = nvm_submit_ppa(dev, ppa, NVM_OP_PWRITE, buf, bufsz);
 		if (ret) {
 			pr_err("nvm: sysblk failed program [ch%u lun%u blk%u]\n",
@@ -422,7 +448,7 @@ int nvm_init_sysblock(struct nvm_dev *dev, struct nvm_sysblk *sblk)
 			break;
 		}
 
-		if (memcmp(buf, sblk, sizeof(struct nvm_sysblk))) {
+		if (memcmp(buf, &nvmsb, sizeof(struct nvm_system_block))) {
 			pr_err("nvm: sysblk failed verify [ch%u lun%u blk%u]\n",
 								ppa.g.ch,
 								ppa.g.lun,
