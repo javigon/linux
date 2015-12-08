@@ -44,18 +44,23 @@ static int dflash_setup_rq(struct dflash *dflash, struct bio *bio,
 	ppa.g.pg = (laddr % dev->sec_per_blk) / (dev->sec_per_pl);
 	ppa.g.sec = laddr % dev->sec_per_pg;
 
+	/* printk("device charac - sec_per_blk:%d,blks_per_lun:%d, " */
+	/* 	"sec_per_pl:%d, sec_per_pg:%d,nr_planes:%d\n", */
+	/* 	dev->sec_per_blk, dev->blks_per_lun, */
+	/* 	dev->sec_per_pl, dev->sec_per_pg, dev->nr_planes); */
+
 	/* the first block of a lun is used internally. */
 	/* also block the last block access on partition scans. */
 	if (ppa.g.blk == 0 || (ppa.g.ch == 15 && ppa.g.blk == 1023))
 		return NVM_IO_DONE;
-/*	if (npages == 1) {
-		printk("addr: %llu[%u]: ch: %u sec: %u pl: %u lun: %u pg: %u blk: %u -> %llu 0x%x\n", 
-				(unsigned long long) ltmp, npages,
-				ppa.g.ch,ppa.g.sec,
-				ppa.g.pl,ppa.g.lun,
-				ppa.g.pg,ppa.g.blk,
-				ppa.ppa,ppa.ppa);
-	}*/
+	/* if (npages == 1) { */
+	/* 	printk("addr: %llu[%u]: ch: %u sec: %u pl: %u lun: %u pg: %u blk: %u -> %llu 0x%x\n", */
+	/* 			(unsigned long long) ltmp, npages, */
+	/* 			ppa.g.ch,ppa.g.sec, */
+	/* 			ppa.g.pl,ppa.g.lun, */
+	/* 			ppa.g.pg,ppa.g.blk, */
+	/* 			ppa.ppa,ppa.ppa); */
+	/* } */
 
 	if (npages > 1) {
 		rqd->ppa_list = nvm_dev_dma_alloc(dflash->dev, GFP_KERNEL,
@@ -70,12 +75,12 @@ static int dflash_setup_rq(struct dflash *dflash, struct bio *bio,
 			ppa.g.sec = ltmp % dev->sec_per_pg;
 			ppa.g.pl = (ltmp % dev->sec_per_pl) / dev->nr_planes;
 			rqd->ppa_list[i] = ppa;
-			/*printk("addr: %llu[%u]: ch: %u sec: %u pl: %u lun: %u pg: %u blk: %u -> %llu 0x%x\n", 
-					(unsigned long long) ltmp, npages,
-					ppa.g.ch,ppa.g.sec,
-					ppa.g.pl,ppa.g.lun,
-					ppa.g.pg,ppa.g.blk,
-					ppa.ppa,ppa.ppa);*/
+			/* printk("addr: %llu[%u]: ch: %u sec: %u pl: %u lun: %u pg: %u blk: %u -> %llu 0x%x\n", */
+			/* 		(unsigned long long) ltmp, npages, */
+			/* 		ppa.g.ch,ppa.g.sec, */
+			/* 		ppa.g.pl,ppa.g.lun, */
+			/* 		ppa.g.pg,ppa.g.blk, */
+			/* 		ppa.ppa,ppa.ppa); */
 			ltmp++;
 			ppa.g.pg = (ltmp % dev->sec_per_blk) / (dev->sec_per_pl);
 		}
