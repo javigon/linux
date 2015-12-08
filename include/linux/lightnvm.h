@@ -449,7 +449,8 @@ struct nvm_sysblk {
 	__u64		seqnr;
 	__u8		version;
 	__u8		mmtype;
-	__u8		resvd[6];
+	__u16		erase_cnt;
+	__u8		resvd[4];
 	__u64		fs_ppa;
 };
 
