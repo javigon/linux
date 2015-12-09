@@ -829,10 +829,14 @@ static long nvm_ioctl_dev_get_info(struct file *file, void __user *arg)
 		sprintf(dev_info.bmname, "none");
 	}
 
-	dev_info.prop.page_size = nvm_dev_page_size(dev);
+	dev_info.prop.sec_size = dev->sec_size;
+	dev_info.prop.sec_per_page = dev->sec_per_pg;
+	dev_info.prop.max_sec_io = nvm_dev_max_sectors(dev);
 	dev_info.prop.nr_planes = nvm_dev_nr_planes(dev);
-	dev_info.prop.nr_luns  = nvm_dev_nr_luns(dev);
-	dev_info.prop.max_io_size = nvm_dev_max_sectors(dev);
+	dev_info.prop.nr_luns  = dev->nr_luns;
+	dev_info.prop.nr_channels = dev->nr_chnls;
+	dev_info.prop.plane_mode = dev->plane_mode;
+	dev_info.prop.oob_size = dev->oob_size;
 
 	if (copy_to_user(arg, &dev_info, sizeof(struct nvm_ioctl_dev_info)))
 		return -EFAULT;
