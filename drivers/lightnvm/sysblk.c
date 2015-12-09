@@ -56,31 +56,38 @@ void nvm_cpu_to_sysblk(struct nvm_system_block *sb, struct nvm_sb_info *info)
 	sb->fs_ppa = cpu_to_be64(info->fs_ppa.ppa);
 }
 
-static int nvm_setup_sysblks(struct nvm_dev *dev, struct ppa_addr *sysblk_ppa)
+static int nvm_setup_sysblks(struct nvm_dev *dev, struct ppa_addr *sysblk_ppas)
 {
 	int nr_rows = min_t(int, MAX_SYSBLKS, dev->nr_chnls);
 	int i;
 
 	for (i = 0; i < nr_rows; i++)
-		sysblk_ppa[i].ppa = 0;
+		sysblk_ppas[i].ppa = 0;
 
 	/* if possible, place sysblk at first channel, middle channel and last
 	 * channel of the device. If not, create only one or two sys blocks */
 	switch (dev->nr_chnls) {
 		case 2:
-			sysblk_ppa[1].g.ch = 1;
+			sysblk_ppas[1].g.ch = 1;
 			/* fall-through */
 		case 1:
-			sysblk_ppa[0].g.ch = 0;
+			sysblk_ppas[0].g.ch = 0;
 			break;
 		default:
-			sysblk_ppa[0].g.ch = 0;
-			sysblk_ppa[1].g.ch = dev->nr_chnls / 2;
-			sysblk_ppa[2].g.ch = dev->nr_chnls - 1;
+			sysblk_ppas[0].g.ch = 0;
+			sysblk_ppas[1].g.ch = dev->nr_chnls / 2;
+			sysblk_ppas[2].g.ch = dev->nr_chnls - 1;
 			break;
 	}
 
 	return nr_rows;
+}
+
+void nvm_setup_sysblk_scan(struct nvm_dev *dev, struct sysblk_scan *s,
+						struct ppa_addr *sysblk_ppas)
+{
+	memset(s, 0, sizeof(struct sysblk_scan));
+	s->nr_rows = nvm_setup_sysblks(dev, sysblk_ppas);
 }
 
 static int sysblk_get_host_blks(struct ppa_addr ppa, int nr_blks, u8 *blks,
@@ -177,150 +184,6 @@ static int nvm_scan_block(struct nvm_dev *dev, struct ppa_addr *ppa,
 	return found;
 }
 
-int nvm_get_sysblock(struct nvm_dev *dev, struct nvm_sb_info *info)
-{
-	struct ppa_addr sysblk_ppa[MAX_SYSBLKS];
-	struct sysblk_scan s;
-	struct nvm_system_block *cur;
-	int i, j, found = 0;
-	int ret = -ENOMEM;
-
-	/*
-	 * 1. setup sysblk locations
-	 * 2. get bad block list
-	 * 3. filter on host-specific (type 3)
-	 * 4. iterate through all and find the highest seq nr.
-	 * 5. return superblock information
-	 */
-
-	if (!dev->ops->get_bb_tbl)
-		return -EINVAL;
-
-	s.nr_rows = nvm_setup_sysblks(dev, sysblk_ppa);
-
-	mutex_lock(&dev->mlock);
-	ret = nvm_get_all_sysblks(dev, &s, sysblk_ppa);
-	if (ret)
-		goto err_sysblk;
-
-	cur = kzalloc(sizeof(struct nvm_system_block), GFP_KERNEL);
-	if (!cur)
-		goto err_sysblk;
-
-	/* find the latest block across all sysblocks */
-	for (i = 0; i < s.nr_rows; i++) {
-		for (j = 0; j < MAX_BLKS_PR_SYSBLK; j++) {
-			struct ppa_addr ppa = s.ppas[scan_ppa_idx(&s, i, j)];
-
-			ret = nvm_scan_block(dev, &ppa, cur);
-			if (ret > 0)
-				found = 1;
-			else if (ret < 0)
-				break;
-		}
-	}
-
-	nvm_sysblk_to_cpu(info, cur);
-	kfree(cur);
-err_sysblk:
-	mutex_unlock(&dev->mlock);
-
-	if (found)
-		return 1;
-	return ret;
-}
-
-int nvm_update_sysblock(struct nvm_dev *dev, struct nvm_sb_info *new)
-{
-	/* 1. for each latest superblock on lun0, lun1/2, lunX
-	 * 2. if room
-	 *    a. write new flash page entry with the updated information
-	 * 3. if no room
-	 *    a. find next available block on lun (linear search)
-	 *       if none, continue to next lun
-	 *       if none at all, report error. also report that it wasn't
-	 *       possible to write to all superblocks.
-	 *    b. mark block type 3
-	 *    c. write data to block.
-	 */
-	struct ppa_addr sysblk_ppa[MAX_SYSBLKS];
-	struct sysblk_scan s;
-	struct nvm_system_block *cur;
-	int i, j, found;
-	int ret = -ENOMEM;
-
-	if (!dev->ops->get_bb_tbl)
-		return -EINVAL;
-
-	s.nr_rows = nvm_setup_sysblks(dev, sysblk_ppa);
-
-	mutex_lock(&dev->mlock);
-	ret = nvm_get_all_sysblks(dev, &s, sysblk_ppa);
-	if (ret)
-		goto err_sysblk;
-
-	cur = kzalloc(sizeof(struct nvm_system_block) * MAX_SYSBLKS,
-								GFP_KERNEL);
-	if (!cur)
-		goto err_sysblk;
-
-	/* Find the latest sysblk for each sysblk channel */
-	for (i = 0; i < MAX_SYSBLKS; i++) {
-		for (j = 0; j < MAX_BLKS_PR_SYSBLK; j++) {
-			found = 0;
-			ret = nvm_scan_block(dev,
-						&s.ppas[scan_ppa_idx(&s, i, j)],
-						&cur[i]);
-			if (ret > 0)
-				found = 1;
-			else if (ret < 0)
-			break;
-		}
-	}
-
-	if (!found) {
-		pr_err("nvm: no valid sysblks found to update\n");
-		ret = -EINVAL;
-		goto err_cur;
-	}
-
-	/* All sysblocks found. Check that they are all the same revision and
-	 * same page in flash block */
-/*	for (i = 1; i < s.nr_ppas; i++) {
-		if (cur[0]->seqnr != cur[i]->seqnr ||
-				s.ppas[0][0].g.pg != s.ppas[i][0].g.pg) {
-			pr_err("nvm: sysblks not coherent.\n");
-			ret = -EINVAL;
-			goto err_cur;
-		}
-	}*/
-
-	/* Check that there haven't been another update to the seqnr since we
-	 * began */
-/*	if ((new->seqnr - 1) != cur[i]->seqnr) {
-		pr_err("nvm: seq is not sequential\n");
-		ret = -EINVAL;
-		goto err_cur;
-	}*/
-
-	/* prepare to write new sysblk.
-	 * First case is that we can continue to write to the same sysblocks
-	 * allocated.
-	 * Second case is that the current sysblks have been fully written and
-	 * new ones must be allocated.
-	 */
-	//if (sysblks.ppas[0].g.pg == dev->pgs_per_blk)
-	//	nvm_allocate_new_sysblks(dev, sysblocks);
-
-	//nvm_write_sysblk(dev, new, )
-err_cur:
-	kfree(cur);
-err_sysblk:
-	mutex_unlock(&dev->mlock);
-
-	return ret;
-}
-
 static int sysblk_get_free_blks(struct ppa_addr ppa, int nr_blks, u8 *blks,
 								void *private)
 {
@@ -388,23 +251,12 @@ static int nvm_mark_all_sysblks(struct nvm_dev *dev, struct sysblk_scan *s,
 	return 0;
 }
 
-int nvm_init_sysblock(struct nvm_dev *dev, struct nvm_sb_info *info)
+static int nvm_write_and_verify(struct nvm_dev *dev, struct nvm_sb_info *info,
+					struct ppa_addr *ppas, int nr_ppas)
 {
-	struct ppa_addr sysblk_ppa[MAX_SYSBLKS];
-	struct sysblk_scan s;
 	struct nvm_system_block nvmsb;
 	void *buf;
 	int i, ret, bufsz;
-
-	/*
-	 * 1. select master block from lun0, lun1/2, lunX -> first available blk
-	 * 2. get bad block list
-	 * 3. mark MAX_SYSBLKS block as host-based device allocated.
-	 * 4. write and verify data to block
-	 */
-
-	if (!dev->ops->get_bb_tbl)
-		return -EINVAL;
 
 	nvm_cpu_to_sysblk(&nvmsb, info);
 
@@ -415,21 +267,14 @@ int nvm_init_sysblock(struct nvm_dev *dev, struct nvm_sb_info *info)
 		return -ENOMEM;
 	memcpy(buf, &nvmsb, sizeof(struct nvm_system_block));
 
-	memset(&s, 0, sizeof(struct sysblk_scan));
-	s.nr_rows = nvm_setup_sysblks(dev, sysblk_ppa);
-
-	mutex_lock(&dev->mlock);
-
-	/* mark all host system flash blocks */
-	ret = nvm_mark_all_sysblks(dev, &s, sysblk_ppa);
-	if (ret)
-		goto err_mark;
-
 	/* Write and verify */
-	for (i = 0; i < s.nr_rows; i++) {
-		struct ppa_addr ppa;
+	for (i = 0; i < nr_ppas; i++) {
+		struct ppa_addr ppa = ppas[i];
 
-		ppa = s.ppas[scan_ppa_idx(&s, i, 0)];
+		pr_debug("nvm: writing sysblk to ch:%u lun:%u blk:%u pg:%u\n",
+						ppa.g.ch, ppa.g.lun,
+						ppa.g.blk, ppa.g.pg);
+
 		ret = nvm_submit_ppa(dev, ppa, NVM_OP_PWRITE, buf, bufsz);
 		if (ret) {
 			pr_err("nvm: sysblk failed program [ch%u lun%u blk%u]\n",
@@ -457,8 +302,188 @@ int nvm_init_sysblock(struct nvm_dev *dev, struct nvm_sb_info *info)
 		}
 	}
 
+	kfree(buf);
+
+	return ret;
+}
+
+int nvm_get_sysblock(struct nvm_dev *dev, struct nvm_sb_info *info)
+{
+	struct ppa_addr sysblk_ppas[MAX_SYSBLKS];
+	struct sysblk_scan s;
+	struct nvm_system_block *cur;
+	int i, j, found = 0;
+	int ret = -ENOMEM;
+
+	/*
+	 * 1. setup sysblk locations
+	 * 2. get bad block list
+	 * 3. filter on host-specific (type 3)
+	 * 4. iterate through all and find the highest seq nr.
+	 * 5. return superblock information
+	 */
+
+	if (!dev->ops->get_bb_tbl)
+		return -EINVAL;
+
+	nvm_setup_sysblk_scan(dev, &s, sysblk_ppas);
+
+	mutex_lock(&dev->mlock);
+	ret = nvm_get_all_sysblks(dev, &s, sysblk_ppas);
+	if (ret)
+		goto err_sysblk;
+
+	cur = kzalloc(sizeof(struct nvm_system_block), GFP_KERNEL);
+	if (!cur)
+		goto err_sysblk;
+
+	/* find the latest block across all sysblocks */
+	for (i = 0; i < s.nr_rows; i++) {
+		for (j = 0; j < MAX_BLKS_PR_SYSBLK; j++) {
+			struct ppa_addr ppa = s.ppas[scan_ppa_idx(&s, i, j)];
+
+			ret = nvm_scan_block(dev, &ppa, cur);
+			if (ret > 0)
+				found = 1;
+			else if (ret < 0)
+				break;
+		}
+	}
+
+	nvm_sysblk_to_cpu(info, cur);
+
+	kfree(cur);
+err_sysblk:
+	mutex_unlock(&dev->mlock);
+
+	if (found)
+		return 1;
+	return ret;
+}
+
+int nvm_update_sysblock(struct nvm_dev *dev, struct nvm_sb_info *new)
+{
+	/* 1. for each latest superblock on lun0, lun1/2, lunX
+	 * 2. if room
+	 *    a. write new flash page entry with the updated information
+	 * 3. if no room
+	 *    a. find next available block on lun (linear search)
+	 *       if none, continue to next lun
+	 *       if none at all, report error. also report that it wasn't
+	 *       possible to write to all superblocks.
+	 *    b. mark block type 3
+	 *    c. write data to block.
+	 */
+	struct ppa_addr sysblk_ppas[MAX_SYSBLKS], act_ppa[MAX_SYSBLKS];
+	struct sysblk_scan s;
+	struct nvm_system_block *cur;
+	int i, j, ppaidx, found = 0;
+	int ret = -ENOMEM;
+
+	if (!dev->ops->get_bb_tbl)
+		return -EINVAL;
+
+	nvm_setup_sysblk_scan(dev, &s, sysblk_ppas);
+
+	mutex_lock(&dev->mlock);
+	ret = nvm_get_all_sysblks(dev, &s, sysblk_ppas);
+	if (ret)
+		goto err_sysblk;
+
+	cur = kzalloc(sizeof(struct nvm_system_block), GFP_KERNEL);
+	if (!cur)
+		goto err_sysblk;
+
+	/* Get the latest sysblk for each sysblk row */
+	for (i = 0; i < s.nr_rows; i++) {
+		found = 0;
+		for (j = 0; j < MAX_BLKS_PR_SYSBLK; j++) {
+			ppaidx = scan_ppa_idx(&s, i, j);
+			ret = nvm_scan_block(dev, &s.ppas[ppaidx], cur);
+			if (ret > 0) {
+				act_ppa[i] = s.ppas[ppaidx];
+				printk("found ppa: %u %u %u\n", i,
+						act_ppa[i].g.blk,
+						act_ppa[i].g.pg);
+				found = 1;
+			} else if (ret < 0)
+				break;
+		}
+	}
+
+	if (!found) {
+		pr_err("nvm: no valid sysblks found to update\n");
+		ret = -EINVAL;
+		goto err_cur;
+	}
+
+	/* All sysblocks found. Check that they are same page in the flash blocks */
+	for (i = 1; i < s.nr_rows; i++) {
+		if (act_ppa[0].g.pg != act_ppa[i].g.pg) {
+			pr_err("nvm: sysblks not on same page. Previous update failed.\n");
+			ret = -EINVAL;
+			goto err_cur;
+		}
+	}
+
+	/* Check that there haven't been another update to the seqnr since we
+	 * began */
+	if ((new->seqnr - 1) != be32_to_cpu(cur[0].seqnr)) {
+		pr_err("nvm: seq is not sequential\n");
+		ret = -EINVAL;
+		goto err_cur;
+	}
+
+	/* prepare to write new sysblk.
+	 * First case is that we can continue to write to the same sysblocks
+	 * allocated.
+	 * Second case is that the current sysblks have been fully written and
+	 * new ones must be allocated.
+	 */
+	if (act_ppa[0].g.pg != dev->pgs_per_blk)
+		nvm_write_and_verify(dev, new, act_ppa, s.nr_rows);
+	else 
+		printk("let's continue to the next\n");
+	//	nvm_allocate_new_sysblks(dev, sysblocks);
+
+err_cur:
+	kfree(cur);
+err_sysblk:
+	mutex_unlock(&dev->mlock);
+
+	return ret;
+}
+
+int nvm_init_sysblock(struct nvm_dev *dev, struct nvm_sb_info *info)
+{
+	struct ppa_addr sysblk_ppas[MAX_SYSBLKS], act_ppas[MAX_SYSBLKS];
+	struct sysblk_scan s;
+	int ret, i;
+
+	/*
+	 * 1. select master block from lun0, lun1/2, lunX -> first available blk
+	 * 2. get bad block list
+	 * 3. mark MAX_SYSBLKS block as host-based device allocated.
+	 * 4. write and verify data to block
+	 */
+
+	if (!dev->ops->get_bb_tbl)
+		return -EINVAL;
+
+	/* Index all sysblocks and mark them as host-driven */
+	nvm_setup_sysblk_scan(dev, &s, sysblk_ppas);
+
+	mutex_lock(&dev->mlock);
+	ret = nvm_mark_all_sysblks(dev, &s, sysblk_ppas);
+	if (ret)
+		goto err_mark;
+
+	/* Write to the first block of each row */
+	for (i = 0; i < s.nr_rows; i++)
+		act_ppas[i] = s.ppas[scan_ppa_idx(&s, i, 0)];
+
+	ret = nvm_write_and_verify(dev, info, act_ppas, s.nr_rows);
 err_mark:
 	mutex_unlock(&dev->mlock);
-	kfree(buf);
 	return ret;
 }
