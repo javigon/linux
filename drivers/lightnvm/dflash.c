@@ -115,6 +115,15 @@ static int dflash_submit_io(struct dflash *dflash, struct bio *bio,
 	} else {
 		rqd->opcode = NVM_OP_PREAD;
 		rqd->flags |= NVM_IO_SUSPEND;
+
+		/* Expose flags to the application */
+		if (npages == 2) {
+			printk("DUAL!\n");
+			rqd->flags |= NVM_IO_DUAL_ACCESS;
+		} else if (npages > 2) {
+			printk("QUAD\n");
+			rqd->flags |= NVM_IO_QUAD_ACCESS;
+		}
 	}
 
 	err = nvm_submit_io(dflash->dev, rqd);
