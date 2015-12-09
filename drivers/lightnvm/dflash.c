@@ -41,8 +41,9 @@ static int dflash_setup_rq(struct dflash *dflash, struct bio *bio,
 	ppa.g.lun = nlun->parent->lun_id;
 	ppa.g.ch = nlun->parent->chnl_id;
 	ppa.g.blk = (laddr / dev->sec_per_blk) % dev->blks_per_lun;
-	ppa.g.pg = (laddr % dev->sec_per_blk) / (dev->sec_per_pl);
 	ppa.g.sec = laddr % dev->sec_per_pg;
+	ppa.g.pl = (laddr % dev->sec_per_pl) / dev->nr_planes;
+	ppa.g.pg = (laddr % dev->sec_per_blk) / (dev->sec_per_pl);
 
 	/* printk("device charac - sec_per_blk:%d,blks_per_lun:%d, " */
 	/* 	"sec_per_pl:%d, sec_per_pg:%d,nr_planes:%d\n", */
@@ -72,8 +73,6 @@ static int dflash_setup_rq(struct dflash *dflash, struct bio *bio,
 
 		for (i = 0; i < npages; i++) {
 			BUG_ON(!(laddr + i >= 0 && laddr + i < dflash->nr_pages));
-			ppa.g.sec = ltmp % dev->sec_per_pg;
-			ppa.g.pl = (ltmp % dev->sec_per_pl) / dev->nr_planes;
 			rqd->ppa_list[i] = ppa;
 			/* printk("addr: %llu[%u]: ch: %u sec: %u pl: %u lun: %u pg: %u blk: %u -> %llu 0x%x\n", */
 			/* 		(unsigned long long) ltmp, npages, */
@@ -82,6 +81,8 @@ static int dflash_setup_rq(struct dflash *dflash, struct bio *bio,
 			/* 		ppa.g.pg,ppa.g.blk, */
 			/* 		ppa.ppa,ppa.ppa); */
 			ltmp++;
+			ppa.g.sec = ltmp % dev->sec_per_pg;
+			ppa.g.pl = (ltmp % dev->sec_per_pl) / dev->nr_planes;
 			ppa.g.pg = (ltmp % dev->sec_per_blk) / (dev->sec_per_pl);
 		}
 
