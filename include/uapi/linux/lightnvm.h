@@ -164,13 +164,13 @@ enum {
 	NVM_DEV_REMOVE_TGT_CMD,
 
 	/* target level cmds */
-	NVM_TGT_GET_INFO_CMD, //todo
+	NVM_TGT_GET_INFO_CMD,
 	NVM_LUN_GET_INFO_CMD, /* TODO: Describe lun to application (QoS) */
 
 	/* provisioning cmds */
 	NVM_PR_GET_BLOCK_CMD,
 	NVM_PR_GET_BLOCK_INFO_CMD,
-	NVM_PR_GET_BLOCK_META_CMD, /* TODO: Depends on mmedia manager recovery */
+	NVM_PR_GET_BLOCK_META_CMD, /* TODO: Depends on media manager recovery */
 	NVM_PR_PUT_BLOCK_CMD,
 };
 
