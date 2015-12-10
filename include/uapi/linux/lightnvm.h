@@ -98,7 +98,7 @@ struct nvm_ioctl_tgt_create {
 	struct nvm_ioctl_create_conf conf;
 };
 
-struct nvm_ioctl_remove {
+struct nvm_ioctl_tgt_remove {
 	char tgtname[DISK_NAME_LEN];
 
 	__u32 flags;
@@ -113,7 +113,7 @@ enum {
 
 	/* device level cmds */
 	NVM_DEV_CREATE_TGT_CMD,
-	NVM_DEV_REMOVE_CMD,
+	NVM_DEV_REMOVE_TGT_CMD,
 };
 
 #define NVM_IOCTL 'L' /* 0x4c */
@@ -124,8 +124,8 @@ enum {
 						struct nvm_ioctl_get_devices)
 #define NVM_DEV_CREATE_TGT	_IOW(NVM_IOCTL, NVM_DEV_CREATE_TGT_CMD, \
 						struct nvm_ioctl_tgt_create)
-#define NVM_DEV_REMOVE		_IOW(NVM_IOCTL, NVM_DEV_REMOVE_CMD, \
-						struct nvm_ioctl_remove)
+#define NVM_DEV_REMOVE_TGT	_IOW(NVM_IOCTL, NVM_DEV_REMOVE_TGT_CMD, \
+						struct nvm_ioctl_tgt_remove)
 
 #define NVM_VERSION_MAJOR	1
 #define NVM_VERSION_MINOR	0

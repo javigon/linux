@@ -506,7 +506,7 @@ static int __nvm_configure_create(struct nvm_ioctl_tgt_create *create)
 	return nvm_create_target(dev, create);
 }
 
-static int __nvm_configure_remove(struct nvm_ioctl_remove *remove)
+static int __nvm_configure_remove(struct nvm_ioctl_tgt_remove *remove)
 {
 	struct nvm_target *t = NULL;
 	struct nvm_dev *dev;
@@ -562,7 +562,7 @@ static int nvm_configure_show(const char *val)
 
 static int nvm_configure_remove(const char *val)
 {
-	struct nvm_ioctl_remove remove;
+	struct nvm_ioctl_tgt_remove remove;
 	char opcode;
 	int ret;
 
@@ -773,12 +773,12 @@ static long nvm_ioctl_dev_create(struct file *file, void __user *arg)
 
 static long nvm_ioctl_dev_remove(struct file *file, void __user *arg)
 {
-	struct nvm_ioctl_remove remove;
+	struct nvm_ioctl_tgt_remove remove;
 
 	if (!capable(CAP_SYS_ADMIN))
 		return -EPERM;
 
-	if (copy_from_user(&remove, arg, sizeof(struct nvm_ioctl_remove)))
+	if (copy_from_user(&remove, arg, sizeof(struct nvm_ioctl_tgt_remove)))
 		return -EFAULT;
 
 	remove.tgtname[DISK_NAME_LEN - 1] = '\0';
@@ -802,7 +802,7 @@ static long nvm_ctl_ioctl(struct file *file, uint cmd, unsigned long arg)
 		return nvm_ioctl_get_devices(file, argp);
 	case NVM_DEV_CREATE_TGT:
 		return nvm_ioctl_dev_create(file, argp);
-	case NVM_DEV_REMOVE:
+	case NVM_DEV_REMOVE_TGT:
 		return nvm_ioctl_dev_remove(file, argp);
 	}
 	return 0;
