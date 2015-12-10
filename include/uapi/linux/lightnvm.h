@@ -84,10 +84,14 @@ struct nvm_ioctl_create_conf {
 	};
 };
 
-struct nvm_ioctl_create {
+struct nvm_ioctl_target {
 	char dev[DISK_NAME_LEN];		/* open-channel SSD device */
 	char tgttype[NVM_TTYPE_NAME_MAX];	/* target type name */
 	char tgtname[DISK_NAME_LEN];		/* dev to expose target as */
+};
+
+struct nvm_ioctl_tgt_create {
+	struct nvm_ioctl_target target;
 
 	__u32 flags;
 
@@ -108,7 +112,7 @@ enum {
 	NVM_GET_DEVICES_CMD,
 
 	/* device level cmds */
-	NVM_DEV_CREATE_CMD,
+	NVM_DEV_CREATE_TGT_CMD,
 	NVM_DEV_REMOVE_CMD,
 };
 
@@ -118,8 +122,8 @@ enum {
 						struct nvm_ioctl_info)
 #define NVM_GET_DEVICES		_IOR(NVM_IOCTL, NVM_GET_DEVICES_CMD, \
 						struct nvm_ioctl_get_devices)
-#define NVM_DEV_CREATE		_IOW(NVM_IOCTL, NVM_DEV_CREATE_CMD, \
-						struct nvm_ioctl_create)
+#define NVM_DEV_CREATE_TGT	_IOW(NVM_IOCTL, NVM_DEV_CREATE_TGT_CMD, \
+						struct nvm_ioctl_tgt_create)
 #define NVM_DEV_REMOVE		_IOW(NVM_IOCTL, NVM_DEV_REMOVE_CMD, \
 						struct nvm_ioctl_remove)
 
