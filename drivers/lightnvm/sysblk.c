@@ -27,6 +27,7 @@ struct sysblk_scan {
 	/* A row is a collection of flash blocks for a system block. */
 	int nr_rows;
 	int row;
+	int act_blk[MAX_SYSBLKS];
 
 	int nr_ppas;
 	struct ppa_addr ppas[MAX_SYSBLKS * MAX_BLKS_PR_SYSBLK];/* all sysblks */
@@ -163,19 +164,27 @@ static int nvm_scan_block(struct nvm_dev *dev, struct ppa_addr *ppa,
 
 	/* perform linear scan through the block */
 	for (pg = 0; pg < dev->pgs_per_blk; pg++) {
-		ppa->g.pg = pg;
 
 		ret = nvm_submit_ppa(dev, *ppa, NVM_OP_PREAD, cur, cursz);
 		if (ret)
-			break; /* if we can't read it, continue to the
+			break; /* if we can't read a page, continue to the
 				* next blk */
 
-		if (be32_to_cpu(cur->magic) != NVM_SYSBLK_MAGIC)
+		if (be32_to_cpu(cur->magic) != NVM_SYSBLK_MAGIC) {
+			pr_debug("nvm: scan break at ch: %u lun: %u blk:%u pg:%u\n",
+							(*ppa).g.ch,
+							(*ppa).g.lun,
+							(*ppa).g.blk,
+							(*ppa).g.pg);
 			break; /* last valid page already found */
+		}
 
-		if (be32_to_cpu(cur->seqnr) > be32_to_cpu(sblk->seqnr))
-			memcpy(sblk, cur, sizeof(struct nvm_system_block));
+		if (be32_to_cpu(cur->seqnr) < be32_to_cpu(sblk->seqnr)) {
+			continue;
+		}
 
+		ppa->g.pg = pg;
+		memcpy(sblk, cur, sizeof(struct nvm_system_block));
 		found = 1;
 	}
 
@@ -252,7 +261,7 @@ static int nvm_mark_all_sysblks(struct nvm_dev *dev, struct sysblk_scan *s,
 }
 
 static int nvm_write_and_verify(struct nvm_dev *dev, struct nvm_sb_info *info,
-					struct ppa_addr *ppas, int nr_ppas)
+							struct sysblk_scan *s)
 {
 	struct nvm_system_block nvmsb;
 	void *buf;
@@ -268,8 +277,9 @@ static int nvm_write_and_verify(struct nvm_dev *dev, struct nvm_sb_info *info,
 	memcpy(buf, &nvmsb, sizeof(struct nvm_system_block));
 
 	/* Write and verify */
-	for (i = 0; i < nr_ppas; i++) {
-		struct ppa_addr ppa = ppas[i];
+	for (i = 0; i < s->nr_rows; i++) {
+		struct ppa_addr ppa =
+				s->ppas[scan_ppa_idx(s, i, s->act_blk[i])];
 
 		pr_debug("nvm: writing sysblk to ch:%u lun:%u blk:%u pg:%u\n",
 						ppa.g.ch, ppa.g.lun,
@@ -361,6 +371,27 @@ err_sysblk:
 	return ret;
 }
 
+static int nvm_prepare_new_sysblks(struct nvm_dev *dev, struct sysblk_scan *s)
+{
+	int i, ret;
+	unsigned long nxt_blk;
+	struct ppa_addr *ppa;
+
+	for (i = 0; i < s->nr_rows; i++) {
+		nxt_blk = (s->act_blk[i] + 1) % MAX_BLKS_PR_SYSBLK;
+		ppa = &s->ppas[scan_ppa_idx(s, i, nxt_blk)];
+		ppa->g.pg = 0;
+
+		ret = nvm_erase_ppa(dev, *ppa);
+		if (ret)
+			return ret;
+
+		s->act_blk[i] = nxt_blk;
+	}
+
+	return 0;
+}
+
 int nvm_update_sysblock(struct nvm_dev *dev, struct nvm_sb_info *new)
 {
 	/* 1. for each latest superblock on lun0, lun1/2, lunX
@@ -374,7 +405,7 @@ int nvm_update_sysblock(struct nvm_dev *dev, struct nvm_sb_info *new)
 	 *    b. mark block type 3
 	 *    c. write data to block.
 	 */
-	struct ppa_addr sysblk_ppas[MAX_SYSBLKS], act_ppa[MAX_SYSBLKS];
+	struct ppa_addr sysblk_ppas[MAX_SYSBLKS];
 	struct sysblk_scan s;
 	struct nvm_system_block *cur;
 	int i, j, ppaidx, found = 0;
@@ -401,10 +432,7 @@ int nvm_update_sysblock(struct nvm_dev *dev, struct nvm_sb_info *new)
 			ppaidx = scan_ppa_idx(&s, i, j);
 			ret = nvm_scan_block(dev, &s.ppas[ppaidx], cur);
 			if (ret > 0) {
-				act_ppa[i] = s.ppas[ppaidx];
-				printk("found ppa: %u %u %u\n", i,
-						act_ppa[i].g.blk,
-						act_ppa[i].g.pg);
+				s.act_blk[i] = j;
 				found = 1;
 			} else if (ret < 0)
 				break;
@@ -417,9 +445,13 @@ int nvm_update_sysblock(struct nvm_dev *dev, struct nvm_sb_info *new)
 		goto err_cur;
 	}
 
-	/* All sysblocks found. Check that they are same page in the flash blocks */
+	/* All sysblocks found. Check that they are same page in the flash
+	 * blocks */
 	for (i = 1; i < s.nr_rows; i++) {
-		if (act_ppa[0].g.pg != act_ppa[i].g.pg) {
+		struct ppa_addr l = s.ppas[scan_ppa_idx(&s, 0, s.act_blk[0])];
+		struct ppa_addr r = s.ppas[scan_ppa_idx(&s, i, s.act_blk[i])];
+
+		if (l.g.pg != r.g.pg) {
 			pr_err("nvm: sysblks not on same page. Previous update failed.\n");
 			ret = -EINVAL;
 			goto err_cur;
@@ -428,24 +460,26 @@ int nvm_update_sysblock(struct nvm_dev *dev, struct nvm_sb_info *new)
 
 	/* Check that there haven't been another update to the seqnr since we
 	 * began */
-	if ((new->seqnr - 1) != be32_to_cpu(cur[0].seqnr)) {
+	if ((new->seqnr - 1) != be32_to_cpu(cur->seqnr)) {
 		pr_err("nvm: seq is not sequential\n");
 		ret = -EINVAL;
 		goto err_cur;
 	}
 
-	/* prepare to write new sysblk.
-	 * First case is that we can continue to write to the same sysblocks
+	/* Write new sysblk pages.
+	 * The Normal case is to continue to write to the same sysblocks
 	 * allocated.
-	 * Second case is that the current sysblks have been fully written and
-	 * new ones must be allocated.
+	 * When all pages in a block has been written, a new block is selected
+	 * and writing is performed on the new block.
 	 */
-	if (act_ppa[0].g.pg != dev->pgs_per_blk)
-		nvm_write_and_verify(dev, new, act_ppa, s.nr_rows);
-	else 
-		printk("let's continue to the next\n");
-	//	nvm_allocate_new_sysblks(dev, sysblocks);
+	if (s.ppas[scan_ppa_idx(&s, 0, s.act_blk[0])].g.pg ==
+						dev->pgs_per_blk - 1) {
+		ret = nvm_prepare_new_sysblks(dev, &s);
+		if (ret)
+			goto err_cur;
+	}
 
+	ret = nvm_write_and_verify(dev, new, &s);
 err_cur:
 	kfree(cur);
 err_sysblk:
@@ -456,9 +490,9 @@ err_sysblk:
 
 int nvm_init_sysblock(struct nvm_dev *dev, struct nvm_sb_info *info)
 {
-	struct ppa_addr sysblk_ppas[MAX_SYSBLKS], act_ppas[MAX_SYSBLKS];
+	struct ppa_addr sysblk_ppas[MAX_SYSBLKS];
 	struct sysblk_scan s;
-	int ret, i;
+	int ret;
 
 	/*
 	 * 1. select master block from lun0, lun1/2, lunX -> first available blk
@@ -479,10 +513,7 @@ int nvm_init_sysblock(struct nvm_dev *dev, struct nvm_sb_info *info)
 		goto err_mark;
 
 	/* Write to the first block of each row */
-	for (i = 0; i < s.nr_rows; i++)
-		act_ppas[i] = s.ppas[scan_ppa_idx(&s, i, 0)];
-
-	ret = nvm_write_and_verify(dev, info, act_ppas, s.nr_rows);
+	ret = nvm_write_and_verify(dev, info, &s);
 err_mark:
 	mutex_unlock(&dev->mlock);
 	return ret;
