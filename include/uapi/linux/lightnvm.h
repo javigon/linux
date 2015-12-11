@@ -54,12 +54,24 @@ enum {
 	NVM_DEVICE_ACTIVE = 1 << 0,
 };
 
+struct nvm_ioctl_dev_prop {
+	__u32 sec_size;		/* Device sector size */
+	__u32 sec_per_page;	/* Number of sectors per flash page */
+	__u32 max_sec_io;	/* Maximum number of sectors per I/O */
+	__u32 nr_planes;	/* Number of planes in device */
+	__u32 nr_luns;		/* Number of LUNs in device */
+	__u32 nr_channels;	/* Number of channels in device */
+	__u32 plane_mode;	/* Device plane mode: single, dual, quad */
+	__u32 oob_size;		/* Sector out-of-bound area size */
+};
+
 struct nvm_ioctl_device_info {
 	char devname[DISK_NAME_LEN];
 	char bmname[NVM_TTYPE_NAME_MAX];
 	__u32 bmversion[3];
 	__u32 flags;
 	__u32 reserved[8];
+	struct nvm_ioctl_dev_prop prop;
 };
 
 struct nvm_ioctl_get_devices {
@@ -112,6 +124,7 @@ enum {
 	NVM_GET_DEVICES_CMD,
 
 	/* device level cmds */
+	NVM_DEV_GET_INFO_CMD,
 	NVM_DEV_CREATE_TGT_CMD,
 	NVM_DEV_REMOVE_TGT_CMD,
 };
@@ -126,6 +139,8 @@ enum {
 						struct nvm_ioctl_tgt_create)
 #define NVM_DEV_REMOVE_TGT	_IOW(NVM_IOCTL, NVM_DEV_REMOVE_TGT_CMD, \
 						struct nvm_ioctl_tgt_remove)
+#define NVM_DEV_GET_INFO	_IOR(NVM_IOCTL, NVM_DEV_GET_INFO_CMD, \
+						struct nvm_ioctl_device_info)
 
 #define NVM_VERSION_MAJOR	1
 #define NVM_VERSION_MINOR	0

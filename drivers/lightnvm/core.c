@@ -791,6 +791,49 @@ static long nvm_ioctl_dev_remove(struct file *file, void __user *arg)
 	return __nvm_configure_remove(&remove);
 }
 
+static long nvm_ioctl_dev_get_info(struct file *file, void __user *arg)
+{
+	struct nvm_ioctl_device_info dev_info;
+	struct nvm_dev *dev;
+
+	if (!capable(CAP_SYS_ADMIN))
+		return -EPERM;
+
+	if (copy_from_user(&dev_info, arg, sizeof(struct nvm_ioctl_device_info)))
+		return -EFAULT;
+
+	dev_info.devname[DISK_NAME_LEN - 1] = '\0';
+
+	dev = nvm_find_nvm_dev(dev_info.devname);
+	if (!dev) {
+		pr_err("nvm: device not found\n");
+		return -EINVAL;
+	}
+
+	if (dev->mt) {
+		dev_info.bmversion[0] = dev->mt->version[0];
+		dev_info.bmversion[1] = dev->mt->version[1];
+		dev_info.bmversion[2] = dev->mt->version[2];
+		sprintf(dev_info.bmname, "%s", dev->mt->name);
+	} else {
+		sprintf(dev_info.bmname, "none");
+	}
+
+	dev_info.prop.sec_size = dev->sec_size;
+	dev_info.prop.sec_per_page = dev->sec_per_pg;
+	dev_info.prop.max_sec_io = nvm_dev_max_sectors(dev);
+	dev_info.prop.nr_planes = nvm_dev_nr_planes(dev);
+	dev_info.prop.nr_luns  = dev->nr_luns;
+	dev_info.prop.nr_channels = dev->nr_chnls;
+	dev_info.prop.plane_mode = dev->plane_mode;
+	dev_info.prop.oob_size = dev->oob_size;
+
+	if (copy_to_user(arg, &dev_info, sizeof(struct nvm_ioctl_device_info)))
+		return -EFAULT;
+
+	return 0;
+}
+
 static long nvm_ctl_ioctl(struct file *file, uint cmd, unsigned long arg)
 {
 	void __user *argp = (void __user *)arg;
@@ -804,6 +847,8 @@ static long nvm_ctl_ioctl(struct file *file, uint cmd, unsigned long arg)
 		return nvm_ioctl_dev_create(file, argp);
 	case NVM_DEV_REMOVE_TGT:
 		return nvm_ioctl_dev_remove(file, argp);
+	case NVM_DEV_GET_INFO:
+		return nvm_ioctl_dev_get_info(file, argp);
 	}
 	return 0;
 }
