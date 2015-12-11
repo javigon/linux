@@ -36,10 +36,16 @@
 
 #define NVM_CTRL_FILE "/dev/lightnvm/control"
 
-struct nvm_ioctl_info_tgt {
+struct nvm_ioctl_target {
+	char dev[DISK_NAME_LEN];		/* open-channel SSD device */
+	char tgttype[NVM_TTYPE_NAME_MAX];	/* target type name */
+	char tgtname[DISK_NAME_LEN];		/* dev to expose target as */
+};
+
+struct nvm_ioctl_tgt_info {
 	__u32 version[3];
 	__u32 reserved;
-	char tgtname[NVM_TTYPE_NAME_MAX];
+	struct nvm_ioctl_target target;
 };
 
 struct nvm_ioctl_info {
@@ -47,7 +53,7 @@ struct nvm_ioctl_info {
 	__u16 tgtsize;		/* number of targets */
 	__u16 reserved16;	/* pad to 4K page */
 	__u32 reserved[12];
-	struct nvm_ioctl_info_tgt tgts[NVM_TTYPE_MAX];
+	struct nvm_ioctl_tgt_info tgts[NVM_TTYPE_MAX];
 };
 
 enum {
@@ -96,12 +102,6 @@ struct nvm_ioctl_create_conf {
 	};
 };
 
-struct nvm_ioctl_target {
-	char dev[DISK_NAME_LEN];		/* open-channel SSD device */
-	char tgttype[NVM_TTYPE_NAME_MAX];	/* target type name */
-	char tgtname[DISK_NAME_LEN];		/* dev to expose target as */
-};
-
 struct nvm_ioctl_tgt_create {
 	struct nvm_ioctl_target target;
 
@@ -127,6 +127,9 @@ enum {
 	NVM_DEV_GET_INFO_CMD,
 	NVM_DEV_CREATE_TGT_CMD,
 	NVM_DEV_REMOVE_TGT_CMD,
+
+	/* target level cmds */
+	NVM_TGT_GET_INFO_CMD,
 };
 
 #define NVM_IOCTL 'L' /* 0x4c */
@@ -141,6 +144,8 @@ enum {
 						struct nvm_ioctl_tgt_remove)
 #define NVM_DEV_GET_INFO	_IOR(NVM_IOCTL, NVM_DEV_GET_INFO_CMD, \
 						struct nvm_ioctl_device_info)
+#define NVM_TGT_GET_INFO	_IOW(NVM_IOCTL, NVM_TGT_GET_INFO_CMD, \
+						struct nvm_ioctl_tgt_info)
 
 #define NVM_VERSION_MAJOR	1
 #define NVM_VERSION_MINOR	0
