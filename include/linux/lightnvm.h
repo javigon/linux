@@ -258,6 +258,10 @@ struct nvm_dev {
 	int oob_size;
 	struct nvm_addr_format ppaf;
 
+	/* Block cache pool */
+	struct kmem_cache *block_cache;
+	mempool_t *block_pool;
+
 	/* Calculated/Cached values. These do not reflect the actual usable
 	 * blocks at run-time.
 	 */

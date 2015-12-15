@@ -176,29 +176,11 @@ static void rrpc_set_lun_cur(struct rrpc_lun *rlun, struct rrpc_block *rblk)
 	rlun->cur = rblk;
 }
 
-static struct rrpc_block *rrpc_get_blk(struct rrpc *rrpc, struct rrpc_lun *rlun,
-							unsigned long flags)
-{
-	struct nvm_block *blk;
-	struct rrpc_block *rblk;
-
-	blk = nvm_get_blk(rrpc->dev, rlun->parent, flags);
-	if (!blk)
-		return NULL;
-
-	rblk = &rlun->blocks[blk->id];
-	blk->priv = rblk;
-
-	bitmap_zero(rblk->invalid_pages, rrpc->dev->pgs_per_blk);
-	rblk->next_page = 0;
-	rblk->nr_invalid_pages = 0;
-	atomic_set(&rblk->data_cmnt_size, 0);
-
-	return rblk;
-}
-
 static void rrpc_put_blk(struct rrpc *rrpc, struct rrpc_block *rblk)
 {
+	struct nvm_dev *dev = rrpc->dev;
+
+	mempool_free(rblk->w_buffer.buf, dev->block_pool);
 	nvm_put_blk(rrpc->dev, rblk->parent);
 }
 
@@ -214,6 +196,43 @@ static void rrpc_put_blks(struct rrpc *rrpc)
 		if (rlun->gc_cur)
 			rrpc_put_blk(rrpc, rlun->gc_cur);
 	}
+}
+
+static struct rrpc_block *rrpc_get_blk(struct rrpc *rrpc, struct rrpc_lun *rlun,
+							unsigned long flags)
+{
+	struct nvm_dev *dev = rrpc->dev;
+	struct nvm_block *blk;
+	struct rrpc_block *rblk;
+
+	blk = nvm_get_blk(rrpc->dev, rlun->parent, flags);
+	if (!blk)
+		return NULL;
+
+	rblk = &rlun->blocks[blk->id];
+	blk->priv = rblk;
+
+	bitmap_zero(rblk->invalid_pages, rrpc->dev->pgs_per_blk);
+	rblk->next_page = 0;
+	rblk->nr_invalid_pages = 0;
+	atomic_set(&rblk->data_cmnt_size, 0);
+
+	/* Set up block write buffer */
+	rblk->w_buffer.buf = mempool_alloc(dev->block_pool, GFP_KERNEL);
+	if (!rblk->w_buffer.buf) {
+		pr_err("nvm: rrpc: cannot allocate write buffer for block\n");
+		rrpc_put_blk(rrpc, rblk);
+		return NULL;
+	}
+
+	rblk->w_buffer.buf_limit =
+			dev->pgs_per_blk * dev->sec_per_pg * dev->sec_size;
+	rblk->w_buffer.mem = rblk->w_buffer.buf;
+	rblk->w_buffer.sync = rblk->w_buffer.buf;
+	rblk->w_buffer.cursize = 0;
+	rblk->w_buffer.cursync = 0;
+
+	return rblk;
 }
 
 static struct rrpc_lun *get_next_lun(struct rrpc *rrpc)
@@ -773,6 +792,8 @@ static int rrpc_write_rq(struct rrpc *rrpc, struct bio *bio,
 {
 	struct rrpc_rq *rrqd = nvm_rq_to_pdu(rqd);
 	struct rrpc_addr *p;
+	struct rrpc_w_buffer *w_buffer;
+	unsigned int bio_len = bio_cur_bytes(bio);
 	int is_gc = flags & NVM_IOTYPE_GC;
 	sector_t laddr = rrpc_get_laddr(bio);
 
@@ -786,6 +807,18 @@ static int rrpc_write_rq(struct rrpc *rrpc, struct bio *bio,
 		rrpc_gc_kick(rrpc);
 		return NVM_IO_REQUEUE;
 	}
+
+	/*
+	 * Copy data from current bio to block write buffer. This if necessary
+	 * to guarantee durability if a flash block becomes bad before all pages
+	 * are written. This buffer is also used to write at the right page
+	 * granurality*/
+	w_buffer = &p->rblk->w_buffer;
+	BUG_ON(w_buffer->cursize + bio_len > w_buffer->buf_limit);
+
+	memcpy(w_buffer->mem, bio_data(bio), bio_cur_bytes(bio));
+	w_buffer->mem += bio_len;
+	w_buffer->cursize += bio_len;
 
 	rqd->ppa_addr = rrpc_ppa_to_gaddr(rrpc->dev, p->addr);
 	rqd->opcode = NVM_OP_HBWRITE;
@@ -1092,6 +1125,7 @@ static int rrpc_luns_init(struct rrpc *rrpc, int lun_begin, int lun_end)
 {
 	struct nvm_dev *dev = rrpc->dev;
 	struct rrpc_lun *rlun;
+	struct rrpc_flash_pg *flash_pg;
 	int i, j;
 
 	spin_lock_init(&rrpc->rev_lock);
@@ -1117,6 +1151,11 @@ static int rrpc_luns_init(struct rrpc *rrpc, int lun_begin, int lun_end)
 		INIT_LIST_HEAD(&rlun->prio_list);
 		INIT_WORK(&rlun->ws_gc, rrpc_lun_gc);
 		spin_lock_init(&rlun->lock);
+
+		flash_pg = &rlun->flash_pg;
+		flash_pg->sec_size = dev->sec_size;
+		flash_pg->page_size = flash_pg->sec_size * dev->sec_per_pg;
+		flash_pg->pln_pg_size = flash_pg->page_size * dev->nr_planes;
 
 		rrpc->total_blocks += dev->blks_per_lun;
 		rrpc->nr_pages += dev->sec_per_lun;

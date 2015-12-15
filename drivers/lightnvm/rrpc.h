@@ -52,9 +52,22 @@ struct rrpc_rq {
 	unsigned long flags;
 };
 
+struct rrpc_w_buffer {
+	size_t cursize;		/* Current buf lenght. Follows mem */
+	size_t cursync;		/* Bytes in buf that have been synced to media */
+	size_t buf_limit;	/* Limit for the allocated memory region */
+	void *buf;		/* Buffer to cache writes */
+	char *mem;		/* Points to the place in buf where writes can be
+				 * appended to. It defines the part of the
+				 * buffer containing valid data */
+	char *sync;		/* Points to the place in buf until which data
+				   has been synced to the devide */
+};
+
 struct rrpc_block {
 	struct nvm_block *parent;
 	struct list_head prio;
+	struct rrpc_w_buffer w_buffer;
 
 #define MAX_INVALID_PAGES_STORAGE 8
 	/* Bitmap for invalid page intries */
@@ -68,6 +81,12 @@ struct rrpc_block {
 	atomic_t data_cmnt_size; /* data pages committed to stable storage */
 };
 
+struct rrpc_flash_pg {
+	int sec_size;
+	int page_size;
+	int pln_pg_size;
+};
+
 struct rrpc_lun {
 	struct rrpc *rrpc;
 	struct nvm_lun *parent;
@@ -75,6 +94,7 @@ struct rrpc_lun {
 	struct rrpc_block *blocks;	/* Reference to block allocation */
 	struct list_head prio_list;		/* Blocks that may be GC'ed */
 	struct work_struct ws_gc;
+	struct rrpc_flash_pg flash_pg;
 
 	spinlock_t lock;
 };
