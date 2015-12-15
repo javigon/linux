@@ -132,6 +132,8 @@ struct nvm_tgt_instance {
 #define NVM_LUN_BITS (8)
 #define NVM_CH_BITS  (8)
 
+#define NVM_BIO_POOL_SIZE 8
+
 struct ppa_addr {
 	/* Generic structure for all addresses */
 	union {
@@ -259,6 +261,7 @@ struct nvm_dev {
 	struct nvm_addr_format ppaf;
 
 	/* Block cache pool */
+	struct bio_set *bio_split;
 	struct kmem_cache *block_cache;
 	mempool_t *block_pool;
 
