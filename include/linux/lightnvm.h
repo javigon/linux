@@ -261,7 +261,6 @@ struct nvm_dev {
 	struct nvm_addr_format ppaf;
 
 	/* Block cache pool */
-	struct bio_set *bio_split;
 	struct kmem_cache *block_cache;
 	mempool_t *block_pool;
 

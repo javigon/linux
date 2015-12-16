@@ -756,7 +756,7 @@ static int rrpc_write_ppalist_rq(struct rrpc *rrpc, struct bio *bio,
 			struct nvm_rq *rqd, unsigned long flags, int npages)
 {
 	struct rrpc_inflight_rq *r = rrpc_get_inflight_rq(rqd);
-	struct bio_set *split = rrpc->dev->bio_split;
+	struct bio *splitted_bio = bio_clone(bio, GFP_NOIO);
 	struct rrpc_addr *p;
 	struct rrpc_w_buffer *w_buffer;
 	sector_t laddr = rrpc_get_laddr(bio);
@@ -769,7 +769,6 @@ static int rrpc_write_ppalist_rq(struct rrpc *rrpc, struct bio *bio,
 	}
 
 	for (i = 0; i < npages; i++) {
-		struct bio *splitted_bio;
 		unsigned int bio_len;
 		/* We assume that mapping occurs at 4KB granularity */
 		p = rrpc_map_page(rrpc, laddr + i, is_gc);
@@ -782,28 +781,21 @@ static int rrpc_write_ppalist_rq(struct rrpc *rrpc, struct bio *bio,
 			return NVM_IO_REQUEUE;
 		}
 
-		/* split at a 4KB granurality */
-		splitted_bio = bio_next_split(bio, 8, GFP_NOIO, split);
-		if (unlikely(!splitted_bio)) {
-			pr_err("nvm: cannot split bio\n");
-			return NVM_IO_ERR;
-		}
-
 		bio_len = bio_cur_bytes(splitted_bio);
 		w_buffer = &p->rblk->w_buffer;
 
 		BUG_ON(w_buffer->cursize + bio_len > w_buffer->buf_limit);
-		memcpy(w_buffer->mem, bio_data(splitted_bio),
-						bio_cur_bytes(splitted_bio));
+		memcpy(w_buffer->mem, bio_data(splitted_bio), bio_len);
 		w_buffer->mem += bio_len;
 		w_buffer->cursize += bio_len;
 
-		rqd->ppa_list[i] = rrpc_ppa_to_gaddr(rrpc->dev,
-								p->addr);
+		rqd->ppa_list[i] = rrpc_ppa_to_gaddr(rrpc->dev, p->addr);
 
 		printk("multipage. blk:%lu, cursize:%lu, bio_size:%d\n",
 				p->rblk->parent->id, w_buffer->cursize,
 				bio_len);
+
+		bio_advance(splitted_bio, 4096);
 	}
 
 	rqd->opcode = NVM_OP_HBWRITE;

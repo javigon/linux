@@ -239,12 +239,6 @@ static int nvm_core_init(struct nvm_dev *dev)
 	dev->total_pages = dev->total_blocks * dev->pgs_per_blk;
 	INIT_LIST_HEAD(&dev->online_targets);
 
-	dev->bio_split = bioset_create(NVM_BIO_POOL_SIZE, 0);
-	if (!dev->bio_split) {
-		pr_err("nvm: cannot create bioset\n");
-		return -ENOMEM;
-	}
-
 	down_write(&nvm_lock);
 	if (!dev->block_cache) {
 		dev->block_cache = kmem_cache_create("nvm_block",
@@ -321,8 +315,6 @@ static void nvm_exit(struct nvm_dev *dev)
 {
 	if (dev->ppalist_pool)
 		dev->ops->destroy_dma_pool(dev->ppalist_pool);
-	if (dev->bio_split)
-		bioset_free(dev->bio_split);
 	mempool_destroy(dev->block_pool);
 	nvm_free(dev);
 
