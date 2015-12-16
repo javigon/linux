@@ -52,16 +52,18 @@ struct rrpc_rq {
 	unsigned long flags;
 };
 
+struct buf_entry {
+	struct rrpc_addr *p;
+	void *data;
+};
+
 struct rrpc_w_buffer {
-	size_t cursize;		/* Current buf lenght. Follows mem */
-	size_t cursync;		/* Bytes in buf that have been synced to media */
-	size_t buf_limit;	/* Limit for the allocated memory region */
-	void *buf;		/* Buffer to cache writes */
-	char *mem;		/* Points to the place in buf where writes can be
-				 * appended to. It defines the part of the
-				 * buffer containing valid data */
-	char *sync;		/* Points to the place in buf until which data
-				   has been synced to the devide */
+	struct buf_entry *entries;	/* Entries */
+	struct buf_entry *mem;		/* Points to the next writable entry */
+	struct buf_entry *sync;		/* Points to the last synced entry */
+	int cur_mem;			/* Current memory enty. Follows mem */
+	int cur_sync;		/* Entries have been synced to media */
+	int nentries;		/* Number of entries in write buffer */
 };
 
 struct rrpc_block {
@@ -126,6 +128,12 @@ struct rrpc {
 	spinlock_t bio_lock;
 	struct bio_list requeue_bios;
 	struct work_struct ws_requeue;
+
+	struct work_struct ws_writer;
+	struct workqueue_struct *kw_wq;
+
+	/* Block cache pool */
+	mempool_t *block_pool;
 
 	/* Simple translation map of logical addresses to physical addresses.
 	 * The logical addresses is known by the host system, while the physical

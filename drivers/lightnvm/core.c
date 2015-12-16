@@ -239,24 +239,6 @@ static int nvm_core_init(struct nvm_dev *dev)
 	dev->total_pages = dev->total_blocks * dev->pgs_per_blk;
 	INIT_LIST_HEAD(&dev->online_targets);
 
-	down_write(&nvm_lock);
-	if (!dev->block_cache) {
-		dev->block_cache = kmem_cache_create("nvm_block",
-			dev->pgs_per_blk * dev->sec_per_pg * dev->sec_size,
-			0, 0, NULL);
-		if (!dev->block_cache) {
-			up_write(&nvm_lock);
-			return -ENOMEM;
-		}
-	}
-	up_write(&nvm_lock);
-
-	if (!dev->block_pool) {
-		dev->block_pool = mempool_create_slab_pool(16, dev->block_cache);
-		if (!dev->block_pool)
-			return -ENOMEM;
-	}
-
 	return 0;
 }
 
@@ -315,7 +297,6 @@ static void nvm_exit(struct nvm_dev *dev)
 {
 	if (dev->ppalist_pool)
 		dev->ops->destroy_dma_pool(dev->ppalist_pool);
-	mempool_destroy(dev->block_pool);
 	nvm_free(dev);
 
 	pr_info("nvm: successfully unloaded\n");

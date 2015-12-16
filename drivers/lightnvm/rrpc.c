@@ -16,7 +16,7 @@
 
 #include "rrpc.h"
 
-static struct kmem_cache *rrpc_gcb_cache, *rrpc_rq_cache;
+static struct kmem_cache *rrpc_gcb_cache, *rrpc_rq_cache, *rrpc_block_cache;
 static DECLARE_RWSEM(rrpc_lock);
 
 static int rrpc_submit_io(struct rrpc *rrpc, struct bio *bio,
@@ -178,9 +178,7 @@ static void rrpc_set_lun_cur(struct rrpc_lun *rlun, struct rrpc_block *rblk)
 
 static void rrpc_put_blk(struct rrpc *rrpc, struct rrpc_block *rblk)
 {
-	struct nvm_dev *dev = rrpc->dev;
-
-	mempool_free(rblk->w_buffer.buf, dev->block_pool);
+	mempool_free(rblk->w_buffer.entries, rrpc->block_pool);
 	nvm_put_blk(rrpc->dev, rblk->parent);
 }
 
@@ -205,32 +203,31 @@ static struct rrpc_block *rrpc_get_blk(struct rrpc *rrpc, struct rrpc_lun *rlun,
 	struct nvm_block *blk;
 	struct rrpc_block *rblk;
 
-	blk = nvm_get_blk(rrpc->dev, rlun->parent, flags);
+	blk = nvm_get_blk(dev, rlun->parent, flags);
 	if (!blk)
 		return NULL;
 
 	rblk = &rlun->blocks[blk->id];
 	blk->priv = rblk;
 
-	bitmap_zero(rblk->invalid_pages, rrpc->dev->pgs_per_blk);
+	bitmap_zero(rblk->invalid_pages, dev->pgs_per_blk);
 	rblk->next_page = 0;
 	rblk->nr_invalid_pages = 0;
 	atomic_set(&rblk->data_cmnt_size, 0);
 
 	/* Set up block write buffer */
-	rblk->w_buffer.buf = mempool_alloc(dev->block_pool, GFP_KERNEL);
-	if (!rblk->w_buffer.buf) {
+	rblk->w_buffer.entries = mempool_alloc(rrpc->block_pool, GFP_ATOMIC);
+	if (!rblk->w_buffer.entries) {
 		pr_err("nvm: rrpc: cannot allocate write buffer for block\n");
 		rrpc_put_blk(rrpc, rblk);
 		return NULL;
 	}
 
-	rblk->w_buffer.buf_limit =
-			dev->pgs_per_blk * dev->sec_per_pg * dev->sec_size;
-	rblk->w_buffer.mem = rblk->w_buffer.buf;
-	rblk->w_buffer.sync = rblk->w_buffer.buf;
-	rblk->w_buffer.cursize = 0;
-	rblk->w_buffer.cursync = 0;
+	rblk->w_buffer.mem = rblk->w_buffer.entries;
+	rblk->w_buffer.sync = rblk->w_buffer.entries;
+	rblk->w_buffer.nentries = dev->pgs_per_blk * dev->sec_per_pg;
+	rblk->w_buffer.cur_mem = 0;
+	rblk->w_buffer.cur_sync = 0;
 
 	return rblk;
 }
@@ -756,10 +753,11 @@ static int rrpc_write_ppalist_rq(struct rrpc *rrpc, struct bio *bio,
 			struct nvm_rq *rqd, unsigned long flags, int npages)
 {
 	struct rrpc_inflight_rq *r = rrpc_get_inflight_rq(rqd);
-	struct bio *splitted_bio = bio_clone(bio, GFP_NOIO);
+	struct bio *splitted_bio = bio_clone(bio, GFP_NOIO); //JAVIER: TOGO
 	struct rrpc_addr *p;
 	struct rrpc_w_buffer *w_buffer;
 	sector_t laddr = rrpc_get_laddr(bio);
+	void *ppa_data;
 	int is_gc = flags & NVM_IOTYPE_GC;
 	int i;
 
@@ -783,16 +781,20 @@ static int rrpc_write_ppalist_rq(struct rrpc *rrpc, struct bio *bio,
 
 		bio_len = bio_cur_bytes(splitted_bio);
 		w_buffer = &p->rblk->w_buffer;
+		ppa_data = w_buffer->mem->p + 1;
 
-		BUG_ON(w_buffer->cursize + bio_len > w_buffer->buf_limit);
-		memcpy(w_buffer->mem, bio_data(splitted_bio), bio_len);
-		w_buffer->mem += bio_len;
-		w_buffer->cursize += bio_len;
+		BUG_ON(w_buffer->cur_mem + 1 > w_buffer->nentries);
+		BUG_ON(bio_len != RRPC_EXPOSED_PAGE_SIZE);
+
+		w_buffer->mem->p = p;
+		memcpy(ppa_data, bio_data(splitted_bio), bio_len);
+		w_buffer->mem++;
+		w_buffer->cur_mem++;
 
 		rqd->ppa_list[i] = rrpc_ppa_to_gaddr(rrpc->dev, p->addr);
 
-		printk("multipage. blk:%lu, cursize:%lu, bio_size:%d\n",
-				p->rblk->parent->id, w_buffer->cursize,
+		printk("multipage. blk:%lu, cur_mem:%d, bio_size:%d\n",
+				p->rblk->parent->id, w_buffer->cur_mem,
 				bio_len);
 
 		bio_advance(splitted_bio, 4096);
@@ -809,6 +811,7 @@ static int rrpc_write_rq(struct rrpc *rrpc, struct bio *bio,
 	struct rrpc_rq *rrqd = nvm_rq_to_pdu(rqd);
 	struct rrpc_addr *p;
 	struct rrpc_w_buffer *w_buffer;
+	void *ppa_data;
 	unsigned int bio_len = bio_cur_bytes(bio);
 	int is_gc = flags & NVM_IOTYPE_GC;
 	sector_t laddr = rrpc_get_laddr(bio);
@@ -830,11 +833,15 @@ static int rrpc_write_rq(struct rrpc *rrpc, struct bio *bio,
 	 * are written. This buffer is also used to write at the right page
 	 * granurality*/
 	w_buffer = &p->rblk->w_buffer;
-	BUG_ON(w_buffer->cursize + bio_len > w_buffer->buf_limit);
+	ppa_data = w_buffer->mem->p + 1;
 
-	memcpy(w_buffer->mem, bio_data(bio), bio_cur_bytes(bio));
-	w_buffer->mem += bio_len;
-	w_buffer->cursize += bio_len;
+	BUG_ON(w_buffer->cur_mem + 1 > w_buffer->nentries);
+	BUG_ON(bio_len != RRPC_EXPOSED_PAGE_SIZE);
+
+	w_buffer->mem->p = p;
+	memcpy(ppa_data, bio_data(bio), bio_len);
+	w_buffer->mem++;
+	w_buffer->cur_mem++;
 
 	rqd->ppa_addr = rrpc_ppa_to_gaddr(rrpc->dev, p->addr);
 	rqd->opcode = NVM_OP_HBWRITE;
@@ -883,6 +890,11 @@ static int rrpc_submit_io(struct rrpc *rrpc, struct bio *bio,
 	err = rrpc_setup_rq(rrpc, bio, rqd, flags, nr_pages);
 	if (err)
 		return err;
+
+	queue_work(rrpc->kw_wq, &rrpc->ws_writer);
+
+	if (bio_rw(bio) == WRITE)
+		return NVM_IO_DONE;
 
 	bio_get(bio);
 	rqd->bio = bio;
@@ -941,6 +953,28 @@ static blk_qc_t rrpc_make_rq(struct request_queue *q, struct bio *bio)
 	return BLK_QC_T_NONE;
 }
 
+static void rrpc_submit_write(struct work_struct *work)
+{
+#if 0
+	struct rrpc *rrpc = container_of(work, struct rrpc, ws_writer);
+	struct nvm_block *blk = NULL;
+	struct nvm_rqd *rqd;
+	struct bio *bio;
+	struct bio_list bios;
+
+	bio_list_init(&bios);
+
+	while (!list_empty(&lun->open_list)) {
+		blk = list_first_entry(&lun->open_list, struct nvm_block, list);
+
+		bio_get(TODO);
+
+
+		list_del(&blk->list);
+	}
+#endif
+}
+
 static void rrpc_requeue(struct work_struct *work)
 {
 	struct rrpc *rrpc = container_of(work, struct rrpc, ws_requeue);
@@ -983,7 +1017,7 @@ static void rrpc_gc_free(struct rrpc *rrpc)
 
 static int rrpc_gc_init(struct rrpc *rrpc)
 {
-	rrpc->krqd_wq = alloc_workqueue("rrpc-lun", WQ_MEM_RECLAIM|WQ_UNBOUND,
+	rrpc->krqd_wq = alloc_workqueue("rrpc-lun", WQ_MEM_RECLAIM | WQ_UNBOUND,
 								rrpc->nr_luns);
 	if (!rrpc->krqd_wq)
 		return -ENOMEM;
@@ -1086,6 +1120,8 @@ static int rrpc_map_init(struct rrpc *rrpc)
 
 static int rrpc_core_init(struct rrpc *rrpc)
 {
+	struct nvm_dev *dev = rrpc->dev;
+
 	down_write(&rrpc_lock);
 	if (!rrpc_gcb_cache) {
 		rrpc_gcb_cache = kmem_cache_create("rrpc_gcb",
@@ -1099,6 +1135,24 @@ static int rrpc_core_init(struct rrpc *rrpc)
 				sizeof(struct nvm_rq) + sizeof(struct rrpc_rq),
 				0, 0, NULL);
 		if (!rrpc_rq_cache) {
+			kmem_cache_destroy(rrpc_gcb_cache);
+			up_write(&rrpc_lock);
+			return -ENOMEM;
+		}
+	}
+
+	/*
+	 * we assume that sec->sec_size is the same as the page size exposed by
+	 * rrpc (4KB). We need extra logic otherwise
+	 */
+	BUG_ON(dev->sec_size != RRPC_EXPOSED_PAGE_SIZE);
+	if (!rrpc_block_cache) {
+		rrpc_block_cache = kmem_cache_create("nvm_block",
+			dev->pgs_per_blk * dev->sec_per_pg *
+			(dev->sec_size + sizeof(struct rrpc_addr)),
+			0, 0, NULL);
+		if (!rrpc_block_cache) {
+			kmem_cache_destroy(rrpc_rq_cache);
 			kmem_cache_destroy(rrpc_gcb_cache);
 			up_write(&rrpc_lock);
 			return -ENOMEM;
@@ -1119,6 +1173,10 @@ static int rrpc_core_init(struct rrpc *rrpc)
 	if (!rrpc->rq_pool)
 		return -ENOMEM;
 
+	rrpc->block_pool = mempool_create_slab_pool(64, rrpc_block_cache);
+	if (!rrpc->block_pool)
+		return -ENOMEM;
+
 	spin_lock_init(&rrpc->inflights.lock);
 	INIT_LIST_HEAD(&rrpc->inflights.reqs);
 
@@ -1130,6 +1188,10 @@ static void rrpc_core_free(struct rrpc *rrpc)
 	mempool_destroy(rrpc->page_pool);
 	mempool_destroy(rrpc->gcb_pool);
 	mempool_destroy(rrpc->rq_pool);
+	mempool_destroy(rrpc->block_pool);
+
+	if (rrpc->kw_wq)
+		destroy_workqueue(rrpc->kw_wq);
 }
 
 static void rrpc_luns_free(struct rrpc *rrpc)
@@ -1212,6 +1274,7 @@ static void rrpc_exit(void *private)
 
 	del_timer(&rrpc->gc_timer);
 
+	flush_workqueue(rrpc->kw_wq);
 	flush_workqueue(rrpc->krqd_wq);
 	flush_workqueue(rrpc->kgc_wq);
 
@@ -1341,6 +1404,12 @@ static void *rrpc_init(struct nvm_dev *dev, struct gendisk *tdisk,
 	bio_list_init(&rrpc->requeue_bios);
 	spin_lock_init(&rrpc->bio_lock);
 	INIT_WORK(&rrpc->ws_requeue, rrpc_requeue);
+
+	INIT_WORK(&rrpc->ws_writer, rrpc_submit_write);
+	rrpc->kw_wq = alloc_workqueue("rrpc-writer",
+					WQ_MEM_RECLAIM | WQ_UNBOUND, 1);
+	if (!rrpc->kw_wq)
+		return ERR_PTR(-ENOMEM);
 
 	rrpc->nr_luns = lun_end - lun_begin + 1;
 
