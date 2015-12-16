@@ -230,6 +230,16 @@ struct nvm_lun {
 	spinlock_t lock;
 };
 
+enum {
+	NVM_BLOCK_STATE_FREE = 0x1,	/* Free block */
+	NVM_BLOCK_STATE_OPEN = 0x2,	/* Open block - writes and reads*/
+	NVM_BLOCK_STATE_CLOSED = 0x4,	/* Closed block - only reads */
+
+	NVM_BLOCK_TYPE_GB = 0x8,	/* Good block */
+	NVM_BLOCK_TYPE_BB = 0x10,	/* Bad block */
+
+};
+
 struct nvm_block {
 	struct list_head list;
 	struct nvm_lun *lun;

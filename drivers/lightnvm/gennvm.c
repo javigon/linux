@@ -134,13 +134,14 @@ static int gennvm_block_map(u64 slba, u32 nlb, __le64 *entries, void *private)
 		pba = pba - (dev->sec_per_lun * lun_id);
 		blk = &lun->vlun.blocks[div_u64(pba, dev->sec_per_blk)];
 
-		if (!blk->type) {
+		if (!(blk->type & NVM_BLOCK_TYPE_GB) &&
+					!(blk->type & NVM_BLOCK_TYPE_BB)) {
 			/* at this point, we don't know anything about the
 			 * block. It's up to the FTL on top to re-etablish the
 			 * block state
 			 */
 			list_move_tail(&blk->list, &lun->used_list);
-			blk->type = 1;
+			blk->type = NVM_BLOCK_TYPE_GB;
 			lun->vlun.nr_free_blocks--;
 			lun->vlun.nr_inuse_blocks++;
 		}
@@ -276,7 +277,7 @@ static struct nvm_block *gennvm_get_blk(struct nvm_dev *dev,
 
 	blk = list_first_entry(&lun->free_list, struct nvm_block, list);
 	list_move_tail(&blk->list, &lun->used_list);
-	blk->type = 1;
+	blk->type = NVM_BLOCK_TYPE_GB;
 
 	lun->vlun.nr_free_blocks--;
 	lun->vlun.nr_inuse_blocks++;
@@ -293,19 +294,18 @@ static void gennvm_put_blk(struct nvm_dev *dev, struct nvm_block *blk)
 
 	spin_lock(&vlun->lock);
 
-	switch (blk->type) {
-	case 1:
+	if (blk->type & NVM_BLOCK_TYPE_GB) {
 		list_move_tail(&blk->list, &lun->free_list);
 		lun->vlun.nr_free_blocks++;
 		lun->vlun.nr_inuse_blocks--;
 		blk->type = 0;
 		break;
-	case 2:
+	} else if (blk->type & NVM_BLOCK_TYPE_BB) {
 		list_move_tail(&blk->list, &lun->bb_list);
 		lun->vlun.nr_bad_blocks++;
 		lun->vlun.nr_inuse_blocks--;
 		break;
-	default:
+	} else {
 		WARN_ON_ONCE(1);
 		pr_err("gennvm: erroneous block type (%lu -> %u)\n",
 							blk->id, blk->type);
@@ -396,9 +396,10 @@ static void gennvm_mark_blk_bad(struct nvm_dev *dev, struct nvm_rq *rqd)
 	/* look up blocks and mark them as bad */
 	if (rqd->nr_pages > 1)
 		for (i = 0; i < rqd->nr_pages; i++)
-			gennvm_blk_set_type(dev, &rqd->ppa_list[i], 2);
+			gennvm_blk_set_type(dev, &rqd->ppa_list[i],
+							NVM_BLOCK_TYPE_BB);
 	else
-		gennvm_blk_set_type(dev, &rqd->ppa_addr, 2);
+		gennvm_blk_set_type(dev, &rqd->ppa_addr, NVM_BLOCK_TYPE_BB);
 }
 
 static int gennvm_end_io(struct nvm_rq *rqd, int error)
