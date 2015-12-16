@@ -94,7 +94,13 @@ struct rrpc_lun {
 	struct nvm_lun *parent;
 	struct rrpc_block *cur, *gc_cur;
 	struct rrpc_block *blocks;	/* Reference to block allocation */
-	struct list_head prio_list;		/* Blocks that may be GC'ed */
+	struct list_head prio_list;	/* Blocks that may be GC'ed */
+	struct list_head open_list;	/* In-use open blocks. These are blocks
+					   that can be both written to and read
+					   from */
+	struct list_head closed_list;	/* In-use closed blocks. These are
+					   blocks that can _only_ be read from */
+
 	struct work_struct ws_gc;
 	struct rrpc_flash_pg flash_pg;
 

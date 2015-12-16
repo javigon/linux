@@ -203,7 +203,7 @@ static struct rrpc_block *rrpc_get_blk(struct rrpc *rrpc, struct rrpc_lun *rlun,
 	struct nvm_block *blk;
 	struct rrpc_block *rblk;
 
-	blk = nvm_get_blk(dev, rlun->parent, flags);
+	blk = nvm_get_blk(dev, &rlun->open_list, rlun->parent, flags);
 	if (!blk)
 		return NULL;
 
@@ -1227,6 +1227,9 @@ static int rrpc_luns_init(struct rrpc *rrpc, int lun_begin, int lun_end)
 		rlun->rrpc = rrpc;
 		rlun->parent = lun;
 		INIT_LIST_HEAD(&rlun->prio_list);
+		INIT_LIST_HEAD(&rlun->open_list);
+		INIT_LIST_HEAD(&rlun->closed_list);
+
 		INIT_WORK(&rlun->ws_gc, rrpc_lun_gc);
 		spin_lock_init(&rlun->lock);
 

@@ -24,8 +24,10 @@ struct gen_lun {
 	struct nvm_lun vlun;
 
 	int reserved_blocks;
-	/* lun block lists */
-	struct list_head used_list;	/* In-use blocks */
+	/*
+	 * Media manager lun block lists. Each target maintains its own list of
+	 * in use blocks
+	 */
 	struct list_head free_list;	/* Not used blocks i.e. released
 					 * and ready for use
 					 */

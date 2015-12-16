@@ -166,10 +166,10 @@ static struct nvm_dev *nvm_find_nvm_dev(const char *name)
 	return NULL;
 }
 
-struct nvm_block *nvm_get_blk(struct nvm_dev *dev, struct nvm_lun *lun,
-							unsigned long flags)
+struct nvm_block *nvm_get_blk(struct nvm_dev *dev, struct list_head *tgt_list,
+				struct nvm_lun *lun, unsigned long flags)
 {
-	return dev->mt->get_blk(dev, lun, flags);
+	return dev->mt->get_blk(dev, tgt_list, lun, flags);
 }
 EXPORT_SYMBOL(nvm_get_blk);
 

@@ -222,7 +222,8 @@ struct nvm_lun {
 	int lun_id;
 	int chnl_id;
 
-	unsigned int nr_inuse_blocks;	/* Number of used blocks */
+	unsigned int nr_open_blocks;	/* Number of used, writable blocks */
+	unsigned int nr_closed_blocks;	/* Number of used, non-writable blocks */
 	unsigned int nr_free_blocks;	/* Number of unused blocks */
 	unsigned int nr_bad_blocks;	/* Number of bad blocks */
 	struct nvm_block *blocks;
@@ -389,7 +390,8 @@ extern void nvm_dev_dma_free(struct nvm_dev *, void *, dma_addr_t);
 typedef int (nvmm_register_fn)(struct nvm_dev *);
 typedef void (nvmm_unregister_fn)(struct nvm_dev *);
 typedef struct nvm_block *(nvmm_get_blk_fn)(struct nvm_dev *,
-					      struct nvm_lun *, unsigned long);
+					struct list_head *tgt_list,
+					struct nvm_lun *, unsigned long);
 typedef void (nvmm_put_blk_fn)(struct nvm_dev *, struct nvm_block *);
 typedef int (nvmm_open_blk_fn)(struct nvm_dev *, struct nvm_block *);
 typedef int (nvmm_close_blk_fn)(struct nvm_dev *, struct nvm_block *);
@@ -430,8 +432,9 @@ struct nvmm_type {
 extern int nvm_register_mgr(struct nvmm_type *);
 extern void nvm_unregister_mgr(struct nvmm_type *);
 
-extern struct nvm_block *nvm_get_blk(struct nvm_dev *, struct nvm_lun *,
-								unsigned long);
+extern struct nvm_block *nvm_get_blk(struct nvm_dev *,
+				struct list_head *tgt_list, struct nvm_lun *,
+				unsigned long);
 extern void nvm_put_blk(struct nvm_dev *, struct nvm_block *);
 
 extern int nvm_register(struct request_queue *, char *,
