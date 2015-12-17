@@ -879,6 +879,7 @@ static int rrpc_submit_io(struct rrpc *rrpc, struct bio *bio,
 	if (bio_rw(bio) == READ) {
 		struct nvm_rq *rqd;
 
+		printk("READSSSSS\n");
 		rqd = mempool_alloc(rrpc->rq_pool, GFP_KERNEL);
 		if (!rqd) {
 			pr_err_ratelimited("rrpc: not able to queue bio.");
@@ -904,6 +905,12 @@ static int rrpc_submit_io(struct rrpc *rrpc, struct bio *bio,
 				return err;
 		}
 
+		bio_get(bio);
+		rqd->bio = bio;
+		rqd->ins = &rrpc->instance;
+		rqd->nr_pages = npages;
+		rrqd->flags = flags;
+
 		err = nvm_submit_io(rrpc->dev, rqd);
 		if (err) {
 			pr_err("rrpc: I/O submission failed: %d\n", err);
@@ -914,6 +921,7 @@ static int rrpc_submit_io(struct rrpc *rrpc, struct bio *bio,
 		return NVM_IO_OK;
 	}
 
+	printf("NOOOOOOOOOOOOOOOOOOOOO\n");
 	/* WRITE path */
 	if (npages > 1) {
 		err = rrpc_write_ppalist_rq(rrpc, bio, rrqd, flags, npages);
@@ -927,13 +935,6 @@ static int rrpc_submit_io(struct rrpc *rrpc, struct bio *bio,
 
 	queue_work(rrpc->kw_wq, &rrpc->ws_writer);
 	return NVM_IO_DONE;
-
-	// JAVIER: THIS WILL GO!
-	/* bio_get(bio); */
-	/* rqd->bio = bio; */
-	/* rqd->ins = &rrpc->instance; */
-	/* rqd->nr_pages = nr_pages; */
-	/* rrq->flags = flags; */
 }
 
 static blk_qc_t rrpc_make_rq(struct request_queue *q, struct bio *bio)
@@ -981,6 +982,7 @@ static blk_qc_t rrpc_make_rq(struct request_queue *q, struct bio *bio)
 static void rrpc_submit_write(struct work_struct *work)
 {
 	struct rrpc *rrpc = container_of(work, struct rrpc, ws_writer);
+	struct request_queue *q = rrpc->dev->q;
 	/* struct nvm_dev *dev = rrpc->dev; */
 	struct rrpc_lun *rlun;
 	struct rrpc_rq *rrqd;
@@ -989,9 +991,12 @@ static void rrpc_submit_write(struct work_struct *work)
 	struct nvm_block *blk;
 	struct rrpc_block *rblk;
 	struct bio *bio;
+	struct page *page;
 	struct bio_list bios;
+	unsigned page_offset;
 	/* int full_mem_pgs; */
 	int pgs_to_sync;
+	int err;
 	int i, j;
 
 	bio_list_init(&bios);
@@ -1013,11 +1018,29 @@ static void rrpc_submit_write(struct work_struct *work)
 				rqd = mempool_alloc(rrpc->rq_pool, GFP_KERNEL);
 				if (!rqd) {
 					pr_err_ratelimited("rrpc: not able to queue bio.");
-					bio_io_error(bio);
 					return;
 				}
 
-				// TODO:Construct bio
+				bio = bio_alloc(GFP_NOIO, 1);
+				if (!bio) {
+					pr_err("nvm: rrpc: could not alloc write bio\n");
+					return;
+				}
+
+				/* page = mempool_alloc(rrpc->page_pool, GFP_NOIO); */
+				/* if (!page) { */
+					/* pr_err("nvm: rrpc: could not alloc page\n"); */
+					/* return; */
+				/* } */
+
+				page = virt_to_page(data);
+				page_offset = offset_in_page(data);
+
+				bio->bi_iter.bi_sector = rrqd->addr->addr;
+				bio->bi_rw = WRITE;
+				/* bio->bi_end_io = rrpc_end_io; */
+				bio_add_pc_page(q, bio, page, RRPC_EXPOSED_PAGE_SIZE, 0);
+
 				bio_get(bio);
 
 				rqd->ppa_addr = rrpc_ppa_to_gaddr(rrpc->dev, rrqd->addr->addr);
@@ -1027,6 +1050,13 @@ static void rrpc_submit_write(struct work_struct *work)
 				rqd->nr_pages = 1;
 				rqd->flags = rrqd->flags;
 				rqd->priv = rrqd;
+
+				err = nvm_submit_io(rrpc->dev, rqd);
+				if (err) {
+					pr_err("rrpc: I/O submission failed: %d\n", err);
+					bio_put(bio);
+					return;
+				}
 			}
 
 			/* TODO: JAVIER:: For now only submit max_rq_size -
@@ -1266,6 +1296,7 @@ static void rrpc_core_free(struct rrpc *rrpc)
 {
 	mempool_destroy(rrpc->page_pool);
 	mempool_destroy(rrpc->gcb_pool);
+	mempool_destroy(rrpc->rrq_pool);
 	mempool_destroy(rrpc->rq_pool);
 	mempool_destroy(rrpc->block_pool);
 
