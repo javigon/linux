@@ -53,7 +53,7 @@ struct rrpc_rq {
 };
 
 struct buf_entry {
-	struct rrpc_addr *p;
+	struct rrpc_rq *rrqd;
 	void *data;
 };
 
@@ -156,6 +156,7 @@ struct rrpc {
 	mempool_t *page_pool;
 	mempool_t *gcb_pool;
 	mempool_t *rq_pool;
+	mempool_t *rrq_pool;
 
 	struct timer_list gc_timer;
 	struct workqueue_struct *krqd_wq;
@@ -233,19 +234,17 @@ static inline int rrpc_lock_laddr(struct rrpc *rrpc, sector_t laddr,
 	return __rrpc_lock_laddr(rrpc, laddr, pages, r);
 }
 
-static inline struct rrpc_inflight_rq *rrpc_get_inflight_rq(struct nvm_rq *rqd)
+static inline struct rrpc_inflight_rq *rrpc_get_inflight_rq(struct rrpc_rq *rrqd)
 {
-	struct rrpc_rq *rrqd = nvm_rq_to_pdu(rqd);
-
 	return &rrqd->inflight_rq;
 }
 
 static inline int rrpc_lock_rq(struct rrpc *rrpc, struct bio *bio,
-							struct nvm_rq *rqd)
+							struct rrpc_rq *rrqd)
 {
 	sector_t laddr = rrpc_get_laddr(bio);
 	unsigned int pages = rrpc_get_pages(bio);
-	struct rrpc_inflight_rq *r = rrpc_get_inflight_rq(rqd);
+	struct rrpc_inflight_rq *r = rrpc_get_inflight_rq(rrqd);
 
 	return rrpc_lock_laddr(rrpc, laddr, pages, r);
 }
@@ -260,10 +259,10 @@ static inline void rrpc_unlock_laddr(struct rrpc *rrpc,
 	spin_unlock_irqrestore(&rrpc->inflights.lock, flags);
 }
 
-static inline void rrpc_unlock_rq(struct rrpc *rrpc, struct nvm_rq *rqd)
+static inline void rrpc_unlock_rq(struct rrpc *rrpc, struct rrpc_rq *rrqd,
+								unsigned pages)
 {
-	struct rrpc_inflight_rq *r = rrpc_get_inflight_rq(rqd);
-	uint8_t pages = rqd->nr_pages;
+	struct rrpc_inflight_rq *r = rrpc_get_inflight_rq(rrqd);
 
 	BUG_ON((r->l_start + pages) > rrpc->nr_pages);
 

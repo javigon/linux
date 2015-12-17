@@ -166,6 +166,8 @@ struct nvm_rq {
 	void *metadata;
 	dma_addr_t dma_metadata;
 
+	void *priv;
+
 	uint8_t opcode;
 	uint16_t nr_pages;
 	uint16_t flags;
@@ -178,7 +180,7 @@ static inline struct nvm_rq *nvm_rq_from_pdu(void *pdu)
 
 static inline void *nvm_rq_to_pdu(struct nvm_rq *rqdata)
 {
-	return rqdata + 1;
+	return rqdata->priv;
 }
 
 struct nvm_block;
