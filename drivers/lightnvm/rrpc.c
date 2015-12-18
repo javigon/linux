@@ -683,13 +683,8 @@ static int rrpc_end_io(struct nvm_rq *rqd, int error)
 
 	printk("end io - laddr:%lu, npages:%d\n", laddr, npages);
 
-	if ((laddr != 0) && (laddr != 1) && (laddr != 2) && (laddr & 3)) {
-		printk("bad io:%lu,type:%lu\n", laddr, bio_data_dir(rqd->bio));
-		return 0;
-	}
-
-	/* if (bio_data_dir(rqd->bio) == WRITE) */
-		/* rrpc_end_io_write(rrpc, rrqd, laddr, npages); */
+	if (bio_data_dir(rqd->bio) == WRITE)
+		rrpc_end_io_write(rrpc, rrqd, laddr, npages);
 
 	if (rrqd->flags & NVM_IOTYPE_GC)
 		return 0;
@@ -697,10 +692,10 @@ static int rrpc_end_io(struct nvm_rq *rqd, int error)
 	rrpc_unlock_rq(rrpc, rrqd, npages);
 	bio_put(rqd->bio);
 
-	if (npages > 1)
+	if ((npages > 1) && (rqd->ppa_list))
 		nvm_dev_dma_free(rrpc->dev, rqd->ppa_list, rqd->dma_ppa_list);
-	if (rqd->metadata)
-		nvm_dev_dma_free(rrpc->dev, rqd->metadata, rqd->dma_metadata);
+	/* if (rqd->metadata) */
+		/* nvm_dev_dma_free(rrpc->dev, rqd->metadata, rqd->dma_metadata); */
 
 	mempool_free(rrqd, rrpc->rrq_pool);
 	mempool_free(rqd, rrpc->rq_pool);
@@ -739,6 +734,8 @@ static int rrpc_read_ppalist_rq(struct rrpc *rrpc, struct bio *bio,
 							rqd->dma_ppa_list);
 			return NVM_IO_DONE;
 		}
+
+		printk("READ(m):laddr:%lu,addr:%llu\n", laddr + i, gp->addr);
 	}
 
 	rqd->opcode = NVM_OP_HBREAD;
@@ -771,6 +768,8 @@ static int rrpc_read_rq(struct rrpc *rrpc, struct bio *bio, struct nvm_rq *rqd,
 
 	rqd->opcode = NVM_OP_HBREAD;
 	rrqd->addr = gp;
+
+	printk("READ(1):laddr:%lu,addr:%llu\n", laddr, gp->addr);
 
 	return NVM_IO_OK;
 }
@@ -868,13 +867,16 @@ static int rrpc_write_rq(struct rrpc *rrpc, struct bio *bio,
 
 	rrqd->flags = flags;
 	rrqd->addr = p;
+	rrqd->laddr = laddr;
 	w_buffer->mem->rrqd = rrqd;
 
-	ppa_data = w_buffer->mem->rrqd + 1;
-	memcpy(ppa_data, bio_data(bio), bio_len);
+	//JAVIER: THIS IS THE MEMORY ERROR YOU ARE HUNTING!
+	/* ppa_data = w_buffer->mem->rrqd + 1; */
+	/* memcpy(ppa_data, bio_data(bio), bio_len); */
 	w_buffer->mem++;
 	w_buffer->cur_mem++;
 
+	printk("WRITE_RQ(1):laddr:%lu,addr:%llu, bio_sec:%lu\n", laddr, p->addr, bio->bi_iter.bi_sector);
 	// JAVIER: This will go
 	/* rqd->ppa_addr = rrpc_ppa_to_gaddr(rrpc->dev, p->addr); */
 	/* rqd->opcode = NVM_OP_HBWRITE; */
@@ -906,7 +908,7 @@ static int rrpc_submit_io(struct rrpc *rrpc, struct bio *bio,
 		rqd->priv = rrqd;
 
 		if (npages > 1) {
-			rqd->ppa_list = nvm_dev_dma_alloc(rrpc->dev, GFP_KERNEL,
+			rqd->ppa_list = nvm_dev_dma_alloc(rrpc->dev, GFP_ATOMIC,
 							&rqd->dma_ppa_list);
 			if (!rqd->ppa_list) {
 				pr_err("rrpc: not able to allocate ppa list\n");
@@ -1071,7 +1073,7 @@ static void rrpc_submit_write(struct work_struct *work)
 				page = virt_to_page(data);
 				page_offset = offset_in_page(data);
 
-				bio->bi_iter.bi_sector = rrpc_get_sector(rrqd->addr->addr);
+				bio->bi_iter.bi_sector = rrpc_get_sector(rrqd->laddr);
 				bio->bi_rw = WRITE;
 				bio_add_pc_page(q, bio, page, RRPC_EXPOSED_PAGE_SIZE, 0);
 
@@ -1086,7 +1088,10 @@ static void rrpc_submit_write(struct work_struct *work)
 				rqd->flags = rrqd->flags;
 				rqd->priv = rrqd;
 
-				printk("rqd addr:%llu(%lu)\n", rrqd->addr->addr, rqd->ppa_addr.ppa);
+				printk("rqd addr:%llu(%llu), sec:%lu\n",
+						rrqd->addr->addr,
+						rqd->ppa_addr.ppa,
+						rqd->bio->bi_iter.bi_sector);
 				printk("cmnt:%d\n", atomic_read(&rblk->data_cmnt_size));
 
 				err = nvm_submit_io(rrpc->dev, rqd);
@@ -1263,23 +1268,23 @@ static int rrpc_core_init(struct rrpc *rrpc)
 			up_write(&rrpc_lock);
 			return -ENOMEM;
 		}
+	}
 
-		rrpc_rq_cache = kmem_cache_create("nvm_rq",
-				sizeof(struct nvm_rq), 0, 0, NULL);
-		if (!rrpc_rq_cache) {
-			kmem_cache_destroy(rrpc_gcb_cache);
-			up_write(&rrpc_lock);
-			return -ENOMEM;
-		}
+	rrpc_rq_cache = kmem_cache_create("nvm_rq",
+					sizeof(struct nvm_rq), 0, 0, NULL);
+	if (!rrpc_rq_cache) {
+		kmem_cache_destroy(rrpc_gcb_cache);
+		up_write(&rrpc_lock);
+		return -ENOMEM;
+	}
 
-		rrpc_rrq_cache = kmem_cache_create("rrpc_rrq",
-				sizeof(struct rrpc_rq), 0, 0, NULL);
-		if (!rrpc_rrq_cache) {
-			kmem_cache_destroy(rrpc_gcb_cache);
-			kmem_cache_destroy(rrpc_rq_cache);
-			up_write(&rrpc_lock);
-			return -ENOMEM;
-		}
+	rrpc_rrq_cache = kmem_cache_create("rrpc_rrq",
+					sizeof(struct rrpc_rq), 0, 0, NULL);
+	if (!rrpc_rrq_cache) {
+		kmem_cache_destroy(rrpc_gcb_cache);
+		kmem_cache_destroy(rrpc_rq_cache);
+		up_write(&rrpc_lock);
+		return -ENOMEM;
 	}
 
 	/*
@@ -1290,7 +1295,7 @@ static int rrpc_core_init(struct rrpc *rrpc)
 	if (!rrpc_block_cache) {
 		rrpc_block_cache = kmem_cache_create("nvm_block",
 			dev->pgs_per_blk * dev->sec_per_pg *
-			(dev->sec_size + sizeof(struct rrpc_addr)),
+			(dev->sec_size + sizeof(struct rrpc_rq)),
 			0, 0, NULL);
 		if (!rrpc_block_cache) {
 			kmem_cache_destroy(rrpc_gcb_cache);

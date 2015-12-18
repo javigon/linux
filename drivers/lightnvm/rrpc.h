@@ -49,6 +49,7 @@ struct rrpc_inflight_rq {
 struct rrpc_rq {
 	struct rrpc_inflight_rq inflight_rq;
 	struct rrpc_addr *addr;
+	sector_t laddr;
 	unsigned long flags;
 };
 

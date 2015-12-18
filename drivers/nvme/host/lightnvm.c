@@ -560,7 +560,8 @@ static struct nvm_dev_ops nvme_nvm_dev_ops = {
 	.dev_dma_alloc		= nvme_nvm_dev_dma_alloc,
 	.dev_dma_free		= nvme_nvm_dev_dma_free,
 
-	.max_phys_sect		= 64,
+	/* .max_phys_sect		= 64, */
+	.max_phys_sect		= 1,
 };
 
 int nvme_nvm_register(struct request_queue *q, char *disk_name)
