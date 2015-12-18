@@ -652,26 +652,25 @@ static void rrpc_end_io_write(struct rrpc *rrpc, struct rrpc_rq *rrqd,
 	struct rrpc_w_buffer *buf;
 	struct nvm_lun *lun;
 	int cmnt_size, i;
+
+	printk("Endio: npages:%d\n", npages);
 	for (i = 0; i < npages; i++) {
 		p = &rrpc->trans_map[laddr + i];
 		rblk = p->rblk;
-		buf = rblk->w_buffer;
+		buf = &rblk->w_buffer;
 		lun = rblk->parent->lun;
 
-#if 0
-		// JAVIER: the following line gives a null pnt derreference
 		cmnt_size = atomic_inc_return(&rblk->data_cmnt_size);
-		printk("end_io_write: cmnt_size: %d\n", cmnt_size);
+		printk("end_io_write - cmnt: %d\n", atomic_read(&rblk->data_cmnt_size));
 		if (unlikely(cmnt_size == rrpc->dev->pgs_per_blk)) {
 			struct nvm_block *blk = rblk->parent;
 			BUG_ON((buf->cur_mem != buf->cur_sync) &&
 					(buf->cur_mem != buf->nentries));
-			clear_bit(NVM_BLOCK_STATE_OPEN, blk); //JAVIER: CHECK!
-			blk |= NVM_BLOCK_STATE_CLOSED;
+			/* clear_bit(NVM_BLOCK_STATE_OPEN, blk->type); //JAVIER: CHECK! */
+			blk->type |= NVM_BLOCK_STATE_CLOSED;
 			mempool_free(rblk->w_buffer.entries, rrpc->block_pool);
 			rrpc_run_gc(rrpc, rblk);
 		}
-#endif
 	}
 }
 
@@ -684,8 +683,13 @@ static int rrpc_end_io(struct nvm_rq *rqd, int error)
 
 	printk("end io - laddr:%lu, npages:%d\n", laddr, npages);
 
-	if (bio_data_dir(rqd->bio) == WRITE)
-		rrpc_end_io_write(rrpc, rrqd, laddr, npages);
+	if ((laddr != 0) && (laddr != 1) && (laddr != 2) && (laddr & 3)) {
+		printk("bad io:%lu,type:%lu\n", laddr, bio_data_dir(rqd->bio));
+		return 0;
+	}
+
+	/* if (bio_data_dir(rqd->bio) == WRITE) */
+		/* rrpc_end_io_write(rrpc, rrqd, laddr, npages); */
 
 	if (rrqd->flags & NVM_IOTYPE_GC)
 		return 0;
@@ -697,6 +701,7 @@ static int rrpc_end_io(struct nvm_rq *rqd, int error)
 		nvm_dev_dma_free(rrpc->dev, rqd->ppa_list, rqd->dma_ppa_list);
 	if (rqd->metadata)
 		nvm_dev_dma_free(rrpc->dev, rqd->metadata, rqd->dma_metadata);
+
 	mempool_free(rrqd, rrpc->rrq_pool);
 	mempool_free(rqd, rrpc->rq_pool);
 
@@ -727,6 +732,7 @@ static int rrpc_read_ppalist_rq(struct rrpc *rrpc, struct bio *bio,
 			rqd->ppa_list[i] = rrpc_ppa_to_gaddr(rrpc->dev,
 								gp->addr);
 		} else {
+			printk("FALSE READ(m): laddr:%lu\n", laddr);
 			BUG_ON(is_gc);
 			rrpc_unlock_laddr(rrpc, r);
 			nvm_dev_dma_free(rrpc->dev, rqd->ppa_list,
@@ -757,6 +763,7 @@ static int rrpc_read_rq(struct rrpc *rrpc, struct bio *bio, struct nvm_rq *rqd,
 	if (gp->rblk) {
 		rqd->ppa_addr = rrpc_ppa_to_gaddr(rrpc->dev, gp->addr);
 	} else {
+		printk("FALSE READ: laddr:%lu\n", laddr);
 		BUG_ON(is_gc);
 		rrpc_unlock_rq(rrpc, rrqd, 1);
 		return NVM_IO_DONE;
@@ -890,7 +897,7 @@ static int rrpc_submit_io(struct rrpc *rrpc, struct bio *bio,
 	if (bio_rw(bio) == READ) {
 		struct nvm_rq *rqd;
 
-		rqd = mempool_alloc(rrpc->rq_pool, GFP_KERNEL);
+		rqd = mempool_alloc(rrpc->rq_pool, GFP_ATOMIC);
 		if (!rqd) {
 			pr_err_ratelimited("rrpc: not able to queue bio.");
 			bio_io_error(bio);
@@ -959,7 +966,7 @@ static blk_qc_t rrpc_make_rq(struct request_queue *q, struct bio *bio)
 		return BLK_QC_T_NONE;
 	}
 
-	rrqd = mempool_alloc(rrpc->rrq_pool, GFP_KERNEL);
+	rrqd = mempool_alloc(rrpc->rrq_pool, GFP_ATOMIC);
 	if (!rrqd) {
 		pr_err_ratelimited("rrpc: not able to queue bio.");
 		bio_io_error(bio);
@@ -1025,7 +1032,7 @@ static void rrpc_submit_write(struct work_struct *work)
 			 * Clean closed blocks. Blocks are closed in
 			 * rrpc_end_io_write.
 			 */
-			if (unlikely(blk & NVM_BLOCK_STATE_CLOSED)) {
+			if (unlikely(blk->type & NVM_BLOCK_STATE_CLOSED)) {
 				list_move_tail(&blk->list, &rlun->closed_list);
 				continue;
 			}
@@ -1042,9 +1049,7 @@ static void rrpc_submit_write(struct work_struct *work)
 				rrqd = rblk->w_buffer.sync->rrqd;
 				data = rrqd + 1;
 
-				printk("rqd addr:%llu\n", rrqd->addr->addr);
-
-				rqd = mempool_alloc(rrpc->rq_pool, GFP_KERNEL);
+				rqd = mempool_alloc(rrpc->rq_pool, GFP_NOIO);
 				if (!rqd) {
 					pr_err_ratelimited("rrpc: not able to queue bio.");
 					return;
@@ -1080,6 +1085,9 @@ static void rrpc_submit_write(struct work_struct *work)
 				rqd->nr_pages = 1;
 				rqd->flags = rrqd->flags;
 				rqd->priv = rrqd;
+
+				printk("rqd addr:%llu(%lu)\n", rrqd->addr->addr, rqd->ppa_addr.ppa);
+				printk("cmnt:%d\n", atomic_read(&rblk->data_cmnt_size));
 
 				err = nvm_submit_io(rrpc->dev, rqd);
 				if (err) {
