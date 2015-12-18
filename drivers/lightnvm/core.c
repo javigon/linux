@@ -985,6 +985,39 @@ static long nvm_ioctl_dev_init(struct file *file, void __user *arg)
 	return __nvm_ioctl_dev_init(&init);
 }
 
+static long __nvm_ioctl_dev_factory(struct nvm_ioctl_dev_factory *fact)
+{
+	struct nvm_dev *dev;
+
+	down_write(&nvm_lock);
+	dev = nvm_find_nvm_dev(fact->dev);
+	up_write(&nvm_lock);
+	if (!dev) {
+		pr_err("nvm: device not found\n");
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+static long nvm_ioctl_dev_factory(struct file *file, void __user *arg)
+{
+	struct nvm_ioctl_dev_factory fact;
+
+	if (!capable(CAP_SYS_ADMIN))
+		return -EPERM;
+
+	if (copy_from_user(&fact, arg, sizeof(struct nvm_ioctl_dev_factory)))
+		return -EFAULT;
+
+	fact.dev[DISK_NAME_LEN - 1] = '\0';
+
+	if (fact.flags & ~(NVM_FACTORY_NR_BITS - 1))
+		return -EINVAL;
+
+	return __nvm_ioctl_dev_factory(&fact);
+}
+
 static long nvm_ctl_ioctl(struct file *file, uint cmd, unsigned long arg)
 {
 	void __user *argp = (void __user *)arg;
