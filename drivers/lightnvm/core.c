@@ -1012,6 +1012,111 @@ static long nvm_ioctl_dev_init(struct file *file, void __user *arg)
 	return __nvm_ioctl_dev_init(&init);
 }
 
+static int nvm_get_bb_tbl(struct nvm_dev *dev, struct ppa_addr ppa,
+					nvm_bb_update_fn *fn, void *priv)
+{
+	struct ppa_addr dev_ppa;
+	int ret;
+
+	dev_ppa = generic_to_dev_addr(dev, ppa);
+
+	ret = dev->ops->get_bb_tbl(dev, dev_ppa, dev->blks_per_lun, fn, priv);
+	if (ret)
+		pr_err("nvm: failed bb tbl for ch%u lun%u\n",
+							ppa.g.ch, ppa.g.blk);
+	return ret;
+}
+
+struct factory_blks {
+	struct nvm_dev *dev;
+	int flags;
+	unsigned long *blks;
+};
+
+static int nvm_factory_blks(struct ppa_addr ppa, int nr_blks, u8 *blks,
+								void *private)
+{
+	struct factory_blks *f = private;
+	struct nvm_dev *dev = f->dev;
+	int i, lunoff;
+
+	lunoff = ppa.g.ch * dev->luns_per_chnl + ppa.g.lun * dev->blks_per_lun;
+
+	for (i = 0; i < nr_blks; i++) {
+		switch (blks[i]) {
+		case NVM_BLK_T_FREE:
+			break;
+		case NVM_BLK_T_HOST:
+			if (!(f->flags & NVM_FACTORY_RESET_HOST_BLKS))
+				set_bit(lunoff + i, f->blks);
+			break;
+		default:
+			set_bit(lunoff + i, f->blks);
+			break;
+		}
+	}
+
+	return 0;
+}
+
+static long __nvm_ioctl_dev_factory(struct nvm_dev *dev,
+					struct nvm_ioctl_dev_factory *fact)
+{
+	struct factory_blks f;
+	struct ppa_addr ppa;
+	int ch, lun, ret = 0;
+
+	f.blks = kzalloc(dev->nr_luns * dev->blks_per_lun, GFP_KERNEL);
+	if (!f.blks)
+		return -ENOMEM;
+
+	ppa.ppa = 0;
+	f.dev = dev;
+	f.flags = fact->flags;
+
+	for (ch = 0; ch < dev->nr_chnls; ch++) {
+		for (lun = 0; lun < dev->luns_per_chnl; lun++) {
+			ppa.g.ch = ch;
+			ppa.g.lun = lun;
+
+			ret = nvm_get_bb_tbl(dev, ppa, nvm_factory_blks, &f);
+			if (ret)
+				goto err;
+		}
+	}
+
+err:
+	kfree(f.blks);
+	return ret;
+}
+
+static long nvm_ioctl_dev_factory(struct file *file, void __user *arg)
+{
+	struct nvm_ioctl_dev_factory fact;
+	struct nvm_dev *dev;
+
+	if (!capable(CAP_SYS_ADMIN))
+		return -EPERM;
+
+	if (copy_from_user(&fact, arg, sizeof(struct nvm_ioctl_dev_factory)))
+		return -EFAULT;
+
+	fact.dev[DISK_NAME_LEN - 1] = '\0';
+
+	if (fact.flags & ~(NVM_FACTORY_NR_BITS - 1))
+		return -EINVAL;
+
+	down_write(&nvm_lock);
+	dev = nvm_find_nvm_dev(fact.dev);
+	up_write(&nvm_lock);
+	if (!dev) {
+		pr_err("nvm: device not found\n");
+		return -EINVAL;
+	}
+
+	return __nvm_ioctl_dev_factory(dev, &fact);
+}
+
 static long nvm_ctl_ioctl(struct file *file, uint cmd, unsigned long arg)
 {
 	void __user *argp = (void __user *)arg;
@@ -1027,6 +1132,8 @@ static long nvm_ctl_ioctl(struct file *file, uint cmd, unsigned long arg)
 		return nvm_ioctl_dev_remove(file, argp);
 	case NVM_DEV_INIT:
 		return nvm_ioctl_dev_init(file, argp);
+	case NVM_DEV_FACTORY:
+		return nvm_ioctl_dev_factory(file, argp);
 	}
 	return 0;
 }
