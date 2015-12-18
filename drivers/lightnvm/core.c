@@ -1013,6 +1013,177 @@ static long nvm_ioctl_dev_init(struct file *file, void __user *arg)
 	return __nvm_ioctl_dev_init(&init);
 }
 
+static int nvm_get_bb_tbl(struct nvm_dev *dev, struct ppa_addr ppa,
+					nvm_bb_update_fn *fn, void *priv)
+{
+	struct ppa_addr dev_ppa;
+	int ret;
+
+	dev_ppa = generic_to_dev_addr(dev, ppa);
+
+	ret = dev->ops->get_bb_tbl(dev, dev_ppa, dev->blks_per_lun, fn, priv);
+	if (ret)
+		pr_err("nvm: failed bb tbl for ch%u lun%u\n",
+							ppa.g.ch, ppa.g.blk);
+	return ret;
+}
+
+struct factory_blks {
+	struct nvm_dev *dev;
+	int flags;
+	unsigned long *blks;
+};
+
+static int nvm_factory_blks(struct ppa_addr ppa, int nr_blks, u8 *blks,
+								void *private)
+{
+	struct factory_blks *f = private;
+	struct nvm_dev *dev = f->dev;
+	int i, lunoff;
+
+	lunoff = ppa.g.ch * dev->luns_per_chnl + ppa.g.lun * dev->blks_per_lun;
+
+	/* non-set bits correspond to the block must be erased */
+	for (i = 0; i < nr_blks; i++) {
+		switch (blks[i]) {
+		case NVM_BLK_T_FREE:
+			break;
+		case NVM_BLK_T_HOST:
+			if (!(f->flags & NVM_FACTORY_RESET_HOST_BLKS))
+				set_bit(lunoff + i, f->blks);
+			break;
+		default:
+			set_bit(lunoff + i, f->blks);
+			break;
+		}
+	}
+
+	return 0;
+}
+
+static int nvm_fact_get_blks(struct nvm_dev *dev, struct ppa_addr *erase_list,
+					int max_ppas, struct factory_blks *f)
+{
+	struct ppa_addr ppa;
+	int ch, lun, blkid, done = 0, ppa_cnt = 0;
+	unsigned long *offset;
+
+	while (!done) {
+		done = 1;
+		for (ch = 0; ch < dev->nr_chnls; ch++) {
+			for (lun = 0; lun < dev->luns_per_chnl; lun++) {
+				offset = &f->blks[ch * dev->luns_per_chnl +
+						  lun * dev->blks_per_lun];
+
+				blkid = find_first_zero_bit(offset,
+							dev->blks_per_lun);
+				if (blkid >= dev->blks_per_lun)
+					break;
+				set_bit(blkid, offset);
+
+				printk("found blk %u %u %u\n", blkid, ch, lun);
+				ppa.ppa = 0;
+				ppa.g.ch = ch;
+				ppa.g.lun = lun;
+				ppa.g.blk = blkid;
+
+				erase_list[ppa_cnt] = ppa;
+				ppa_cnt++;
+				done = 0;
+
+				if (ppa_cnt == max_ppas)
+					return ppa_cnt;
+			}
+		}
+	}
+
+	return ppa_cnt;
+}
+
+static int nvm_fact_select_blks(struct nvm_dev *dev, struct factory_blks *f)
+{
+	int ch, lun, ret;
+	struct ppa_addr ppa;
+
+	ppa.ppa = 0;
+	for (ch = 0; ch < dev->nr_chnls; ch++) {
+		for (lun = 0; lun < dev->luns_per_chnl; lun++) {
+			ppa.g.ch = ch;
+			ppa.g.lun = lun;
+
+			ret = nvm_get_bb_tbl(dev, ppa, nvm_factory_blks, f);
+			if (ret)
+				return ret;
+		}
+	}
+
+	return 0;
+}
+
+static long __nvm_ioctl_dev_factory(struct nvm_dev *dev,
+					struct nvm_ioctl_dev_factory *fact)
+{
+	struct factory_blks f;
+	struct ppa_addr *ppas;
+	int ppa_cnt, ret = -ENOMEM;
+	int max_ppas = dev->ops->max_phys_sect / dev->nr_planes;
+
+	f.blks = kzalloc(dev->nr_luns * dev->blks_per_lun, GFP_KERNEL);
+	if (!f.blks)
+		return ret;
+
+	ppas = kzalloc(sizeof(struct ppa_addr) * max_ppas, GFP_KERNEL);
+	if (!ppas)
+		goto err_blks;
+
+	f.dev = dev;
+	f.flags = fact->flags;
+
+	/* create list of blks to be erased */
+	ret = nvm_fact_select_blks(dev, &f);
+	if (ret)
+		goto err_ppas;
+
+	/* continue to erase until list of blks is empty */
+	while ((ppa_cnt = nvm_fact_get_blks(dev, ppas, max_ppas, &f)) > 0) {
+		printk("erase\n");
+		nvm_erase_ppa(dev, ppas, ppa_cnt);
+	}
+
+err_ppas:
+	kfree(ppas);
+err_blks:
+	kfree(f.blks);
+	return ret;
+}
+
+static long nvm_ioctl_dev_factory(struct file *file, void __user *arg)
+{
+	struct nvm_ioctl_dev_factory fact;
+	struct nvm_dev *dev;
+
+	if (!capable(CAP_SYS_ADMIN))
+		return -EPERM;
+
+	if (copy_from_user(&fact, arg, sizeof(struct nvm_ioctl_dev_factory)))
+		return -EFAULT;
+
+	fact.dev[DISK_NAME_LEN - 1] = '\0';
+
+	if (fact.flags & ~(NVM_FACTORY_NR_BITS - 1))
+		return -EINVAL;
+
+	down_write(&nvm_lock);
+	dev = nvm_find_nvm_dev(fact.dev);
+	up_write(&nvm_lock);
+	if (!dev) {
+		pr_err("nvm: device not found\n");
+		return -EINVAL;
+	}
+
+	return __nvm_ioctl_dev_factory(dev, &fact);
+}
+
 static long nvm_ctl_ioctl(struct file *file, uint cmd, unsigned long arg)
 {
 	void __user *argp = (void __user *)arg;
@@ -1028,6 +1199,8 @@ static long nvm_ctl_ioctl(struct file *file, uint cmd, unsigned long arg)
 		return nvm_ioctl_dev_remove(file, argp);
 	case NVM_DEV_INIT:
 		return nvm_ioctl_dev_init(file, argp);
+	case NVM_DEV_FACTORY:
+		return nvm_ioctl_dev_factory(file, argp);
 	}
 	return 0;
 }
