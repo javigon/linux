@@ -1012,21 +1012,19 @@ static int nvm_factory_blks(struct ppa_addr ppa, int nr_blks, u8 *blks,
 	struct factory_blks *f = private;
 	struct nvm_dev *dev = f->dev;
 	int i, lunoff;
+	u8 setmask = NVM_BLK_T_BAD | (~(NVM_BLK_T_NR_BITS - 1));
+
+	if (f->flags & NVM_FACT_RST_GRWN_BBLKS)
+		setmask |= NVM_BLK_T_GRWN_BAD;
+
+	if (f->flags & NVM_FACT_RST_HOST_BLKS)
+		setmask |= NVM_BLK_T_HOST;
 
 	lunoff = ppa.g.ch * dev->luns_per_chnl + ppa.g.lun * dev->blks_per_lun;
 
 	for (i = 0; i < nr_blks; i++) {
-		switch (blks[i]) {
-		case NVM_BLK_T_FREE:
-			break;
-		case NVM_BLK_T_HOST:
-			if (!(f->flags & NVM_FACTORY_RESET_HOST_BLKS))
-				set_bit(lunoff + i, f->blks);
-			break;
-		default:
+		if (blks[i] & setmask)
 			set_bit(lunoff + i, f->blks);
-			break;
-		}
 	}
 
 	return 0;
@@ -1076,7 +1074,7 @@ static long nvm_ioctl_dev_factory(struct file *file, void __user *arg)
 
 	fact.dev[DISK_NAME_LEN - 1] = '\0';
 
-	if (fact.flags & ~(NVM_FACTORY_NR_BITS - 1))
+	if (fact.flags & ~(NVM_FACT_NR_BITS - 1))
 		return -EINVAL;
 
 	down_write(&nvm_lock);

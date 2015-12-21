@@ -109,11 +109,11 @@ struct nvm_ioctl_dev_init {
 };
 
 enum {
-	NVM_FACTORY_ERASE_ONLY_USER	= 1 << 0, /* erase only blocks used as
+	NVM_FACT_ERASE_ONLY_USER	= 1 << 0, /* erase only blocks used as
 						   * host blks or grown blks */
-	NVM_FACTORY_RESET_HOST_BLKS	= 1 << 1, /* remove host blk marks */
-	NVM_FACTORY_RESET_GRWN_BBLKS	= 1 << 2, /* remove grown blk marks */
-	NVM_FACTORY_NR_BITS		= 1 << 3, /* stops here */
+	NVM_FACT_RST_HOST_BLKS		= 1 << 1, /* remove host blk marks */
+	NVM_FACT_RST_GRWN_BBLKS		= 1 << 2, /* remove grown blk marks */
+	NVM_FACT_NR_BITS		= 1 << 3, /* stops here */
 };
 
 struct nvm_ioctl_dev_factory {
