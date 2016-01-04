@@ -673,6 +673,7 @@ static void rrpc_end_io_write(struct rrpc *rrpc, struct rrpc_rq *rrqd,
 			lun->nr_open_blocks--;
 			lun->nr_closed_blocks++;
 			blk->type |= NVM_BLOCK_STATE_CLOSED;
+			list_move_tail(&blk->list, &rlun->closed_list);
 			spin_unlock(&lun->lock);
 
 			mempool_free(rblk->w_buffer.entries, rrpc->block_pool);
@@ -1036,15 +1037,6 @@ static void rrpc_submit_write(struct work_struct *work)
 			/* pgs_to_sync = (full_mem_pgs > dev->max_rq_size) ? */
 						/* dev->max_rq_size : full_mem_pgs; */
 			rblk = (struct rrpc_block*)blk->priv;
-
-			/*
-			 * Clean closed blocks. Blocks are closed in
-			 * rrpc_end_io_write. JAVIER: Can this be done better?
-			 */
-			if (unlikely(blk->type & NVM_BLOCK_STATE_CLOSED)) {
-				list_move_tail(&blk->list, &rlun->closed_list);
-				continue;
-			}
 
 			pgs_to_sync =
 				rblk->w_buffer.cur_mem - rblk->w_buffer.cur_sync;
