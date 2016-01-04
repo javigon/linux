@@ -896,9 +896,8 @@ static int rrpc_write_rq(struct rrpc *rrpc, struct bio *bio,
 	rrqd->laddr = laddr;
 	w_buffer->mem->rrqd = rrqd;
 
-	//JAVIER: THIS IS THE MEMORY ERROR YOU ARE HUNTING!
-	/* ppa_data = w_buffer->mem->rrqd + 1; */
-	/* memcpy(ppa_data, bio_data(bio), bio_len); */
+	ppa_data = w_buffer->mem->rrqd + sizeof(struct rrpc_rq);
+	memcpy(ppa_data, bio_data(bio), bio_len);
 	w_buffer->mem++;
 	w_buffer->cur_mem++;
 
