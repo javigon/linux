@@ -1079,13 +1079,13 @@ static void rrpc_submit_write(struct work_struct *work)
 					return;
 				}
 
-				/* page = mempool_alloc(rrpc->page_pool, GFP_NOIO); */
-				/* if (!page) { */
-					/* pr_err("nvm: rrpc: could not alloc page\n"); */
-					/* return; */
-				/* } */
+				page = mempool_alloc(rrpc->page_pool, GFP_NOIO);
+				if (!page) {
+					pr_err("nvm: rrpc: could not alloc page\n");
+					return;
+				}
 
-				//JAVIER: This page is bad formed
+				//JAVIER: This page might be bad formed - check!
 				page = virt_to_page(data);
 				page_offset = offset_in_page(data);
 
@@ -1121,7 +1121,7 @@ static void rrpc_submit_write(struct work_struct *work)
 				rblk->w_buffer.sync++;
 			}
 
-			/* YOU ARE HERE!! BE SURE THAT YOU WORK WITH 4KB SECTORS! */
+			/* BE SURE THAT YOU WORK WITH 4KB SECTORS! */
 			/* if (pgs_to_sync == dev->max_rq_size) { */
 				/* for (j = 0; j < pgs_to_sync) */
 			/* } */
