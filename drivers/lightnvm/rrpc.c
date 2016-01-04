@@ -666,8 +666,14 @@ static void rrpc_end_io_write(struct rrpc *rrpc, struct rrpc_rq *rrqd,
 			struct nvm_block *blk = rblk->parent;
 			BUG_ON((buf->cur_mem != buf->cur_sync) &&
 					(buf->cur_mem != buf->nentries));
+
+			spin_lock(&lun->lock);
 			/* clear_bit(NVM_BLOCK_STATE_OPEN, blk->type); //JAVIER: CHECK! */
+			lun->nr_open_blocks--;
+			lun->nr_closed_blocks++;
 			blk->type |= NVM_BLOCK_STATE_CLOSED;
+			spin_unlock(&lun->lock);
+
 			mempool_free(rblk->w_buffer.entries, rrpc->block_pool);
 			rrpc_run_gc(rrpc, rblk);
 		}
@@ -1032,7 +1038,7 @@ static void rrpc_submit_write(struct work_struct *work)
 
 			/*
 			 * Clean closed blocks. Blocks are closed in
-			 * rrpc_end_io_write.
+			 * rrpc_end_io_write. JAVIER: Can this be done better?
 			 */
 			if (unlikely(blk->type & NVM_BLOCK_STATE_CLOSED)) {
 				list_move_tail(&blk->list, &rlun->closed_list);
