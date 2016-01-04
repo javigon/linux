@@ -664,6 +664,7 @@ static void rrpc_end_io_write(struct rrpc *rrpc, struct rrpc_rq *rrqd,
 		printk("end_io_write - cmnt: %d\n", atomic_read(&rblk->data_cmnt_size));
 		if (unlikely(cmnt_size == rrpc->dev->pgs_per_blk)) {
 			struct nvm_block *blk = rblk->parent;
+			struct rrpc_lun *rlun = rblk->rlun;
 			BUG_ON((buf->cur_mem != buf->cur_sync) &&
 					(buf->cur_mem != buf->nentries));
 
@@ -1409,6 +1410,7 @@ static int rrpc_luns_init(struct rrpc *rrpc, int lun_begin, int lun_end)
 			struct nvm_block *blk = &lun->blocks[j];
 
 			rblk->parent = blk;
+			rblk->rlun = rlun;
 			INIT_LIST_HEAD(&rblk->prio);
 			spin_lock_init(&rblk->lock);
 		}

@@ -69,6 +69,7 @@ struct rrpc_w_buffer {
 
 struct rrpc_block {
 	struct nvm_block *parent;
+	struct rrpc_lun *rlun;
 	struct list_head prio;
 	struct rrpc_w_buffer w_buffer;
 
