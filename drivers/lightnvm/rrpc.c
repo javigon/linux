@@ -178,10 +178,22 @@ static void rrpc_set_lun_cur(struct rrpc_lun *rlun, struct rrpc_block *rblk)
 	rlun->cur = rblk;
 }
 
+static void rrpc_free_w_buffer(struct rrpc *rrpc, struct rrpc_block *rblk)
+{
+	printk("Freeing buffer for block:%lu\n", rblk->parent->id);
+	mempool_free(rblk->w_buffer.entries, rrpc->block_pool);
+	rblk->w_buffer.entries = NULL;
+	rblk->w_buffer.mem = NULL;
+	rblk->w_buffer.sync = NULL;
+	rblk->w_buffer.nentries = 0;
+	rblk->w_buffer.cur_mem = 0;
+	rblk->w_buffer.cur_sync = 0;
+}
+
 static void rrpc_put_blk(struct rrpc *rrpc, struct rrpc_block *rblk)
 {
 	if (rblk->w_buffer.entries)
-		mempool_free(rblk->w_buffer.entries, rrpc->block_pool);
+		rrpc_free_w_buffer(rrpc, rblk);
 	nvm_put_blk(rrpc->dev, rblk->parent);
 }
 
@@ -219,6 +231,10 @@ static struct rrpc_block *rrpc_get_blk(struct rrpc *rrpc, struct rrpc_lun *rlun,
 	atomic_set(&rblk->data_cmnt_size, 0);
 
 	/* Set up block write buffer */
+	printk("Setting up write buffer for blk:%lu, data_size:%d, sec_per_blk:%d\n",
+			rblk->parent->id,
+			dev->sec_size,
+			dev->pgs_per_blk * dev->sec_per_pg);
 	rblk->w_buffer.entries = mempool_alloc(rrpc->block_pool, GFP_ATOMIC);
 	if (!rblk->w_buffer.entries) {
 		pr_err("nvm: rrpc: cannot allocate write buffer for block\n");
@@ -661,7 +677,9 @@ static void rrpc_end_io_write(struct rrpc *rrpc, struct rrpc_rq *rrqd,
 		lun = rblk->parent->lun;
 
 		cmnt_size = atomic_inc_return(&rblk->data_cmnt_size);
-		printk("end_io_write - cmnt: %d\n", atomic_read(&rblk->data_cmnt_size));
+		printk("end_io_write (laddr:%lu, addr:%llu)- cmnt: %d\n",
+				laddr, p->addr,
+				atomic_read(&rblk->data_cmnt_size));
 		if (unlikely(cmnt_size == rrpc->dev->pgs_per_blk)) {
 			struct nvm_block *blk = rblk->parent;
 			struct rrpc_lun *rlun = rblk->rlun;
@@ -676,7 +694,7 @@ static void rrpc_end_io_write(struct rrpc *rrpc, struct rrpc_rq *rrqd,
 			list_move_tail(&blk->list, &rlun->closed_list);
 			spin_unlock(&lun->lock);
 
-			mempool_free(rblk->w_buffer.entries, rrpc->block_pool);
+			rrpc_free_w_buffer(rrpc, rblk);
 			rrpc_run_gc(rrpc, rblk);
 		}
 	}
@@ -1294,7 +1312,7 @@ static int rrpc_core_init(struct rrpc *rrpc)
 	if (!rrpc_block_cache) {
 		rrpc_block_cache = kmem_cache_create("nvm_block",
 			dev->pgs_per_blk * dev->sec_per_pg *
-			(dev->sec_size + sizeof(struct rrpc_rq)),
+			(sizeof(struct rrpc_rq) + dev->sec_size),
 			0, 0, NULL);
 		if (!rrpc_block_cache) {
 			kmem_cache_destroy(rrpc_gcb_cache);
