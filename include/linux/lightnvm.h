@@ -191,6 +191,8 @@ struct nvm_rq {
 	void *metadata;
 	dma_addr_t dma_metadata;
 
+	void *priv;
+
 	struct completion *wait;
 	nvm_end_io_fn *end_io;
 
@@ -208,7 +210,7 @@ static inline struct nvm_rq *nvm_rq_from_pdu(void *pdu)
 
 static inline void *nvm_rq_to_pdu(struct nvm_rq *rqdata)
 {
-	return rqdata + 1;
+	return rqdata->priv;
 }
 
 struct nvm_block;

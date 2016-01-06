@@ -52,11 +52,26 @@ struct rrpc_rq {
 	unsigned long flags;
 };
 
+struct buf_entry {
+	struct rrpc_rq *rrqd;
+	void *data;
+};
+
+struct rrpc_w_buf {
+	struct buf_entry *entries;	/* Entries */
+	struct buf_entry *mem;		/* Points to the next writable entry */
+	struct buf_entry *sync;		/* Points to the last synced entry */
+	int cur_mem;			/* Current memory enty. Follows mem */
+	int cur_sync;		/* Entries have been synced to media */
+	int nentries;		/* Number of entries in write buffer */
+};
+
 struct rrpc_block {
 	struct nvm_block *parent;
 	struct rrpc_lun *rlun;
 	struct list_head prio;
 	struct list_head list;
+	struct rrpc_w_buf w_buf;
 
 #define MAX_INVALID_PAGES_STORAGE 8
 	/* Bitmap for invalid page intries */
@@ -86,6 +101,8 @@ struct rrpc_lun {
 					 */
 
 	struct work_struct ws_gc;
+	struct work_struct ws_writer;
+	struct workqueue_struct *kw_wq;
 
 	spinlock_t lock;
 };
@@ -133,6 +150,8 @@ struct rrpc {
 	mempool_t *page_pool;
 	mempool_t *gcb_pool;
 	mempool_t *rq_pool;
+	mempool_t *rrq_pool;
+	mempool_t *block_pool;
 
 	struct timer_list gc_timer;
 	struct workqueue_struct *krqd_wq;
@@ -210,20 +229,19 @@ static inline int rrpc_lock_laddr(struct rrpc *rrpc, sector_t laddr,
 	return __rrpc_lock_laddr(rrpc, laddr, pages, r);
 }
 
-static inline struct rrpc_inflight_rq *rrpc_get_inflight_rq(struct nvm_rq *rqd)
+static inline struct rrpc_inflight_rq *rrpc_get_inflight_rq(struct rrpc_rq *rrqd)
 {
-	struct rrpc_rq *rrqd = nvm_rq_to_pdu(rqd);
-
 	return &rrqd->inflight_rq;
 }
 
 static inline int rrpc_lock_rq(struct rrpc *rrpc, struct bio *bio,
-							struct nvm_rq *rqd)
+							struct rrpc_rq *rrqd)
 {
 	sector_t laddr = rrpc_get_laddr(bio);
 	unsigned int pages = rrpc_get_pages(bio);
-	struct rrpc_inflight_rq *r = rrpc_get_inflight_rq(rqd);
+	struct rrpc_inflight_rq *r = rrpc_get_inflight_rq(rrqd);
 
+	printk("NPAGES:%u\n", pages);
 	return rrpc_lock_laddr(rrpc, laddr, pages, r);
 }
 
@@ -237,10 +255,10 @@ static inline void rrpc_unlock_laddr(struct rrpc *rrpc,
 	spin_unlock_irqrestore(&rrpc->inflights.lock, flags);
 }
 
-static inline void rrpc_unlock_rq(struct rrpc *rrpc, struct nvm_rq *rqd)
+static inline void rrpc_unlock_rq(struct rrpc *rrpc, struct rrpc_rq *rrqd,
+								unsigned pages)
 {
-	struct rrpc_inflight_rq *r = rrpc_get_inflight_rq(rqd);
-	uint8_t pages = rqd->nr_pages;
+	struct rrpc_inflight_rq *r = rrpc_get_inflight_rq(rrqd);
 
 	BUG_ON((r->l_start + pages) > rrpc->nr_pages);
 
