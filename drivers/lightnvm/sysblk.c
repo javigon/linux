@@ -167,19 +167,33 @@ static int nvm_scan_block(struct nvm_dev *dev, struct ppa_addr *ppa,
 
 	/* perform linear scan through the block */
 	for (pg = 0; pg < dev->pgs_per_blk; pg++) {
-
 		ret = nvm_submit_ppa(dev, ppa, 1, NVM_OP_PREAD, cur, cursz);
-		if (ret)
+		if (ret) {
+			if (ret == NVM_RSP_ERR_EMPTYPAGE) {
+				pr_err("nvm: sysblk scan last ppa (%u %u %u %u)\n",
+							ppa->g.ch,
+							ppa->g.lun,
+							ppa->g.blk,
+							ppa->g.pg);
+				break;
+			}
+			pr_err("nvm: read failed (%x) for ppa (%u %u %u %u)",
+							ret,
+							ppa->g.ch,
+							ppa->g.lun,
+							ppa->g.blk,
+							ppa->g.pg);
 			break; /* if we can't read a page, continue to the
 				* next blk
 				*/
+		}
 
 		if (be32_to_cpu(cur->magic) != NVM_SYSBLK_MAGIC) {
-			pr_debug("nvm: scan break at ch:%u lun:%u blk:%u pg:%u\n",
-							(*ppa).g.ch,
-							(*ppa).g.lun,
-							(*ppa).g.blk,
-							(*ppa).g.pg);
+			pr_debug("nvm: scan break for ppa (%u %u %u %u)\n",
+							ppa->g.ch,
+							ppa->g.lun,
+							ppa->g.blk,
+							ppa->g.pg);
 			break; /* last valid page already found */
 		}
 
@@ -217,7 +231,7 @@ static int sysblk_get_free_blks(struct ppa_addr ppa, int nr_blks, u8 *blks,
 		s->nr_ppas++;
 		blkid++;
 
-		pr_debug("nvm: use ch:%u lun:%u blk:%u as sysblk\n",
+		pr_debug("nvm: use (%u %u %u) as sysblk\n",
 					sppa->g.ch, sppa->g.lun, sppa->g.blk);
 		if (blkid > MAX_BLKS_PR_SYSBLK - 1)
 			return 0;
@@ -291,9 +305,11 @@ static int nvm_write_and_verify(struct nvm_dev *dev, struct nvm_sb_info *info,
 	for (i = 0; i < s->nr_rows; i++) {
 		ppas[0] = s->ppas[scan_ppa_idx(i, s->act_blk[i])];
 
-		pr_debug("nvm: writing sysblk to ch:%u lun:%u blk:%u pg:%u\n",
-						ppas[0].g.ch, ppas[0].g.lun,
-						ppas[0].g.blk, ppas[0].g.pg);
+		pr_debug("nvm: writing sysblk to ppa (%u %u %u %u)\n",
+							ppas[0].g.ch,
+							ppas[0].g.lun,
+							ppas[0].g.blk,
+							ppas[0].g.pg);
 
 		/* Expand to all sectors within a flash page */
 		if (dev->sec_per_pg > 1) {
@@ -306,28 +322,28 @@ static int nvm_write_and_verify(struct nvm_dev *dev, struct nvm_sb_info *info,
 		ret = nvm_submit_ppa(dev, ppas, dev->sec_per_pg, NVM_OP_PWRITE,
 								buf, bufsz);
 		if (ret) {
-			pr_err("nvm: sysblk failed program [ch%u lun%u blk%u]\n",
-								ppas[0].g.ch,
-								ppas[0].g.lun,
-								ppas[0].g.blk);
+			pr_err("nvm: sysblk failed program (%u %u %u)\n",
+							ppas[0].g.ch,
+							ppas[0].g.lun,
+							ppas[0].g.blk);
 			break;
 		}
 
 		ret = nvm_submit_ppa(dev, ppas, dev->sec_per_pg, NVM_OP_PREAD,
 								buf, bufsz);
 		if (ret) {
-			pr_err("nvm: sysblk failed read [ch%u lun%u blk%u]\n",
-								ppas[0].g.ch,
-								ppas[0].g.lun,
-								ppas[0].g.blk);
+			pr_err("nvm: sysblk failed read (%u %u %u)\n",
+							ppas[0].g.ch,
+							ppas[0].g.lun,
+							ppas[0].g.blk);
 			break;
 		}
 
 		if (memcmp(buf, &nvmsb, sizeof(struct nvm_system_block))) {
-			pr_err("nvm: sysblk failed verify [ch%u lun%u blk%u]\n",
-								ppas[0].g.ch,
-								ppas[0].g.lun,
-								ppas[0].g.blk);
+			pr_err("nvm: sysblk failed verify (%u %u %u)\n",
+							ppas[0].g.ch,
+							ppas[0].g.lun,
+							ppas[0].g.blk);
 			ret = -EINVAL;
 			break;
 		}
