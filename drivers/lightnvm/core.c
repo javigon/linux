@@ -1034,6 +1034,19 @@ struct factory_blks {
 	unsigned long *blks;
 };
 
+static int factory_nblks(int nblks)
+{
+	/* Round up to nearest 8 */
+	return (nblks + (8 - 1)) & ~(8 - 1);
+}
+
+static unsigned int factory_blk_offset(struct nvm_dev *dev, int ch, int lun)
+{
+	int nblks = factory_nblks(dev->blks_per_lun);
+
+	return ((ch * dev->luns_per_chnl * nblks) + (lun * nblks)) >> 3;
+}
+
 static int nvm_factory_blks(struct ppa_addr ppa, int nr_blks, u8 *blks,
 								void *private)
 {
@@ -1041,7 +1054,7 @@ static int nvm_factory_blks(struct ppa_addr ppa, int nr_blks, u8 *blks,
 	struct nvm_dev *dev = f->dev;
 	int i, lunoff;
 
-	lunoff = ppa.g.ch * dev->luns_per_chnl + ppa.g.lun * dev->blks_per_lun;
+	lunoff = factory_blk_offset(dev, ppa.g.ch, ppa.g.lun);
 
 	/* non-set bits correspond to the block must be erased */
 	for (i = 0; i < nr_blks; i++) {
@@ -1072,20 +1085,23 @@ static int nvm_fact_get_blks(struct nvm_dev *dev, struct ppa_addr *erase_list,
 		done = 1;
 		for (ch = 0; ch < dev->nr_chnls; ch++) {
 			for (lun = 0; lun < dev->luns_per_chnl; lun++) {
-				offset = &f->blks[ch * dev->luns_per_chnl +
-						  lun * dev->blks_per_lun];
+				offset = &f->blks[
+					factory_blk_offset(dev, ch, lun)];
 
 				blkid = find_first_zero_bit(offset,
 							dev->blks_per_lun);
 				if (blkid >= dev->blks_per_lun)
-					break;
+					continue;
 				set_bit(blkid, offset);
 
-				printk("found blk %u %u %u\n", blkid, ch, lun);
 				ppa.ppa = 0;
 				ppa.g.ch = ch;
 				ppa.g.lun = lun;
 				ppa.g.blk = blkid;
+				pr_debug("nvm: erase ppa (%u %u %u)\n",
+								ppa.g.ch,
+								ppa.g.lun,
+								ppa.g.blk);
 
 				erase_list[ppa_cnt] = ppa;
 				ppa_cnt++;
@@ -1128,7 +1144,8 @@ static long __nvm_ioctl_dev_factory(struct nvm_dev *dev,
 	int ppa_cnt, ret = -ENOMEM;
 	int max_ppas = dev->ops->max_phys_sect / dev->nr_planes;
 
-	f.blks = kzalloc(dev->nr_luns * dev->blks_per_lun, GFP_KERNEL);
+	f.blks = kzalloc(factory_nblks(dev->blks_per_lun) * dev->nr_luns,
+								GFP_KERNEL);
 	if (!f.blks)
 		return ret;
 
@@ -1145,10 +1162,8 @@ static long __nvm_ioctl_dev_factory(struct nvm_dev *dev,
 		goto err_ppas;
 
 	/* continue to erase until list of blks is empty */
-	while ((ppa_cnt = nvm_fact_get_blks(dev, ppas, max_ppas, &f)) > 0) {
-		printk("erase\n");
+	while ((ppa_cnt = nvm_fact_get_blks(dev, ppas, max_ppas, &f)) > 0)
 		nvm_erase_ppa(dev, ppas, ppa_cnt);
-	}
 
 err_ppas:
 	kfree(ppas);
