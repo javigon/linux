@@ -901,7 +901,7 @@ static int rrpc_write_rq(struct rrpc *rrpc, struct bio *bio,
 	rrqd->addr = p;
 	w_buf->mem->rrqd = rrqd;
 
-	buf = w_buf->mem->rrqd + sizeof(struct rrpc_rq);
+	buf = w_buf->mem->rrqd + sizeof(void *);
 	memcpy(buf, bio_data(bio), bio_len);
 	w_buf->mem++;
 	w_buf->cur_mem++;
@@ -1078,7 +1078,7 @@ static void rrpc_submit_write(struct work_struct *work)
 			printk("Writing in buffer. Pos:%d\n",
 						rblk->w_buf.cur_sync);
 			rrqd = rblk->w_buf.sync->rrqd;
-			data = rrqd + sizeof(struct rrpc_rq);
+			data = rrqd + sizeof(void *);
 
 			rqd = mempool_alloc(rrpc->rq_pool, GFP_NOIO);
 			if (!rqd) {
@@ -1343,7 +1343,7 @@ static int rrpc_core_init(struct rrpc *rrpc)
 	if (!rrpc_block_cache) {
 		rrpc_block_cache = kmem_cache_create("nvm_block",
 			dev->pgs_per_blk * dev->sec_per_pg *
-			(sizeof(struct rrpc_rq) + dev->sec_size),
+			(sizeof(void *) + dev->sec_size),
 			0, 0, NULL);
 		if (!rrpc_block_cache) {
 			kmem_cache_destroy(rrpc_gcb_cache);
