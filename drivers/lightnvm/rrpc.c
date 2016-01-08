@@ -825,6 +825,7 @@ static int rrpc_read_rq(struct rrpc *rrpc, struct bio *bio, struct nvm_rq *rqd,
 		BUG_ON(is_gc);
 		rrpc_unlock_rq(rrpc, rrqd, 1);
 		mempool_free(rrqd, rrpc->rrq_pool);
+		mempool_free(rqd, rrpc->rrq_pool);
 		return NVM_IO_DONE;
 	}
 
@@ -1148,8 +1149,6 @@ static void rrpc_submit_write(struct work_struct *work)
 				/* spin_unlock_irq(&rblk->w_buf.sync_lock); */
 				continue;
 			}
-
-			bio_get(bio);
 
 			// JAVIER: For now we only send 4KB at a time
 			rqd->ppa_addr = rrpc_ppa_to_gaddr(rrpc->dev, rrqd->addr->addr);
