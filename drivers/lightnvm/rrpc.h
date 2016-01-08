@@ -201,7 +201,7 @@ static inline int request_intersects(struct rrpc_inflight_rq *r,
 }
 
 static int __rrpc_lock_laddr(struct rrpc *rrpc, sector_t laddr,
-			     unsigned pages, struct rrpc_inflight_rq *r)
+				unsigned pages, struct rrpc_inflight_rq *r)
 {
 	sector_t laddr_end = laddr + pages - 1;
 	struct rrpc_inflight_rq *rtmp;
@@ -224,8 +224,8 @@ static int __rrpc_lock_laddr(struct rrpc *rrpc, sector_t laddr,
 }
 
 static inline int rrpc_lock_laddr(struct rrpc *rrpc, sector_t laddr,
-				 unsigned pages,
-				 struct rrpc_inflight_rq *r)
+				unsigned pages,
+				struct rrpc_inflight_rq *r)
 {
 	BUG_ON((laddr + pages) > rrpc->nr_pages);
 
@@ -244,7 +244,6 @@ static inline int rrpc_lock_rq(struct rrpc *rrpc, struct bio *bio,
 	unsigned int pages = rrpc_get_pages(bio);
 	struct rrpc_inflight_rq *r = rrpc_get_inflight_rq(rrqd);
 
-	printk("NPAGES:%u\n", pages);
 	return rrpc_lock_laddr(rrpc, laddr, pages, r);
 }
 
