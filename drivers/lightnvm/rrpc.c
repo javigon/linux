@@ -1066,12 +1066,12 @@ static void rrpc_submit_write(struct work_struct *work)
 
 	bio_list_init(&bios);
 
-	list_for_each_entry(blk, &rlun->open_list, list) {
+	list_for_each_entry(rblk, &rlun->open_list, list) {
 		/* full_mem_pgs =  */
 			/* (blk->cur_mem - blk->cur_sync) / dev->sec_size; */
 		/* pgs_to_sync = (full_mem_pgs > dev->max_rq_size) ? */
 					/* dev->max_rq_size : full_mem_pgs; */
-		rblk = (struct rrpc_block*)blk->priv;
+		blk = rblk->parent;
 
 		//JAVIER: This should be moved to IO completion and check the
 		//map for each IO to verify that all have been completed. YOu
