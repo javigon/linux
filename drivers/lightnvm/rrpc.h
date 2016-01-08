@@ -61,9 +61,13 @@ struct rrpc_w_buf {
 	struct buf_entry *entries;	/* Entries */
 	struct buf_entry *mem;		/* Points to the next writable entry */
 	struct buf_entry *sync;		/* Points to the last synced entry */
-	int cur_mem;			/* Current memory enty. Follows mem */
+	int cur_mem;			/* Current memory entry. Follows mem */
 	int cur_sync;		/* Entries have been synced to media */
 	int nentries;		/* Number of entries in write buffer */
+
+	void *sync_bitmap;	/* Bitmap representing physical addresses that
+				 * have been synced to the media
+				 */
 
 	spinlock_t w_lock;
 	spinlock_t sync_lock;
@@ -77,7 +81,7 @@ struct rrpc_block {
 	struct rrpc_w_buf w_buf;
 
 #define MAX_INVALID_PAGES_STORAGE 8
-	/* Bitmap for invalid page intries */
+	/* Bitmap for invalid page entries */
 	unsigned long invalid_pages[MAX_INVALID_PAGES_STORAGE];
 	/* points to the next writable page within a block */
 	unsigned int next_page;

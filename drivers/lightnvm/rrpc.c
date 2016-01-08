@@ -181,10 +181,14 @@ static void rrpc_set_lun_cur(struct rrpc_lun *rlun, struct rrpc_block *rblk)
 static void rrpc_free_w_buffer(struct rrpc *rrpc, struct rrpc_block *rblk)
 {
 	printk("Freeing buffer for block:%lu\n", rblk->parent->id);
+
 	mempool_free(rblk->w_buf.entries, rrpc->block_pool);
+	kfree(rblk->w_buf.sync_bitmap);
+
 	rblk->w_buf.entries = NULL;
 	rblk->w_buf.mem = NULL;
 	rblk->w_buf.sync = NULL;
+	rblk->w_buf.sync_bitmap = NULL;
 	rblk->w_buf.nentries = 0;
 	rblk->w_buf.cur_mem = 0;
 	rblk->w_buf.cur_sync = 0;
@@ -260,10 +264,21 @@ static struct rrpc_block *rrpc_get_blk(struct rrpc *rrpc, struct rrpc_lun *rlun,
 	rblk->w_buf.cur_mem = 0;
 	rblk->w_buf.cur_sync = 0;
 
+	/* JAVIER: Mempol? */
+	rblk->w_buf.sync_bitmap = kzalloc(BITS_TO_LONGS(rblk->w_buf.nentries) *
+						sizeof(long), GFP_KERNEL);
+	if (!rblk->w_buf.sync_bitmap) {
+		pr_err("nvm: rrpc: cannot allocate sync bitmap block\n");
+		rrpc_put_blk(rrpc, rblk);
+		return NULL;
+	}
+
+	bitmap_set(rblk->w_buf.sync_bitmap, 0, rblk->w_buf.nentries);
+
 	printk("Buffer: mem:%p, sync:%p\n", rblk->w_buf.mem, rblk->w_buf.sync);
 
 	spin_lock_init(&rblk->w_buf.w_lock);
-	spin_lock_init(&rblk->w_buf.sync_lock);
+	/* spin_lock_init(&rblk->w_buf.sync_lock); */
 
 	return rblk;
 }
@@ -704,6 +719,7 @@ static void rrpc_end_io_write(struct rrpc *rrpc, struct rrpc_rq *rrqd,
 	struct rrpc_block *rblk;
 	struct rrpc_w_buf *buf;
 	struct nvm_lun *lun;
+	unsigned long bppa;
 	int cmnt_size, i;
 
 	for (i = 0; i < nr_pages; i++) {
@@ -711,6 +727,10 @@ static void rrpc_end_io_write(struct rrpc *rrpc, struct rrpc_rq *rrqd,
 		rblk = p->rblk;
 		buf = &rblk->w_buf;
 		lun = rblk->parent->lun;
+
+		// JAVIER: Do this more efficiently
+		bppa = rrpc->dev->sec_per_blk * rblk->parent->id;
+		set_bit((p->addr - bppa) + i, buf->sync_bitmap);
 
 		//JAVIER: Can we merge this atomic counter in the sync lock when
 		//we move it here?
@@ -724,6 +744,7 @@ static void rrpc_end_io_write(struct rrpc *rrpc, struct rrpc_rq *rrqd,
 			struct nvm_block *blk = rblk->parent;
 			struct rrpc_lun *rlun = rblk->rlun;
 
+			BUG_ON(!bitmap_full(buf->sync_bitmap, buf->nentries));
 			BUG_ON((buf->cur_mem != buf->cur_sync) &&
 					(buf->cur_mem != buf->nentries));
 
@@ -1083,6 +1104,7 @@ static void rrpc_submit_write(struct work_struct *work)
 		//JAVIER: This should be moved to IO completion and check the
 		//map for each IO to verify that all have been completed. YOu
 		//need to mark the IO or use bio for that....
+		//I don't think we need the lock - the thread is per lun...
 		/* spin_lock_irq(&rblk->w_buf.sync_lock); */
 
 		pgs_to_sync = rblk->w_buf.cur_mem - rblk->w_buf.cur_sync;
@@ -1113,29 +1135,29 @@ static void rrpc_submit_write(struct work_struct *work)
 				return;
 			}
 
-			/* page = mempool_alloc(rrpc->page_pool, GFP_NOIO); */
-			/* if (!page) { */
-				/* pr_err("nvm: rrpc: could not alloc page\n"); */
-				/* return; */
-			/* } */
-
-			//JAVIER: This page might be bad formed - check!
-			page = virt_to_page(data); // Can we use this?
+			page = mempool_alloc(rrpc->page_pool, GFP_NOIO);
 			if (!page) {
 				pr_err("nvm: rrpc: could not alloc page\n");
-				/* spin_unlock_irq(&rblk->w_buf.sync_lock); */
 				return;
 			}
+
+			//JAVIER: This page might be bad formed - check!
+			/* page = virt_to_page(data); // Can we use this? */
+			/* if (!page) { */
+				/* pr_err("nvm: rrpc: could not alloc page\n"); */
+				/* spin_unlock_irq(&rblk->w_buf.sync_lock); */
+				/* return; */
+			/* } */
 			/* page = alloc_page(GFP_NOIO); */
 			/* if (!page) { */
 				/* pr_err("nvm: rrpc: could not alloc page\n"); */
 				/* return; */
 			/* } */
 
-			/* ptr = kmap(page); */
-			/* printk("Page:%p:%p\n", page, ptr); */
-			/* memcpy(ptr, data, RRPC_EXPOSED_PAGE_SIZE); */
-			/* kunmap(ptr); */
+			ptr = kmap(page);
+			printk("Page:%p:%p\n", page, ptr);
+			memcpy(ptr, data, RRPC_EXPOSED_PAGE_SIZE);
+			kunmap(ptr);
 
 			/* page_offset = offset_in_page(data); */
 
