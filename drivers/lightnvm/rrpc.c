@@ -259,6 +259,9 @@ static struct rrpc_block *rrpc_get_blk(struct rrpc *rrpc, struct rrpc_lun *rlun,
 	rblk->w_buf.cur_mem = 0;
 	rblk->w_buf.cur_sync = 0;
 
+	spin_lock_init(&rblk->w_buf.w_lock);
+	spin_lock_init(&rblk->w_buf.sync_lock);
+
 	return rblk;
 }
 
@@ -704,6 +707,7 @@ static void rrpc_end_io_write(struct rrpc *rrpc, struct rrpc_rq *rrqd,
 		buf = &rblk->w_buf;
 		lun = rblk->parent->lun;
 
+		//JAVIER: Can we merge this atomic counter in the lock?
 		cmnt_size = atomic_inc_return(&rblk->data_cmnt_size);
 
 		printk("end_io_write (laddr:%lu, addr:%llu)- cmnt: %d\n",
@@ -901,10 +905,12 @@ static int rrpc_write_rq(struct rrpc *rrpc, struct bio *bio,
 	rrqd->addr = p;
 	w_buf->mem->rrqd = rrqd;
 
+	spin_lock(&w_buf->w_lock);
 	buf = w_buf->mem->rrqd + sizeof(void *);
 	memcpy(buf, bio_data(bio), bio_len);
 	w_buf->mem++;
 	w_buf->cur_mem++;
+	spin_unlock(&w_buf->w_lock);
 
 	printk("WRITE_RQ(1):laddr:%lu,addr:%llu, bio_sec:%lu\n", laddr, p->addr, bio->bi_iter.bi_sector);
 	// JAVIER: This will go
@@ -1067,6 +1073,11 @@ static void rrpc_submit_write(struct work_struct *work)
 					/* dev->max_rq_size : full_mem_pgs; */
 		rblk = (struct rrpc_block*)blk->priv;
 
+		//JAVIER: This should be moved to IO completion and check the
+		//map for each IO to verify that all have been completed. YOu
+		//need to mark the IO or use bio for that....
+		spin_lock(&rblk->w_buf.sync_lock);
+
 		pgs_to_sync = rblk->w_buf.cur_mem - rblk->w_buf.cur_sync;
 
 		printk("Write IO: blk:%lu, pgs_to_sync:%d, s:%d,m:%d\n",
@@ -1153,6 +1164,8 @@ static void rrpc_submit_write(struct work_struct *work)
 			rblk->w_buf.cur_sync++;
 			rblk->w_buf.sync++;
 		}
+
+		spin_unlock(&rblk->w_buf.sync_lock);
 
 		/* BE SURE THAT YOU WORK WITH 4KB SECTORS! */
 		/* if (pgs_to_sync == dev->max_rq_size) { */

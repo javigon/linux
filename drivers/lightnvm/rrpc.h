@@ -64,6 +64,9 @@ struct rrpc_w_buf {
 	int cur_mem;			/* Current memory enty. Follows mem */
 	int cur_sync;		/* Entries have been synced to media */
 	int nentries;		/* Number of entries in write buffer */
+
+	spinlock_t w_lock;
+	spinlock_t sync_lock;
 };
 
 struct rrpc_block {
