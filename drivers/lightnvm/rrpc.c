@@ -1043,8 +1043,8 @@ static blk_qc_t rrpc_make_rq(struct request_queue *q, struct bio *bio)
 		return BLK_QC_T_NONE;
 	}
 
-	/* rrqd = mempool_alloc(rrpc->rrq_pool, GFP_KERNEL); */
-	rrqd = mempool_alloc(rrpc->rrq_pool, GFP_ATOMIC);
+	/* rrqd = mempool_alloc(rrpc->rrq_pool, GFP_ATOMIC); */
+	rrqd = mempool_alloc(rrpc->rrq_pool, GFP_KERNEL);
 	if (!rrqd) {
 		pr_err_ratelimited("rrpc: not able to allocate rrqd.");
 		bio_io_error(bio);
@@ -1088,7 +1088,7 @@ static void rrpc_submit_write(struct work_struct *work)
 	struct bio *bio;
 	struct page *page;
 	void *ptr;
-	unsigned page_offset;
+	/* unsigned page_offset; */
 	/* int full_mem_pgs; */
 	int pgs_to_sync;
 	int err;
@@ -1141,7 +1141,8 @@ static void rrpc_submit_write(struct work_struct *work)
 				return;
 			}
 
-			//JAVIER: This page might be bad formed - check!
+			/* BUG_ON(!virt_addr_valid(data)); */
+			/* BUG_ON(PAGE_SIZE != RRPC_EXPOSED_PAGE_SIZE); */
 			/* page = virt_to_page(data); // Can we use this? */
 			/* if (!page) { */
 				/* pr_err("nvm: rrpc: could not alloc page\n"); */
@@ -1165,7 +1166,7 @@ static void rrpc_submit_write(struct work_struct *work)
 			rev = &rrpc->rev_trans_map[rrqd->addr->addr - rrpc->poffset];
 			bio->bi_iter.bi_sector = rrpc_get_sector(rev->addr);
 			bio->bi_rw = WRITE;
-			err = bio_add_pc_page(q, bio, page, RRPC_EXPOSED_PAGE_SIZE, 0);
+			err = bio_add_page(bio, page, RRPC_EXPOSED_PAGE_SIZE, 0);
 			if (err != RRPC_EXPOSED_PAGE_SIZE) {
 				pr_err("nvm: rrpc: could not add page to bio\n");
 				/* spin_unlock_irq(&rblk->w_buf.sync_lock); */
