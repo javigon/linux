@@ -1024,6 +1024,8 @@ static int rrpc_submit_io(struct rrpc *rrpc, struct bio *bio,
 		return NVM_IO_OK;
 	}
 
+	//JAVIER - FOR TESTS!!
+	BUG_ON(nr_pages > 1);
 	printk("WRITE\n");
 	/* WRITE path */
 	if (nr_pages > 1)
