@@ -1183,7 +1183,7 @@ static void rrpc_submit_write(struct work_struct *work)
 {
 	struct rrpc_lun *rlun = container_of(work, struct rrpc_lun, ws_writer);
 	struct rrpc *rrpc = rlun->rrpc;
-	/* struct request_queue *q = dev->q; */
+	struct request_queue *q = rrpc->dev->q;
 	struct rrpc_rq *rrqd;
 	void *data;
 	struct nvm_rq *rqd;
@@ -1282,7 +1282,7 @@ static void rrpc_submit_write(struct work_struct *work)
 			rev = &rrpc->rev_trans_map[rrqd->addr->addr - rrpc->poffset];
 			bio->bi_iter.bi_sector = rrpc_get_sector(rev->addr);
 			bio->bi_rw = WRITE;
-			err = bio_add_page(bio, page, RRPC_EXPOSED_PAGE_SIZE, 0);
+			err = bio_add_pc_page(q, bio, page, RRPC_EXPOSED_PAGE_SIZE, 0);
 			if (err != RRPC_EXPOSED_PAGE_SIZE) {
 				pr_err("nvm: rrpc: could not add page to bio\n");
 				mempool_free(page, rrpc->page_pool);
