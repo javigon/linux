@@ -17,7 +17,7 @@
 #include "rrpc.h"
 
 static struct kmem_cache *rrpc_gcb_cache, *rrpc_rq_cache, *rrpc_rrq_cache,
-							*rrpc_block_cache;
+					*rrpc_wb_cache, *rrpc_block_cache;
 static DECLARE_RWSEM(rrpc_lock);
 
 static int rrpc_submit_io(struct rrpc *rrpc, struct bio *bio,
@@ -182,6 +182,8 @@ static void rrpc_free_w_buffer(struct rrpc *rrpc, struct rrpc_block *rblk)
 {
 	printk("Freeing buffer for block:%lu\n", rblk->parent->id);
 
+	/* TODO: Reuse the same buffers if the block size is the same */
+	mempool_free(rblk->w_buf.data, rrpc->write_buf_pool);
 	mempool_free(rblk->w_buf.entries, rrpc->block_pool);
 	kfree(rblk->w_buf.sync_bitmap);
 
@@ -251,13 +253,23 @@ static struct rrpc_block *rrpc_get_blk(struct rrpc *rrpc, struct rrpc_lun *rlun,
 			dev->sec_per_blk * rblk->parent->id,
 			dev->sec_size,
 			dev->pgs_per_blk * dev->sec_per_pg);
-	rblk->w_buf.entries = mempool_alloc(rrpc->block_pool, GFP_ATOMIC);
-	if (!rblk->w_buf.entries) {
+
+	rblk->w_buf.data = mempool_alloc(rrpc->write_buf_pool, GFP_ATOMIC);
+	if (!rblk->w_buf.data) {
 		pr_err("nvm: rrpc: cannot allocate write buffer for block\n");
 		rrpc_put_blk(rrpc, rblk);
 		return NULL;
 	}
 
+	rblk->w_buf.entries = mempool_alloc(rrpc->block_pool, GFP_ATOMIC);
+	if (!rblk->w_buf.entries) {
+		pr_err("nvm: rrpc: cannot allocate write buffer for block\n");
+		mempool_free(rblk->w_buf.data, rrpc->write_buf_pool);
+		rrpc_put_blk(rrpc, rblk);
+		return NULL;
+	}
+
+	rblk->w_buf.entries->data  = rblk->w_buf.data;
 	rblk->w_buf.mem = rblk->w_buf.entries;
 	rblk->w_buf.sync = rblk->w_buf.entries;
 	rblk->w_buf.nentries = dev->pgs_per_blk * dev->sec_per_pg;
@@ -269,6 +281,8 @@ static struct rrpc_block *rrpc_get_blk(struct rrpc *rrpc, struct rrpc_lun *rlun,
 						sizeof(long), GFP_KERNEL);
 	if (!rblk->w_buf.sync_bitmap) {
 		pr_err("nvm: rrpc: cannot allocate sync bitmap block\n");
+		mempool_free(rblk->w_buf.data, rrpc->write_buf_pool);
+		mempool_free(rblk->w_buf.entries, rrpc->block_pool);
 		rrpc_put_blk(rrpc, rblk);
 		return NULL;
 	}
@@ -935,7 +949,6 @@ static int rrpc_write_rq(struct rrpc *rrpc, struct bio *bio,
 	rrqd->addr = p;
 
 	w_buf->mem->rrqd = rrqd;
-	w_buf->mem->data = w_buf->mem + sizeof(void *);
 
 	printk("WRITE_RQ(1): entry:%p, rrqd:%p(%p), data:%p\n",
 					w_buf->mem,
@@ -946,8 +959,9 @@ static int rrpc_write_rq(struct rrpc *rrpc, struct bio *bio,
 	spin_lock(&w_buf->w_lock);
 	buf = w_buf->mem->data;
 	memcpy(buf, bio_data(bio), bio_len);
-	w_buf->mem += sizeof(void *) + dev->sec_size;
 	w_buf->cur_mem++;
+	w_buf->mem ++;
+	w_buf->mem->data = w_buf->data + dev->sec_size;
 	spin_unlock(&w_buf->w_lock);
 
 	printk("WRITE_RQ(1): blk:%lu, laddr:%lu,addr:%llu, bio_sec:%lu\n",
@@ -985,9 +999,9 @@ static int rrpc_read_from_w_buf(struct rrpc *rrpc, struct nvm_rq *rqd)
 		if (entry_pos >= rblk->w_buf.cur_mem)
 			goto out;
 
-		read_entry = &rblk->w_buf.entries[0] +
-			(entry_pos * (sizeof(struct rrpc_rq) + dev->sec_size));
-		data = read_entry + sizeof(void *);
+		read_entry = &rblk->w_buf.entries[entry_pos];
+		data = read_entry->data;
+
 		printk("entry:%p, data:%p\n", read_entry, data);
 		printk("Reading (n:%d) from buffer(pos:%d): blk:%lu, laddr:%lu, addr:%llu\n",
 					nr_pages,
@@ -1187,7 +1201,7 @@ static void rrpc_submit_write(struct work_struct *work)
 			printk("Writing in buffer. Pos:%d\n",
 						rblk->w_buf.cur_sync);
 			rrqd = rblk->w_buf.sync->rrqd;
-			data = rblk->w_buf.sync + sizeof(void *);
+			data = rblk->w_buf.sync->data;
 
 			printk("BUFFER(1): rrqd:%p, data:%p\n", rrqd, data);
 			rqd = mempool_alloc(rrpc->rq_pool, GFP_NOIO);
@@ -1266,7 +1280,7 @@ static void rrpc_submit_write(struct work_struct *work)
 				continue;
 			}
 
-			rblk->w_buf.sync += sizeof(void *) + dev->sec_size;
+			rblk->w_buf.sync++;
 			rblk->w_buf.cur_sync++;
 		}
 
@@ -1453,22 +1467,37 @@ static int rrpc_core_init(struct rrpc *rrpc)
 		}
 	}
 
-	/*
-	 * we assume that sec->sec_size is the same as the page size exposed by
+	/* we assume that sec->sec_size is the same as the page size exposed by
 	 * rrpc (4KB). We need extra logic otherwise
-	 *
-	 * TODO: Write comment on allocating the whole buffer at once
 	 */
 	BUG_ON(dev->sec_size != RRPC_EXPOSED_PAGE_SIZE);
 	if (!rrpc_block_cache) {
+		/* Write buffer: Allocate all buffer (for all block) at once. We
+		 * avoid having to allocate a memory from the pool for each IO
+		 * at the cost pre-allocating memory for the whole block when a
+		 * new block is allocated from the media manager.
+		 */
+		rrpc_wb_cache = kmem_cache_create("nvm_wb",
+			dev->pgs_per_blk * dev->sec_per_pg * dev->sec_size,
+			0, 0, NULL);
+		if (!rrpc_wb_cache) {
+			kmem_cache_destroy(rrpc_gcb_cache);
+			kmem_cache_destroy(rrpc_rq_cache);
+			kmem_cache_destroy(rrpc_rrq_cache);
+			up_write(&rrpc_lock);
+			return -ENOMEM;
+		}
+
+		/* Write buffer entries */
 		rrpc_block_cache = kmem_cache_create("nvm_entry",
 			dev->pgs_per_blk * dev->sec_per_pg *
-			(sizeof(void *) + dev->sec_size),
+			sizeof(struct buf_entry),
 			0, 0, NULL);
 		if (!rrpc_block_cache) {
 			kmem_cache_destroy(rrpc_gcb_cache);
 			kmem_cache_destroy(rrpc_rq_cache);
 			kmem_cache_destroy(rrpc_rrq_cache);
+			kmem_cache_destroy(rrpc_wb_cache);
 			up_write(&rrpc_lock);
 			return -ENOMEM;
 		}
@@ -1492,8 +1521,12 @@ static int rrpc_core_init(struct rrpc *rrpc)
 	if (!rrpc->rrq_pool)
 		return -ENOMEM;
 
-	rrpc->block_pool = mempool_create_slab_pool(64, rrpc_block_cache);
+	rrpc->block_pool = mempool_create_slab_pool(8, rrpc_block_cache);
 	if (!rrpc->block_pool)
+		return -ENOMEM;
+
+	rrpc->write_buf_pool = mempool_create_slab_pool(8, rrpc_wb_cache);
+	if (!rrpc->write_buf_pool)
 		return -ENOMEM;
 
 	spin_lock_init(&rrpc->inflights.lock);
@@ -1509,6 +1542,7 @@ static void rrpc_core_free(struct rrpc *rrpc)
 	mempool_destroy(rrpc->rrq_pool);
 	mempool_destroy(rrpc->rq_pool);
 	mempool_destroy(rrpc->block_pool);
+	mempool_destroy(rrpc->write_buf_pool);
 }
 
 static void rrpc_luns_free(struct rrpc *rrpc)

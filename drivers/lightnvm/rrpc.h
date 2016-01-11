@@ -62,9 +62,10 @@ struct rrpc_w_buf {
 	struct buf_entry *mem;		/* Points to the next writable entry */
 	struct buf_entry *sync;		/* Points to the last synced entry */
 	int cur_mem;			/* Current memory entry. Follows mem */
-	int cur_sync;		/* Entries have been synced to media */
-	int nentries;		/* Number of entries in write buffer */
+	int cur_sync;			/* Entries have been synced to media */
+	int nentries;			/* Number of entries in write buffer */
 
+	void *data;		/* Actual data */
 	void *sync_bitmap;	/* Bitmap representing physical addresses that
 				 * have been synced to the media
 				 */
@@ -159,6 +160,7 @@ struct rrpc {
 	mempool_t *rq_pool;
 	mempool_t *rrq_pool;
 	mempool_t *block_pool;
+	mempool_t *write_buf_pool;
 
 	struct timer_list gc_timer;
 	struct workqueue_struct *krqd_wq;
