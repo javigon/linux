@@ -266,6 +266,9 @@ static inline void rrpc_unlock_rq(struct rrpc *rrpc, struct rrpc_rq *rrqd,
 {
 	struct rrpc_inflight_rq *r = rrpc_get_inflight_rq(rrqd);
 
+	if ((r->l_start + pages) > rrpc->nr_pages)
+		printk(KERN_CRIT "start:%lu, pages:%u, npages: %llu\n",
+				r->l_start, pages, rrpc->nr_pages);
 	BUG_ON((r->l_start + pages) > rrpc->nr_pages);
 
 	rrpc_unlock_laddr(rrpc, r);

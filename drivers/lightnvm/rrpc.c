@@ -957,6 +957,63 @@ static int rrpc_write_rq(struct rrpc *rrpc, struct bio *bio,
 	return NVM_IO_DONE;
 }
 
+static int rrpc_read_from_w_buf(struct rrpc *rrpc, struct nvm_rq *rqd)
+{
+	struct nvm_dev *dev = rrpc->dev;
+	struct rrpc_rq *rrqd = (struct rrpc_rq *)rqd->priv;
+	struct bio *bio = rqd->bio;
+	struct rrpc_block *rblk = rrqd->addr->rblk;
+	int nr_pages = rqd->nr_pages;
+	int pages_left = nr_pages;
+
+	if (rblk->w_buf.entries) {
+		struct buf_entry *read_entry;
+		struct bio_vec *bv;
+		struct page *page;
+		void *kaddr;
+		void *data;
+		int entry_pos, i;
+		unsigned long blk_id = rblk->parent->id;
+
+		// TODO: Optimize calculation
+		entry_pos = rrqd->addr->addr -
+				(blk_id * dev->sec_per_pg * dev->pgs_per_blk);
+
+		printk("entry_pos:%d (addr:%llu, spp:%lu, ppb:%lu), cur:%d\n",
+			entry_pos, rrqd->addr->addr,
+			dev->sec_per_pg, dev->pgs_per_blk, rblk->w_buf.cur_mem);
+		if (entry_pos >= rblk->w_buf.cur_mem)
+			goto out;
+
+		read_entry = &rblk->w_buf.entries[0] +
+			(entry_pos * (sizeof(struct rrpc_rq) + dev->sec_size));
+		data = read_entry + sizeof(void *);
+		printk("entry:%p, data:%p\n", read_entry, data);
+		printk("Reading (n:%d) from buffer(pos:%d): blk:%lu, laddr:%lu, addr:%llu\n",
+					nr_pages,
+					entry_pos,
+					blk_id,
+					rrpc_get_laddr(bio),
+					rrqd->addr->addr);
+
+		BUG_ON(nr_pages != bio->bi_vcnt);
+		for (i = 0; i < nr_pages; i++) {
+			bv = &bio->bi_io_vec[i];
+			page = bv->bv_page;
+			kaddr = kmap(page);
+			memcpy(kaddr, data, RRPC_EXPOSED_PAGE_SIZE);
+			kunmap(kaddr);
+			bv->bv_len = RRPC_EXPOSED_PAGE_SIZE;
+			bv->bv_offset = 0;
+			bio_advance(bio, RRPC_EXPOSED_PAGE_SIZE);
+			pages_left--;
+		}
+	}
+
+out:
+	return pages_left;
+}
+
 static int rrpc_submit_io(struct rrpc *rrpc, struct bio *bio,
 				struct rrpc_rq *rrqd, unsigned long flags)
 {
@@ -971,6 +1028,7 @@ static int rrpc_submit_io(struct rrpc *rrpc, struct bio *bio,
 
 	if (bio_rw(bio) == READ) {
 		struct nvm_rq *rqd;
+		uint8_t pages_left;
 
 		rqd = mempool_alloc(rrpc->rq_pool, GFP_ATOMIC);
 		if (!rqd) {
@@ -1006,8 +1064,17 @@ static int rrpc_submit_io(struct rrpc *rrpc, struct bio *bio,
 		rqd->nr_pages = nr_pages;
 		rrqd->flags = flags;
 
-		//TODO: Read from buffer
+		pages_left = rrpc_read_from_w_buf(rrpc, rqd);
+		if (pages_left < 0)
+			return NVM_IO_ERR;
+		else if (pages_left == 0) {
+			rrpc_end_io(rqd);
+			return NVM_IO_DONE;
+		}
 
+		/* rrpc_read_from_w_buf takes care of advancing the bio in case
+		 * only some of the pages can be read from the write buffer
+		 */
 		err = nvm_submit_io(rrpc->dev, rqd);
 		if (err) {
 			pr_err("rrpc: I/O submission failed: %d\n", err);
@@ -1080,7 +1147,7 @@ static void rrpc_submit_write(struct work_struct *work)
 	struct rrpc_lun *rlun = container_of(work, struct rrpc_lun, ws_writer);
 	struct rrpc *rrpc = rlun->rrpc;
 	struct nvm_dev *dev = rrpc->dev;
-	struct request_queue *q = dev->q;
+	/* struct request_queue *q = dev->q; */
 	struct rrpc_rq *rrqd;
 	void *data;
 	struct nvm_rq *rqd;
