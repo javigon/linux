@@ -179,20 +179,16 @@ static void rrpc_set_lun_cur(struct rrpc_lun *rlun, struct rrpc_block *rblk)
 static struct rrpc_block *rrpc_get_blk(struct rrpc *rrpc, struct rrpc_lun *rlun,
 							unsigned long flags)
 {
-	struct nvm_lun *lun = rlun->parent;
 	struct nvm_block *blk;
 	struct rrpc_block *rblk;
 
-	spin_lock(&lun->lock);
-	blk = nvm_get_blk_unlocked(rrpc->dev, rlun->parent, flags);
+	blk = nvm_get_blk(rrpc->dev, rlun->parent, flags);
 	if (!blk)
 		return NULL;
 
 	rblk = &rlun->blocks[blk->id];
-	list_add_tail(&rblk->list, &rlun->open_list);
-	spin_unlock(&lun->lock);
-
 	blk->priv = rblk;
+
 	bitmap_zero(rblk->invalid_pages, rrpc->dev->pgs_per_blk);
 	rblk->next_page = 0;
 	rblk->nr_invalid_pages = 0;
@@ -203,13 +199,7 @@ static struct rrpc_block *rrpc_get_blk(struct rrpc *rrpc, struct rrpc_lun *rlun,
 
 static void rrpc_put_blk(struct rrpc *rrpc, struct rrpc_block *rblk)
 {
-	struct rrpc_lun *rlun = rblk->rlun;
-	struct nvm_lun *lun = rlun->parent;
-
-	spin_lock(&lun->lock);
-	nvm_put_blk_unlocked(rrpc->dev, rblk->parent);
-	list_del(&rblk->list);
-	spin_unlock(&lun->lock);
+	nvm_put_blk(rrpc->dev, rblk->parent);
 }
 
 static void rrpc_put_blks(struct rrpc *rrpc)
@@ -663,20 +653,8 @@ static void rrpc_end_io_write(struct rrpc *rrpc, struct rrpc_rq *rrqd,
 		lun = rblk->parent->lun;
 
 		cmnt_size = atomic_inc_return(&rblk->data_cmnt_size);
-		if (unlikely(cmnt_size == rrpc->dev->pgs_per_blk)) {
-			struct nvm_block *blk = rblk->parent;
-			struct rrpc_lun *rlun = rblk->rlun;
-
-			spin_lock(&lun->lock);
-			lun->nr_open_blocks--;
-			lun->nr_closed_blocks++;
-			blk->state &= ~NVM_BLK_ST_OPEN;
-			blk->state |= NVM_BLK_ST_CLOSED;
-			list_move_tail(&rblk->list, &rlun->closed_list);
-			spin_unlock(&lun->lock);
-
+		if (unlikely(cmnt_size == rrpc->dev->pgs_per_blk))
 			rrpc_run_gc(rrpc, rblk);
-		}
 	}
 }
 
@@ -1156,9 +1134,6 @@ static int rrpc_luns_init(struct rrpc *rrpc, int lun_begin, int lun_end)
 		rlun->rrpc = rrpc;
 		rlun->parent = lun;
 		INIT_LIST_HEAD(&rlun->prio_list);
-		INIT_LIST_HEAD(&rlun->open_list);
-		INIT_LIST_HEAD(&rlun->closed_list);
-
 		INIT_WORK(&rlun->ws_gc, rrpc_lun_gc);
 		spin_lock_init(&rlun->lock);
 
