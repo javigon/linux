@@ -248,7 +248,7 @@ static struct rrpc_block *rrpc_get_blk(struct rrpc *rrpc, struct rrpc_lun *rlun,
 	atomic_set(&rblk->data_cmnt_size, 0);
 
 	/* Set up block write buffer */
-	printk(KERN_CRIT "Setting up write buffer for blk:%lu(bppa:%lu), data_size:%d, sec_per_blk:%d\n",
+	printk("Setting up write buffer for blk:%lu(bppa:%lu), data_size:%d, sec_per_blk:%d\n",
 			rblk->parent->id,
 			dev->sec_per_blk * rblk->parent->id,
 			dev->sec_size,
@@ -468,7 +468,7 @@ static void rrpc_block_gc(struct work_struct *work)
 	struct nvm_lun *lun = rblk->parent->lun;
 	struct rrpc_lun *rlun = &rrpc->luns[lun->id - rrpc->lun_offset];
 
-	printk("GC!!!!\n");
+	printk("BLOCK GC!!!!\n");
 	WARN_ON(1);
 
 	mempool_free(gcb, rrpc->gcb_pool);
@@ -993,7 +993,7 @@ static int rrpc_read_from_w_buf(struct rrpc *rrpc, struct nvm_rq *rqd)
 		entry_pos = rrqd->addr->addr -
 				(blk_id * dev->sec_per_pg * dev->pgs_per_blk);
 
-		printk("entry_pos:%d (addr:%llu, spp:%lu, ppb:%lu), cur:%d\n",
+		printk("entry_pos:%d (addr:%llu, spp:%d, ppb:%d), cur:%d\n",
 			entry_pos, rrqd->addr->addr,
 			dev->sec_per_pg, dev->pgs_per_blk, rblk->w_buf.cur_mem);
 		if (entry_pos >= rblk->w_buf.cur_mem)
@@ -1160,7 +1160,6 @@ static void rrpc_submit_write(struct work_struct *work)
 {
 	struct rrpc_lun *rlun = container_of(work, struct rrpc_lun, ws_writer);
 	struct rrpc *rrpc = rlun->rrpc;
-	struct nvm_dev *dev = rrpc->dev;
 	/* struct request_queue *q = dev->q; */
 	struct rrpc_rq *rrqd;
 	void *data;
