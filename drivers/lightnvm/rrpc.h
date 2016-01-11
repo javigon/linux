@@ -110,7 +110,6 @@ struct rrpc_lun {
 
 	struct work_struct ws_gc;
 	struct work_struct ws_writer;
-	struct workqueue_struct *kw_wq;
 
 	spinlock_t lock;
 };
@@ -165,6 +164,7 @@ struct rrpc {
 	struct timer_list gc_timer;
 	struct workqueue_struct *krqd_wq;
 	struct workqueue_struct *kgc_wq;
+	struct workqueue_struct *kw_wq;
 };
 
 struct rrpc_block_gc {
