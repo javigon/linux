@@ -224,6 +224,7 @@ static int __rrpc_lock_laddr(struct rrpc *rrpc, sector_t laddr,
 	r->l_start = laddr;
 	r->l_end = laddr_end;
 
+	printk("Locking: s:%lu, e:%lu\n", laddr, laddr_end);
 	list_add_tail(&r->list, &rrpc->inflights.reqs);
 	spin_unlock_irq(&rrpc->inflights.lock);
 	return 0;
@@ -258,6 +259,7 @@ static inline void rrpc_unlock_laddr(struct rrpc *rrpc,
 {
 	unsigned long flags;
 
+	printk("Unlocking: s:%lu, e:%lu\n", r->l_start, r->l_end);
 	spin_lock_irqsave(&rrpc->inflights.lock, flags);
 	list_del_init(&r->list);
 	spin_unlock_irqrestore(&rrpc->inflights.lock, flags);

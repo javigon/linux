@@ -8,7 +8,8 @@ enum {
 	NVM_IO_ERR = 3,
 
 	NVM_IOTYPE_NONE = 0,
-	NVM_IOTYPE_GC = 1,
+	NVM_IOTYPE_BUF = 1,
+	NVM_IOTYPE_GC = 2,
 };
 
 #ifdef CONFIG_NVM
