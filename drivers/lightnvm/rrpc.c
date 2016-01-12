@@ -248,7 +248,8 @@ static struct rrpc_block *rrpc_get_blk(struct rrpc *rrpc, struct rrpc_lun *rlun,
 	atomic_set(&rblk->data_cmnt_size, 0);
 
 	/* Set up block write buffer */
-	printk("Setting up write buffer for blk:%lu(bppa:%lu), data_size:%d, sec_per_blk:%d\n",
+	printk("Setting up write buffer for blk(lun:%d):%lu(bppa:%lu), data_size:%d, sec_per_blk:%d\n",
+			rlun->parent->id,
 			rblk->parent->id,
 			dev->sec_per_blk * rblk->parent->id,
 			dev->sec_size,
@@ -749,7 +750,7 @@ static void rrpc_end_io_write(struct rrpc *rrpc, struct rrpc_rq *rrqd,
 		//we move it here?
 		cmnt_size = atomic_inc_return(&rblk->data_cmnt_size);
 
-		printk("end_io_write (laddr:%lu, addr:%llu)- cmnt: %d\n",
+		printk("end_io_write (laddr:%lu, addr:%llu) - cmnt: %d\n",
 				laddr, p->addr,
 				atomic_read(&rblk->data_cmnt_size));
 
@@ -759,6 +760,7 @@ static void rrpc_end_io_write(struct rrpc *rrpc, struct rrpc_rq *rrqd,
 
 			BUG_ON(!bitmap_full(buf->sync_bitmap, buf->nentries));
 
+			printk("Closing block %lu\n", blk->id);
 			spin_lock(&lun->lock);
 			BUG_ON((buf->cur_mem != buf->cur_sync) &&
 					(buf->cur_mem != buf->nentries));
@@ -1241,17 +1243,17 @@ static void rrpc_submit_write(struct work_struct *work)
 			pgs_to_sync = (pgs_avail >= dev->ops->max_phys_sect) ?
 					dev->ops->max_phys_sect : pgs_avail;
 
-		//JAVIER: Better way
-		if (pgs_to_sync == 0)
-			return;
-
-		//I don't think we need the lock - the thread is per lun...
-		/* spin_lock_irq(&rblk->w_buf.sync_lock); */
-
 		printk("Write IO: blk:%lu, pgs_to_sync:%d, s:%d,m:%d\n",
 						rblk->parent->id, pgs_to_sync,
 						rblk->w_buf.cur_sync,
 						rblk->w_buf.cur_mem);
+
+		//JAVIER: Better way
+		if (pgs_to_sync == 0)
+			continue;
+
+		//I don't think we need the lock - the thread is per lun...
+		/* spin_lock_irq(&rblk->w_buf.sync_lock); */
 
 		trrqd = rblk->w_buf.sync->rrqd;
 
@@ -1260,9 +1262,8 @@ static void rrpc_submit_write(struct work_struct *work)
 			pr_err("nvm: rrpc: could not alloc write bio\n");
 			return;
 		}
-		/* rev = &rrpc->rev_trans_map[trrqd->addr->addr - rrpc->poffset]; */
-		/* bio->bi_iter.bi_sector = rrpc_get_sector(rev->addr); */
-		bio->bi_iter.bi_sector = 0;
+		rev = &rrpc->rev_trans_map[trrqd->addr->addr - rrpc->poffset];
+		bio->bi_iter.bi_sector = rrpc_get_sector(rev->addr);
 		bio->bi_rw = WRITE;
 
 		new_rrqd = mempool_alloc(rrpc->rrq_pool, GFP_ATOMIC);
@@ -1297,12 +1298,6 @@ static void rrpc_submit_write(struct work_struct *work)
 						rqd->bio->bi_iter.bi_sector);
 			goto submit_io;
 		}
-
-		/* printk("rqd addr(%d):%llu(%llu), sec:%lu\n", */
-					/* pgs_to_sync, */
-					/* new_rrqd->addr->addr, */
-					/* rqd->ppa_addr.ppa, */
-					/* rqd->bio->bi_iter.bi_sector); */
 
 		/* This bio will contain several pppas */
 		rqd->ppa_list = nvm_dev_dma_alloc(rrpc->dev, GFP_ATOMIC,
