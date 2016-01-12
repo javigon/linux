@@ -795,6 +795,10 @@ static void rrpc_end_io(struct nvm_rq *rqd)
 	uint8_t nr_pages = rqd->nr_pages;
 	sector_t laddr = rrpc_get_laddr(rqd->bio) - nr_pages;
 
+	if (rqd->bio->bi_error) {
+		printk("bi_error:%d\n", rqd->bio->bi_error);
+	}
+
 	printk("end rqd:%p, npages:%d\n", rqd, nr_pages);
 
 	if ((bio_data_dir(rqd->bio) == WRITE) && (rrqd->flags & NVM_IOTYPE_BUF))
@@ -1121,7 +1125,7 @@ static int rrpc_submit_io(struct rrpc *rrpc, struct bio *bio,
 		rqd->bio = bio;
 		rqd->ins = &rrpc->instance;
 		rqd->nr_pages = nr_pages;
-		rrqd->flags = flags;
+		rqd->flags = rrqd->flags = flags;
 
 		pages_left = rrpc_read_from_w_buf(rrpc, rqd);
 		if (pages_left < 0)
@@ -1131,6 +1135,7 @@ static int rrpc_submit_io(struct rrpc *rrpc, struct bio *bio,
 			return NVM_IO_DONE;
 		}
 
+		printk("submit IO\n");
 		/* rrpc_read_from_w_buf takes care of advancing the bio in case
 		 * only some of the pages can be read from the write buffer
 		 */

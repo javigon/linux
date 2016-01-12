@@ -137,7 +137,7 @@ static void buffer_io_error(struct buffer_head *bh, char *msg)
 	char b[BDEVNAME_SIZE];
 
 	if (!test_bit(BH_Quiet, &bh->b_state)) {
-		/* WARN_ON(1); */
+		WARN_ON(1);
 		printk_ratelimited(KERN_ERR
 			"Buffer I/O error on dev %s, logical block %llu%s\n",
 			bdevname(bh->b_bdev, b),
