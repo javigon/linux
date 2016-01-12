@@ -1201,35 +1201,72 @@ static blk_qc_t rrpc_make_rq(struct request_queue *q, struct bio *bio)
 	return BLK_QC_T_NONE;
 }
 
+static int rrpc_alloc_page_in_bio(struct rrpc *rrpc, struct bio *bio,
+					struct rrpc_rq *rrqd, void *data)
+{
+	struct request_queue *q = rrpc->dev->q;
+	struct page *page;
+	void *ptr;
+	int err;
+
+	page = mempool_alloc(rrpc->page_pool, GFP_ATOMIC);
+	if (!page) {
+		pr_err("nvm: rrpc: could not alloc page\n");
+		return -1;
+	}
+
+	/* BUG_ON(!virt_addr_valid(data)); */
+	/* BUG_ON(PAGE_SIZE != RRPC_EXPOSED_PAGE_SIZE); */
+	/* page = virt_to_page(data); // Can we use this? */
+	/* if (!page) { */
+		/* pr_err("nvm: rrpc: could not alloc page\n"); */
+		/* spin_unlock_irq(&rblk->w_buf.sync_lock); */
+		/* return; */
+	/* } */
+	/* page = alloc_page(GFP_NOIO); */
+	/* if (!page) { */
+		/* pr_err("nvm: rrpc: could not alloc page\n"); */
+		/* return; */
+	/* } */
+
+	ptr = kmap(page);
+	printk("Page:%p:%p\n", page, ptr);
+	memcpy(ptr, data, RRPC_EXPOSED_PAGE_SIZE);
+	kunmap(ptr);
+
+	// XXX: Better way to deal with such fail? Retry?
+	err = bio_add_pc_page(q, bio, page, RRPC_EXPOSED_PAGE_SIZE, 0);
+	if (err != RRPC_EXPOSED_PAGE_SIZE) {
+		pr_err("nvm: rrpc: could not add page to bio\n");
+		mempool_free(page, rrpc->page_pool);
+		return -1;
+	}
+
+	mempool_free(rrqd, rrpc->rrq_pool);
+
+	return 0;
+}
+
 static void rrpc_submit_write(struct work_struct *work)
 {
 	struct rrpc_lun *rlun = container_of(work, struct rrpc_lun, ws_writer);
 	struct rrpc *rrpc = rlun->rrpc;
 	struct nvm_dev *dev = rrpc->dev;
-	struct request_queue *q = dev->q;
 	struct rrpc_rq *new_rrqd, *trrqd;
 	void *data;
 	struct nvm_rq *rqd;
 	struct rrpc_block *rblk;
 	struct rrpc_rev_addr *rev;
 	struct bio *bio;
-	struct page *page;
-	void *ptr;
 	/* unsigned long flags; */
 	/* unsigned page_offset; */
 	/* int full_mem_pgs; */
 	int pgs_to_sync, pgs_avail;
-	int sync = 0; //0: soft sync - wait for max_phys_sect, 1: hard sync
+	int sync = 1; //0: soft sync - wait for max_phys_sect, 1: hard sync
 	int err;
 	int i;
 
 	list_for_each_entry(rblk, &rlun->open_list, list) {
-		//XXX: JAVIER: This will go
-		if (unlikely(!rblk->parent)) {
-			printk(KERN_CRIT "JAVIER: KRENKE!\n");
-			continue;
-		}
-
 		WARN_ON_ONCE(irqs_disabled());
 
 		spin_lock(&rblk->w_buf.w_lock);
@@ -1290,12 +1327,28 @@ static void rrpc_submit_write(struct work_struct *work)
 
 		//JAVIER: THIS PATH IS WRONG - missing data
 		if (pgs_to_sync == 1) {
+			data = rblk->w_buf.sync->data;
+
+			printk("BUFFER(%d): pos:%d, trrqd:%p, data:%p\n", 1,
+					rblk->w_buf.cur_sync, trrqd, data);
+
+			err = rrpc_alloc_page_in_bio(rrpc, bio, trrqd, data);
+			if (err) {
+				mempool_free(rqd, rrpc->rq_pool);
+				bio_put(bio); //FIXME: Is this the right way?
+				continue;
+			}
+
 			rqd->ppa_addr = rrpc_ppa_to_gaddr(dev, trrqd->addr->addr);
 			new_rrqd->addr = trrqd->addr;
+
 			printk("rqd addr(1):%llu(%llu), sec:%lu\n",
 						trrqd->addr->addr,
 						rqd->ppa_addr.ppa,
 						rqd->bio->bi_iter.bi_sector);
+
+			rblk->w_buf.sync++;
+			rblk->w_buf.cur_sync++;
 			goto submit_io;
 		}
 
@@ -1304,6 +1357,8 @@ static void rrpc_submit_write(struct work_struct *work)
 							&rqd->dma_ppa_list);
 		if (!rqd->ppa_list) {
 			pr_err("rrpc: not able to allocate ppa list\n");
+			mempool_free(rqd, rrpc->rq_pool);
+			bio_put(bio); //FIXME: Is this the right way?
 			return;
 		}
 
@@ -1311,49 +1366,22 @@ static void rrpc_submit_write(struct work_struct *work)
 			trrqd = rblk->w_buf.sync->rrqd;
 			data = rblk->w_buf.sync->data;
 
-			printk("BUFFER(%d): pos:%d, rrqd:%p, data:%p\n", i,
-				rblk->w_buf.cur_sync, trrqd, data);
+			printk("BUFFER(%d): pos:%d, trrqd:%p, data:%p\n", i,
+					rblk->w_buf.cur_sync, trrqd, data);
 
-			page = mempool_alloc(rrpc->page_pool, GFP_ATOMIC);
-			if (!page) {
-				pr_err("nvm: rrpc: could not alloc page\n");
-				return;
-			}
-
-			/* BUG_ON(!virt_addr_valid(data)); */
-			/* BUG_ON(PAGE_SIZE != RRPC_EXPOSED_PAGE_SIZE); */
-			/* page = virt_to_page(data); // Can we use this? */
-			/* if (!page) { */
-				/* pr_err("nvm: rrpc: could not alloc page\n"); */
-				/* spin_unlock_irq(&rblk->w_buf.sync_lock); */
-				/* return; */
-			/* } */
-			/* page = alloc_page(GFP_NOIO); */
-			/* if (!page) { */
-				/* pr_err("nvm: rrpc: could not alloc page\n"); */
-				/* return; */
-			/* } */
-
-			ptr = kmap(page);
-			printk("Page:%p:%p\n", page, ptr);
-			memcpy(ptr, data, RRPC_EXPOSED_PAGE_SIZE);
-			kunmap(ptr);
-
-			// XXX: Better way to deal with such fail? Retry?
-			err = bio_add_pc_page(q, bio, page, RRPC_EXPOSED_PAGE_SIZE, 0);
-			if (err != RRPC_EXPOSED_PAGE_SIZE) {
-				pr_err("nvm: rrpc: could not add page to bio\n");
-				mempool_free(page, rrpc->page_pool);
+			err = rrpc_alloc_page_in_bio(rrpc, bio, trrqd, data);
+			if (err) {
 				mempool_free(rqd, rrpc->rq_pool);
 				bio_put(bio); //FIXME: Is this the right way?
 				continue;
 			}
 
+			printk("rqd addr(1):%llu, sec:%lu\n",
+						trrqd->addr->addr,
+						rqd->bio->bi_iter.bi_sector);
+
 			rqd->ppa_list[i] =
 				rrpc_ppa_to_gaddr(dev, trrqd->addr->addr);
-
-			mempool_free(trrqd, rrpc->rrq_pool);
-
 			rblk->w_buf.sync++;
 			rblk->w_buf.cur_sync++;
 		}
