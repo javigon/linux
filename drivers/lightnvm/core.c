@@ -463,6 +463,13 @@ static int nvm_core_init(struct nvm_dev *dev)
 	dev->sec_per_lun = dev->sec_per_blk * dev->blks_per_lun;
 	dev->nr_luns = dev->luns_per_chnl * dev->nr_chnls;
 
+	dev->min_write_pgs = dev->sec_per_pl * (dev->sec_size / PAGE_SIZE);
+	dev->max_write_pgs =
+		(((dev->ops->max_phys_sect % dev->min_write_pgs) == 0) ?
+			dev->ops->max_phys_sect :
+			(dev->min_write_pgs *
+			(dev->ops->max_phys_sect / dev->min_write_pgs)));
+
 	dev->total_blocks = dev->nr_planes *
 				dev->blks_per_lun *
 				dev->luns_per_chnl *

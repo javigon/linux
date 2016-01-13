@@ -325,6 +325,9 @@ struct nvm_dev {
 	int max_rq_size;
 	int plane_mode; /* drive device in single, double or quad mode */
 
+	int min_write_pgs; /* minimum amount of pages required by controller */
+	int max_write_pgs; /* maximum amount of pages supported by controller */
+
 	int sec_per_pl; /* all sectors across planes */
 	int sec_per_blk;
 	int sec_per_lun;
