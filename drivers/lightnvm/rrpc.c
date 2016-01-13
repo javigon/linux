@@ -293,7 +293,6 @@ static struct rrpc_block *rrpc_get_blk(struct rrpc *rrpc, struct rrpc_lun *rlun,
 	printk("Buffer: mem:%p, sync:%p\n", rblk->w_buf.mem, rblk->w_buf.sync);
 
 	spin_lock_init(&rblk->w_buf.w_lock);
-	/* spin_lock_init(&rblk->w_buf.sync_lock); */
 
 	return rblk;
 }
@@ -947,7 +946,7 @@ static int rrpc_write_rq(struct rrpc *rrpc, struct bio *bio,
 	unsigned int bio_len = bio_cur_bytes(bio);
 	int is_gc = flags & NVM_IOTYPE_GC;
 	sector_t laddr = rrpc_get_laddr(bio);
-	/* unsigned long lock_flags; */
+	unsigned long lock_flags;
 
 	BUG_ON(bio_len != RRPC_EXPOSED_PAGE_SIZE);
 
@@ -973,13 +972,14 @@ static int rrpc_write_rq(struct rrpc *rrpc, struct bio *bio,
 	 * to guarantee durability if a flash block becomes bad before all pages
 	 * are written. This buffer is also used to write at the right page
 	 * granurality*/
+
 	w_buf = &p->rblk->w_buf;
 	rlun = p->rblk->rlun;
 
 	rrqd->flags = flags;
 	rrqd->addr = p;
 
-	/* spin_lock_irqsave(&w_buf->w_lock, lock_flags); */
+	spin_lock_irqsave(&w_buf->w_lock, lock_flags);
 	spin_lock(&w_buf->w_lock);
 	BUG_ON(w_buf->cur_mem == w_buf->nentries);
 
@@ -999,7 +999,7 @@ static int rrpc_write_rq(struct rrpc *rrpc, struct bio *bio,
 	printk("next_mem:%p, next_data:%p\n", w_buf->mem, w_buf->mem->data);
 
 	spin_unlock(&w_buf->w_lock);
-	/* spin_unlock_irqrestore(&w_buf->w_lock, lock_flags); */
+	spin_unlock_irqrestore(&w_buf->w_lock, lock_flags);
 
 	printk("WRITE_RQ(1): blk:%lu, laddr:%lu,addr:%llu, bio_sec:%lu\n",
 		p->rblk->parent->id, laddr, p->addr, bio->bi_iter.bi_sector);
@@ -1027,7 +1027,7 @@ static int rrpc_read_from_w_buf(struct rrpc *rrpc, struct nvm_rq *rqd)
 		void *data;
 		int entry_pos, i;
 		unsigned long blk_id = rblk->parent->id;
-		/* unsigned long flags; */
+		unsigned long flags;
 
 		// TODO: Optimize calculation
 		entry_pos = rrqd->addr->addr -
@@ -1037,16 +1037,17 @@ static int rrpc_read_from_w_buf(struct rrpc *rrpc, struct nvm_rq *rqd)
 			entry_pos, rrqd->addr->addr,
 			dev->sec_per_pg, dev->pgs_per_blk, rblk->w_buf.cur_mem);
 
-		spin_lock(&rblk->w_buf.w_lock);
-		/* spin_lock_irqsave(&rblk->w_buf.w_lock, flags); */
+		/* spin_lock(&rblk->w_buf.w_lock); */
+		spin_lock_irqsave(&rblk->w_buf.w_lock, flags);
 		if (entry_pos >= rblk->w_buf.cur_mem) {
 			printk(KERN_CRIT "ERROR HERE: entry:%d, cur_mem:%d\n",
 					entry_pos, rblk->w_buf.cur_mem);
-			spin_unlock(&rblk->w_buf.w_lock);
+			/* spin_unlock(&rblk->w_buf.w_lock); */
+			spin_unlock_irqrestore(&rblk->w_buf.w_lock, flags);
 			goto out;
 		}
-		spin_unlock(&rblk->w_buf.w_lock);
-		/* spin_unlock_irqrestore(&rblk->w_buf.w_lock, flags); */
+		/* spin_unlock(&rblk->w_buf.w_lock); */
+		spin_unlock_irqrestore(&rblk->w_buf.w_lock, flags);
 
 		read_entry = &rblk->w_buf.entries[entry_pos];
 		data = read_entry->data;
@@ -1263,7 +1264,7 @@ static void rrpc_submit_write(struct work_struct *work)
 	struct rrpc_block *rblk;
 	struct rrpc_rev_addr *rev;
 	struct bio *bio;
-	/* unsigned long flags; */
+	unsigned long flags;
 	/* unsigned page_offset; */
 	/* int full_mem_pgs; */
 	int pgs_to_sync, pgs_avail;
@@ -1280,9 +1281,9 @@ static void rrpc_submit_write(struct work_struct *work)
 	list_for_each_entry(rblk, &rlun->open_list, list) {
 		WARN_ON_ONCE(irqs_disabled());
 
-		spin_lock(&rblk->w_buf.w_lock);
+		spin_lock_irqsave(&rblk->w_buf.w_lock, flags);
 		pgs_avail = rblk->w_buf.cur_mem - rblk->w_buf.cur_sync;
-		spin_unlock(&rblk->w_buf.w_lock);
+		spin_unlock_irqrestore(&rblk->w_buf.w_lock, flags);
 
 		switch (sync) {
 		case 0:
