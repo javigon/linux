@@ -1267,10 +1267,16 @@ static void rrpc_submit_write(struct work_struct *work)
 	/* unsigned page_offset; */
 	/* int full_mem_pgs; */
 	int pgs_to_sync, pgs_avail;
-	int sync = 1; //0: soft sync - wait for max_phys_sect, 1: hard sync
+	int sync = 1; //0: soft sync - wait for max_phys_sect,1: hard sync, 2: flush what we have
 	int err;
 	int i;
 
+	/* Note that OS pages are typically mapped to flash page sectors, which
+	 * are 4K; a flash page might be formed of several sectors. Also,
+	 * controllers typically program flash pages across multiple planes.
+	 * This is the flash programing granurality, and the reason behind the
+	 * sync strategy performed in this write thread.
+	 */
 	list_for_each_entry(rblk, &rlun->open_list, list) {
 		WARN_ON_ONCE(irqs_disabled());
 
@@ -1278,12 +1284,29 @@ static void rrpc_submit_write(struct work_struct *work)
 		pgs_avail = rblk->w_buf.cur_mem - rblk->w_buf.cur_sync;
 		spin_unlock(&rblk->w_buf.w_lock);
 
-		if (sync == 0)
-			pgs_to_sync = (pgs_avail >= dev->ops->max_phys_sect) ?
-					dev->ops->max_phys_sect : 0;
-		else
-			pgs_to_sync = (pgs_avail >= dev->ops->max_phys_sect) ?
-					dev->ops->max_phys_sect : pgs_avail;
+		switch (sync) {
+		case 0:
+			pgs_to_sync = (pgs_avail >= dev->max_write_pgs) ?
+					dev->max_write_pgs : 0;
+			break;
+		case 1:
+			if (pgs_avail >= dev->max_write_pgs)
+				pgs_to_sync = dev->max_write_pgs;
+			else if (pgs_avail >= dev->min_write_pgs)
+				pgs_to_sync = dev->min_write_pgs *
+					(pgs_avail / dev->min_write_pgs);
+			else
+				pgs_to_sync = pgs_avail; //TODO: ADD PADDING LOGIC!
+			break;
+		case 2:
+			if (pgs_avail >= dev->max_write_pgs)
+				pgs_to_sync = dev->max_write_pgs;
+			else if (pgs_avail >= dev->min_write_pgs)
+				pgs_to_sync = dev->min_write_pgs *
+					(pgs_avail / dev->min_write_pgs);
+			else
+				pgs_to_sync = 0;
+		}
 
 		printk("Write IO: blk:%lu, pgs_to_sync:%d, s:%d,m:%d\n",
 						rblk->parent->id, pgs_to_sync,
