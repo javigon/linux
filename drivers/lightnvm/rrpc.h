@@ -60,8 +60,10 @@ struct buf_entry {
 struct rrpc_w_buf {
 	struct buf_entry *entries;	/* Entries */
 	struct buf_entry *mem;		/* Points to the next writable entry */
-	struct buf_entry *sync;		/* Points to the last synced entry */
+	struct buf_entry *subm;		/* Points to the last submitted entry */
+	struct buf_entry *sync;		/* Points to the last committed entry */
 	int cur_mem;			/* Current memory entry. Follows mem */
+	int cur_subm;			/* Entries have been submitted to dev */
 	int cur_sync;			/* Entries have been synced to media */
 	int nentries;			/* Number of entries in write buffer */
 
@@ -90,7 +92,7 @@ struct rrpc_block {
 	unsigned int nr_invalid_pages;
 
 	spinlock_t lock;
-	atomic_t data_cmnt_size; /* data pages committed to stable storage */
+	// atomic_t data_cmnt_size; #<{(| data pages committed to stable storage |)}>#
 };
 
 struct rrpc_lun {
@@ -260,6 +262,10 @@ static inline void rrpc_unlock_laddr(struct rrpc *rrpc,
 	unsigned long flags;
 
 	printk("Unlocking: s:%lu, e:%lu\n", r->l_start, r->l_end);
+	BUG_ON(rrpc == NULL);
+	BUG_ON(r == NULL);
+	BUG_ON(&rrpc->inflights == NULL);
+	BUG_ON(&rrpc->inflights.lock == NULL);
 	spin_lock_irqsave(&rrpc->inflights.lock, flags);
 	list_del_init(&r->list);
 	spin_unlock_irqrestore(&rrpc->inflights.lock, flags);

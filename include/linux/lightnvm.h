@@ -211,6 +211,7 @@ static inline struct nvm_rq *nvm_rq_from_pdu(void *pdu)
 
 static inline void *nvm_rq_to_pdu(struct nvm_rq *rqdata)
 {
+	BUG_ON(rqdata == NULL);
 	return rqdata->priv;
 }
 

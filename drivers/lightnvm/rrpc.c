@@ -58,6 +58,7 @@ static void rrpc_invalidate_range(struct rrpc *rrpc, sector_t slba,
 		struct rrpc_addr *gp = &rrpc->trans_map[i];
 
 		rrpc_page_invalidate(rrpc, gp);
+		BUG_ON(1);
 		gp->rblk = NULL;
 	}
 	spin_unlock(&rrpc->rev_lock);
@@ -189,10 +190,12 @@ static void rrpc_free_w_buffer(struct rrpc *rrpc, struct rrpc_block *rblk)
 
 	rblk->w_buf.entries = NULL;
 	rblk->w_buf.mem = NULL;
+	rblk->w_buf.subm = NULL;
 	rblk->w_buf.sync = NULL;
 	rblk->w_buf.sync_bitmap = NULL;
 	rblk->w_buf.nentries = 0;
 	rblk->w_buf.cur_mem = 0;
+	rblk->w_buf.cur_subm = 0;
 	rblk->w_buf.cur_sync = 0;
 }
 
@@ -200,6 +203,20 @@ static void rrpc_put_blk(struct rrpc *rrpc, struct rrpc_block *rblk)
 {
 	struct rrpc_lun *rlun = rblk->rlun;
 	struct nvm_lun *lun = rlun->parent;
+	struct rrpc_w_buf *buf = &rblk->w_buf;
+	unsigned long flags;
+
+	// JAVIER: HUNTING BUG
+	BUG_ON(1);
+
+	spin_lock_irqsave(&buf->w_lock, flags);
+	BUG_ON(!bitmap_full(buf->sync_bitmap, buf->nentries));
+	//JAVIER: THIS WILL GO
+	BUG_ON((buf->cur_mem != buf->cur_sync) &&
+					(buf->cur_mem != buf->nentries) &&
+					(buf->cur_mem != buf->cur_subm));
+	rrpc_free_w_buffer(rrpc, rblk);
+	spin_unlock_irqrestore(&buf->w_lock, flags);
 
 	spin_lock(&lun->lock);
 	nvm_put_blk_unlocked(rrpc->dev, rblk->parent);
@@ -238,6 +255,7 @@ static struct rrpc_block *rrpc_get_blk(struct rrpc *rrpc, struct rrpc_lun *rlun,
 	}
 
 	rblk = &rlun->blocks[blk->id];
+	BUG_ON(rblk == NULL);
 	list_add_tail(&rblk->list, &rlun->open_list);
 	spin_unlock(&lun->lock);
 
@@ -245,7 +263,7 @@ static struct rrpc_block *rrpc_get_blk(struct rrpc *rrpc, struct rrpc_lun *rlun,
 	bitmap_zero(rblk->invalid_pages, dev->pgs_per_blk);
 	rblk->next_page = 0;
 	rblk->nr_invalid_pages = 0;
-	atomic_set(&rblk->data_cmnt_size, 0);
+	/* atomic_set(&rblk->data_cmnt_size, 0); */
 
 	/* Set up block write buffer */
 	printk("Setting up write buffer for blk(lun:%d):%lu(bppa:%lu), data_size:%d, sec_per_blk:%d\n",
@@ -272,9 +290,12 @@ static struct rrpc_block *rrpc_get_blk(struct rrpc *rrpc, struct rrpc_lun *rlun,
 
 	rblk->w_buf.entries->data  = rblk->w_buf.data;
 	rblk->w_buf.mem = rblk->w_buf.entries;
+	rblk->w_buf.subm = rblk->w_buf.entries;
 	rblk->w_buf.sync = rblk->w_buf.entries;
+	//FIXME: JAVIER SHould we use sec_per_pl, which considers planes?
 	rblk->w_buf.nentries = dev->pgs_per_blk * dev->sec_per_pg;
 	rblk->w_buf.cur_mem = 0;
+	rblk->w_buf.cur_subm = 0;
 	rblk->w_buf.cur_sync = 0;
 
 	/* JAVIER: Mempol? */
@@ -312,6 +333,17 @@ static void rrpc_gc_kick(struct rrpc *rrpc)
 	for (i = 0; i < rrpc->nr_luns; i++) {
 		rlun = &rrpc->luns[i];
 		queue_work(rrpc->krqd_wq, &rlun->ws_gc);
+	}
+}
+
+static void rrpc_writer_kick(struct rrpc *rrpc)
+{
+	struct rrpc_lun *rlun;
+	unsigned int i;
+
+	for (i = 0; i < rrpc->nr_luns; i++) {
+		rlun = &rrpc->luns[i];
+		queue_work(rrpc->kw_wq, &rlun->ws_writer);
 	}
 }
 
@@ -466,7 +498,7 @@ static void rrpc_block_gc(struct work_struct *work)
 	struct rrpc_lun *rlun = &rrpc->luns[lun->id - rrpc->lun_offset];
 
 	printk("BLOCK GC!!!!\n");
-	WARN_ON(1);
+	BUG_ON(1);
 
 	mempool_free(gcb, rrpc->gcb_pool);
 	pr_debug("nvm: block '%lu' being reclaimed\n", rblk->parent->id);
@@ -547,6 +579,8 @@ static void rrpc_lun_gc(struct work_struct *work)
 		BUG_ON(!block_is_full(rrpc, rblock));
 
 		pr_debug("rrpc: selected block '%lu' for GC\n", block->id);
+
+		BUG_ON(1);
 
 		gcb->rrpc = rrpc;
 		gcb->rblk = rblock;
@@ -716,6 +750,7 @@ static void rrpc_run_gc(struct rrpc *rrpc, struct rrpc_block *rblk)
 		return;
 	}
 
+	BUG_ON(rblk == NULL);
 	gcb->rrpc = rrpc;
 	gcb->rblk = rblk;
 
@@ -731,39 +766,56 @@ static void rrpc_end_io_write(struct rrpc *rrpc, struct rrpc_rq *rrqd,
 	struct rrpc_w_buf *buf;
 	struct nvm_lun *lun;
 	unsigned long bppa;
+	unsigned long flags;
 	int cmnt_size, i;
 
-	printk("End IO write!\n");
-
+	printk(KERN_CRIT "End IO write: s_laddr:%lu, npages:%d",
+			laddr, nr_pages);
 	for (i = 0; i < nr_pages; i++) {
+		BUG_ON(rrqd == NULL);
+		BUG_ON(rrpc == NULL);
 		p = &rrpc->trans_map[laddr + i];
+		printk(KERN_CRIT "End IO write(i:%d): laddr:%lu, addr:%llu\n",
+					i, laddr + i, p->addr);
+		BUG_ON(p == NULL);
 		rblk = p->rblk;
+		BUG_ON(rblk == NULL);
 		buf = &rblk->w_buf;
+		BUG_ON(buf == NULL);
 		lun = rblk->parent->lun;
+		BUG_ON(lun == NULL);
 
 		// JAVIER: Do this more efficiently
 		bppa = rrpc->dev->sec_per_blk * rblk->parent->id;
+
+		BUG_ON(buf->sync == NULL);
+
+		// XXX: Javier: Can we simplify locks?
+		spin_lock_irqsave(&rblk->w_buf.w_lock, flags);
 		set_bit((p->addr - bppa) + i, buf->sync_bitmap);
+		buf->cur_sync++;
+		buf->sync++;
 
-		//JAVIER: Can we merge this atomic counter in the sync lock when
-		//we move it here?
-		cmnt_size = atomic_inc_return(&rblk->data_cmnt_size);
+		printk(KERN_CRIT "end_io_write (laddr:%lu, addr:%llu) - sync: %d\n",
+				laddr + i, p->addr, buf->cur_sync);
 
-		printk("end_io_write (laddr:%lu, addr:%llu) - cmnt: %d\n",
-				laddr, p->addr,
-				atomic_read(&rblk->data_cmnt_size));
+		BUG_ON(buf->cur_sync > buf->cur_subm);
+		if (unlikely(buf->cur_sync == buf->nentries)) {
 
-		if (unlikely(cmnt_size == rrpc->dev->pgs_per_blk)) {
 			struct nvm_block *blk = rblk->parent;
 			struct rrpc_lun *rlun = rblk->rlun;
 
+			printk(KERN_CRIT "Closing block %lu. size(%d)\n",
+							blk->id, buf->cur_sync);
+
+			BUG_ON(rblk == NULL);
+			BUG_ON(buf == NULL);
 			BUG_ON(!bitmap_full(buf->sync_bitmap, buf->nentries));
-
-			printk("Closing block %lu\n", blk->id);
-			spin_lock(&lun->lock);
 			BUG_ON((buf->cur_mem != buf->cur_sync) &&
-					(buf->cur_mem != buf->nentries));
+					(buf->cur_mem != buf->nentries) &&
+					(buf->cur_mem != buf->cur_sync));
 
+			spin_lock(&lun->lock);
 			lun->nr_open_blocks--;
 			lun->nr_closed_blocks++;
 			blk->state &= ~NVM_BLK_ST_OPEN;
@@ -774,7 +826,10 @@ static void rrpc_end_io_write(struct rrpc *rrpc, struct rrpc_rq *rrqd,
 			rrpc_free_w_buffer(rrpc, rblk);
 			rrpc_run_gc(rrpc, rblk);
 		}
+		spin_unlock_irqrestore(&rblk->w_buf.w_lock, flags);
 	}
+
+	rrpc_writer_kick(rrpc);
 }
 
 //XXX: JAVIER: s_laddr will go
@@ -789,9 +844,13 @@ static void rrpc_end_buffered_io(struct rrpc *rrpc, struct rrpc_rq *rrqd,
 
 static void rrpc_end_io(struct nvm_rq *rqd)
 {
+	BUG_ON(rqd == NULL);
 	struct rrpc *rrpc = container_of(rqd->ins, struct rrpc, instance);
+	BUG_ON(rrpc == NULL);
 	struct rrpc_rq *rrqd = nvm_rq_to_pdu(rqd);
+	BUG_ON(rrqd == NULL);
 	uint8_t nr_pages = rqd->nr_pages;
+	BUG_ON(rqd->bio == NULL);
 	sector_t laddr = rrpc_get_laddr(rqd->bio) - nr_pages;
 
 	if (rqd->bio->bi_error) {
@@ -800,6 +859,8 @@ static void rrpc_end_io(struct nvm_rq *rqd)
 
 	printk("end rqd:%p, npages:%d\n", rqd, nr_pages);
 
+	BUG_ON(rqd->bio == NULL);
+	BUG_ON(rrqd == NULL);
 	if ((bio_data_dir(rqd->bio) == WRITE) && (rrqd->flags & NVM_IOTYPE_BUF))
 		rrpc_end_io_write(rrpc, rrqd, laddr, nr_pages);
 
@@ -813,13 +874,18 @@ static void rrpc_end_io(struct nvm_rq *rqd)
 		rrpc_unlock_rq(rrpc, rrqd, nr_pages);
 	}
 
-	if (nr_pages > 1)
-		nvm_dev_dma_free(rrpc->dev, rqd->ppa_list, rqd->dma_ppa_list);
+	//JAVIER: THIS IS JUST FOR TESTING!
+	/* if (nr_pages > 1) */
+		/* nvm_dev_dma_free(rrpc->dev, rqd->ppa_list, rqd->dma_ppa_list); */
 	//JAVIER: NEED TO LOOK INTO THIS...
 	/* if (rqd->metadata) */
 		/* nvm_dev_dma_free(rrpc->dev, rqd->metadata, rqd->dma_metadata); */
 
+	BUG_ON(rrqd == NULL);
+	BUG_ON(rrpc->rrq_pool == NULL);
 	mempool_free(rrqd, rrpc->rrq_pool);
+	BUG_ON(rqd == NULL);
+	BUG_ON(rrpc->rq_pool == NULL);
 	mempool_free(rqd, rrpc->rq_pool);
 }
 
@@ -1285,7 +1351,7 @@ static void rrpc_submit_write(struct work_struct *work)
 		WARN_ON_ONCE(irqs_disabled());
 
 		spin_lock_irqsave(&rblk->w_buf.w_lock, flags);
-		pgs_avail = rblk->w_buf.cur_mem - rblk->w_buf.cur_sync;
+		pgs_avail = rblk->w_buf.cur_mem - rblk->w_buf.cur_subm;
 		spin_unlock_irqrestore(&rblk->w_buf.w_lock, flags);
 
 		switch (sync) {
@@ -1314,7 +1380,7 @@ static void rrpc_submit_write(struct work_struct *work)
 
 		printk("Write IO: blk:%lu, pgs_to_sync:%d, s:%d,m:%d\n",
 						rblk->parent->id, pgs_to_sync,
-						rblk->w_buf.cur_sync,
+						rblk->w_buf.cur_subm,
 						rblk->w_buf.cur_mem);
 
 		//JAVIER: Better way
@@ -1324,7 +1390,7 @@ static void rrpc_submit_write(struct work_struct *work)
 		//I don't think we need the lock - the thread is per lun...
 		/* spin_lock_irq(&rblk->w_buf.sync_lock); */
 
-		trrqd = rblk->w_buf.sync->rrqd;
+		trrqd = rblk->w_buf.subm->rrqd;
 
 		bio = bio_alloc(GFP_ATOMIC, pgs_to_sync);
 		if (!bio) {
@@ -1359,10 +1425,10 @@ static void rrpc_submit_write(struct work_struct *work)
 
 		//JAVIER: THIS PATH IS WRONG - missing data
 		if (pgs_to_sync == 1) {
-			data = rblk->w_buf.sync->data;
+			data = rblk->w_buf.subm->data;
 
 			printk("BUFFER(%d): pos:%d, trrqd:%p, data:%p\n", 1,
-					rblk->w_buf.cur_sync, trrqd, data);
+					rblk->w_buf.cur_subm, trrqd, data);
 
 			err = rrpc_alloc_page_in_bio(rrpc, bio, trrqd, data);
 			if (err) {
@@ -1379,8 +1445,10 @@ static void rrpc_submit_write(struct work_struct *work)
 						rqd->ppa_addr.ppa,
 						rqd->bio->bi_iter.bi_sector);
 
-			rblk->w_buf.sync++;
-			rblk->w_buf.cur_sync++;
+			rblk->w_buf.subm++;
+			rblk->w_buf.cur_subm++;
+
+			BUG_ON(rblk->w_buf.cur_subm > rblk->w_buf.nentries);
 			goto submit_io;
 		}
 
@@ -1395,11 +1463,11 @@ static void rrpc_submit_write(struct work_struct *work)
 		}
 
 		for (i = 0; i < pgs_to_sync; i++) {
-			trrqd = rblk->w_buf.sync->rrqd;
-			data = rblk->w_buf.sync->data;
+			trrqd = rblk->w_buf.subm->rrqd;
+			data = rblk->w_buf.subm->data;
 
 			printk("BUFFERN(%d): pos:%d, trrqd:%p, data:%p\n", i,
-					rblk->w_buf.cur_sync, trrqd, data);
+					rblk->w_buf.cur_subm, trrqd, data);
 
 			err = rrpc_alloc_page_in_bio(rrpc, bio, trrqd, data);
 			if (err) {
@@ -1414,9 +1482,11 @@ static void rrpc_submit_write(struct work_struct *work)
 
 			rqd->ppa_list[i] =
 				rrpc_ppa_to_gaddr(dev, trrqd->addr->addr);
-			rblk->w_buf.sync++;
-			rblk->w_buf.cur_sync++;
+			rblk->w_buf.subm++;
+			rblk->w_buf.cur_subm++;
 		}
+
+		BUG_ON(rblk->w_buf.cur_subm > rblk->w_buf.nentries);
 
 submit_io:
 		printk("Submiting! rqd:%p, new_rrqd:%p, trrqd:%p\n",
@@ -1835,6 +1905,7 @@ static void rrpc_block_map_update(struct rrpc *rrpc, struct rrpc_block *rblk)
 		laddr = &rrpc->trans_map[pladdr];
 
 		if (paddr == laddr->addr) {
+			BUG_ON(rblk == NULL);
 			laddr->rblk = rblk;
 		} else {
 			set_bit(offset, rblk->invalid_pages);
