@@ -206,9 +206,6 @@ static void rrpc_put_blk(struct rrpc *rrpc, struct rrpc_block *rblk)
 	struct rrpc_w_buf *buf = &rblk->w_buf;
 	unsigned long flags;
 
-	// JAVIER: HUNTING BUG
-	BUG_ON(1);
-
 	spin_lock_irqsave(&buf->w_lock, flags);
 	BUG_ON(!bitmap_full(buf->sync_bitmap, buf->nentries));
 	//JAVIER: THIS WILL GO
@@ -502,8 +499,7 @@ static void rrpc_block_gc(struct work_struct *work)
 	struct nvm_lun *lun = rblk->parent->lun;
 	struct rrpc_lun *rlun = &rrpc->luns[lun->id - rrpc->lun_offset];
 
-	printk("BLOCK GC!!!!\n");
-	BUG_ON(1);
+	printk(KERN_CRIT "BLOCK GC!!!!\n");
 
 	mempool_free(gcb, rrpc->gcb_pool);
 	pr_debug("nvm: block '%lu' being reclaimed\n", rblk->parent->id);
@@ -584,8 +580,6 @@ static void rrpc_lun_gc(struct work_struct *work)
 		BUG_ON(!block_is_full(rrpc, rblock));
 
 		pr_debug("rrpc: selected block '%lu' for GC\n", block->id);
-
-		BUG_ON(1);
 
 		gcb->rrpc = rrpc;
 		gcb->rblk = rblock;
@@ -945,7 +939,7 @@ static int rrpc_read_rq(struct rrpc *rrpc, struct bio *bio, struct nvm_rq *rqd,
 	struct rrpc_addr *gp;
 
 	if (!is_gc && rrpc_lock_rq(rrpc, bio, rrqd)) {
-		pr_err_ratelimited("REQUEUE READ1, laddr:%lu\n", laddr);
+		printk("REQUEUE READ1, laddr:%lu\n", laddr);
 		mempool_free(rrqd, rrpc->rrq_pool);
 		mempool_free(rqd, rrpc->rq_pool);
 		return NVM_IO_REQUEUE;
