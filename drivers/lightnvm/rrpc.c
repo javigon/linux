@@ -1022,8 +1022,10 @@ static int rrpc_write_ppalist_rq(struct rrpc *rrpc, struct bio *bio,
 	//JAVIER!!!
 	BUG_ON(1);
 
-	if (!is_gc && rrpc_lock_rq(rrpc, bio, rrqd))
+	if (!is_gc && rrpc_lock_rq(rrpc, bio, rrqd)) {
+		mempool_free(rrqd, rrpc->rrq_pool);
 		return NVM_IO_REQUEUE;
+	}
 
 	for (i = 0; i < nr_pages; i++) {
 		/* We assume that mapping occurs at 4KB granularity */
@@ -1067,7 +1069,8 @@ static int rrpc_write_rq(struct rrpc *rrpc, struct bio *bio,
 	BUG_ON(bio_cur_bytes(bio) != RRPC_EXPOSED_PAGE_SIZE);
 
 	if (!is_gc && rrpc_lock_rq(rrpc, bio, rrqd)) {
-		pr_err_ratelimited("REQUEUE WRITE, laddr:%lu\n", laddr);
+		printk("REQUEUE WRITE, laddr:%lu\n", laddr);
+		mempool_free(rrqd, rrpc->rrq_pool);
 		return NVM_IO_REQUEUE;
 	}
 
