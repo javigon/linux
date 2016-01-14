@@ -1268,8 +1268,7 @@ static blk_qc_t rrpc_make_rq(struct request_queue *q, struct bio *bio)
 		return BLK_QC_T_NONE;
 	}
 
-	rrqd = mempool_alloc(rrpc->rrq_pool, GFP_ATOMIC);
-	/* rrqd = mempool_alloc(rrpc->rrq_pool, GFP_KERNEL); */
+	rrqd = mempool_alloc(rrpc->rrq_pool, GFP_KERNEL);
 	if (!rrqd) {
 		pr_err_ratelimited("rrpc: not able to allocate rrqd.");
 		bio_io_error(bio);
