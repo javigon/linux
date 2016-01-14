@@ -247,6 +247,7 @@ static struct rrpc_block *rrpc_get_blk(struct rrpc *rrpc, struct rrpc_lun *rlun,
 	struct rrpc_block *rblk;
 
 	spin_lock(&lun->lock);
+
 	blk = nvm_get_blk_unlocked(rrpc->dev, rlun->parent, flags);
 	if (!blk) {
 		pr_err("nvm: rrpc: cannot get new block from media manager\n");
@@ -256,8 +257,6 @@ static struct rrpc_block *rrpc_get_blk(struct rrpc *rrpc, struct rrpc_lun *rlun,
 
 	rblk = &rlun->blocks[blk->id];
 	BUG_ON(rblk == NULL);
-	list_add_tail(&rblk->list, &rlun->open_list);
-	spin_unlock(&lun->lock);
 
 	blk->priv = rblk;
 	bitmap_zero(rblk->invalid_pages, dev->pgs_per_blk);
@@ -277,6 +276,7 @@ static struct rrpc_block *rrpc_get_blk(struct rrpc *rrpc, struct rrpc_lun *rlun,
 	if (!rblk->w_buf.data) {
 		pr_err("nvm: rrpc: cannot allocate write buffer for block\n");
 		rrpc_put_blk(rrpc, rblk);
+		spin_unlock(&lun->lock);
 		return NULL;
 	}
 
@@ -285,6 +285,7 @@ static struct rrpc_block *rrpc_get_blk(struct rrpc *rrpc, struct rrpc_lun *rlun,
 		pr_err("nvm: rrpc: cannot allocate write buffer for block\n");
 		mempool_free(rblk->w_buf.data, rrpc->write_buf_pool);
 		rrpc_put_blk(rrpc, rblk);
+		spin_unlock(&lun->lock);
 		return NULL;
 	}
 
@@ -306,6 +307,7 @@ static struct rrpc_block *rrpc_get_blk(struct rrpc *rrpc, struct rrpc_lun *rlun,
 		mempool_free(rblk->w_buf.data, rrpc->write_buf_pool);
 		mempool_free(rblk->w_buf.entries, rrpc->block_pool);
 		rrpc_put_blk(rrpc, rblk);
+		spin_unlock(&lun->lock);
 		return NULL;
 	}
 
@@ -314,6 +316,9 @@ static struct rrpc_block *rrpc_get_blk(struct rrpc *rrpc, struct rrpc_lun *rlun,
 	printk("Buffer: mem:%p, sync:%p\n", rblk->w_buf.mem, rblk->w_buf.sync);
 
 	spin_lock_init(&rblk->w_buf.w_lock);
+
+	list_add_tail(&rblk->list, &rlun->open_list);
+	spin_unlock(&lun->lock);
 
 	return rblk;
 }
@@ -903,7 +908,7 @@ static int rrpc_read_ppalist_rq(struct rrpc *rrpc, struct bio *bio,
 		nvm_dev_dma_free(rrpc->dev, rqd->ppa_list, rqd->dma_ppa_list);
 		printk("REQUEUE READn\n");
 		mempool_free(rrqd, rrpc->rrq_pool);
-		mempool_free(rqd, rrpc->rrq_pool);
+		mempool_free(rqd, rrpc->rq_pool);
 		return NVM_IO_REQUEUE;
 	}
 
@@ -988,10 +993,10 @@ static void rrpc_write_to_buffer(struct nvm_dev *dev, struct bio *bio,
 	memcpy(buf, bio_data(bio), bio_len);
 	w_buf->cur_mem++;
 
-	printk("WRITE_RQ(1): entry:%p, rrqd:%p(%p), data:%p(%p) - ",
-					w_buf->mem,
-					w_buf->mem->rrqd, rrqd,
-					w_buf->mem->data, buf);
+	/* printk("WRITE_RQ(1): entry:%p, rrqd:%p(%p), data:%p(%p) - ", */
+					/* w_buf->mem, */
+					/* w_buf->mem->rrqd, rrqd, */
+					/* w_buf->mem->data, buf); */
 
 	w_buf->mem++;
 	w_buf->mem->data = w_buf->data + (w_buf->cur_mem * dev->sec_size);
@@ -1030,8 +1035,8 @@ static int rrpc_write_ppalist_rq(struct rrpc *rrpc, struct bio *bio,
 			return NVM_IO_REQUEUE;
 		}
 
-		printk("WRITE_RQ(i:%d): blk:%lu, laddr:%lu,addr:%llu, bio_sec:%lu\n",
-		i, p->rblk->parent->id, laddr + i, p->addr, bio->bi_iter.bi_sector);
+		/* printk("WRITE_RQ(i:%d): blk:%lu, laddr:%lu,addr:%llu, bio_sec:%lu\n", */
+		/* i, p->rblk->parent->id, laddr + i, p->addr, bio->bi_iter.bi_sector); */
 
 		w_buf = &p->rblk->w_buf;
 		rlun = p->rblk->rlun;
@@ -1062,7 +1067,7 @@ static int rrpc_write_rq(struct rrpc *rrpc, struct bio *bio,
 	BUG_ON(bio_cur_bytes(bio) != RRPC_EXPOSED_PAGE_SIZE);
 
 	if (!is_gc && rrpc_lock_rq(rrpc, bio, rrqd)) {
-		printk("REQUEUE WRITE1\n");
+		pr_err_ratelimited("REQUEUE WRITE, laddr:%lu\n", laddr);
 		return NVM_IO_REQUEUE;
 	}
 
@@ -1078,8 +1083,8 @@ static int rrpc_write_rq(struct rrpc *rrpc, struct bio *bio,
 		return NVM_IO_REQUEUE;
 	}
 
-	printk("WRITE_RQ(1): blk:%lu, laddr:%lu,addr:%llu, bio_sec:%lu\n",
-		p->rblk->parent->id, laddr, p->addr, bio->bi_iter.bi_sector);
+	/* printk("WRITE_RQ(1): blk:%lu, laddr:%lu,addr:%llu, bio_sec:%lu\n", */
+		/* p->rblk->parent->id, laddr, p->addr, bio->bi_iter.bi_sector); */
 
 	w_buf = &p->rblk->w_buf;
 	rlun = p->rblk->rlun;
@@ -1242,8 +1247,6 @@ static int rrpc_submit_io(struct rrpc *rrpc, struct bio *bio,
 		return NVM_IO_OK;
 	}
 
-	printk("WRITE\n");
-
 	/* WRITE path */
 	if (nr_pages > 1)
 		return rrpc_write_ppalist_rq(rrpc, bio, rrqd, flags, nr_pages);
@@ -1344,7 +1347,7 @@ static void rrpc_submit_write(struct work_struct *work)
 	struct rrpc_rq *new_rrqd, *trrqd;
 	void *data;
 	struct nvm_rq *rqd;
-	struct rrpc_block *rblk;
+	struct rrpc_block *rblk, *trblk;
 	struct rrpc_rev_addr *rev;
 	struct bio *bio;
 	unsigned long flags;
@@ -1361,16 +1364,24 @@ static void rrpc_submit_write(struct work_struct *work)
 	 * This is the flash programing granurality, and the reason behind the
 	 * sync strategy performed in this write thread.
 	 */
-	list_for_each_entry(rblk, &rlun->open_list, list) {
+	printk("SUBMIT WRITE!!!\n");
+	list_for_each_entry_safe(rblk, trblk, &rlun->open_list, list) {
 		WARN_ON_ONCE(irqs_disabled());
 
+		printk("LOCKED!!! (blk:%lu)\n", rblk->parent->id);
 		spin_lock_irqsave(&rblk->w_buf.w_lock, flags);
+		/* If the write thread has already submitted all I/Os in the
+		 * write buffer for this block ignore that the block is in the
+		 * open list; it is on its way to the closed list.
+		 */
 		if (unlikely(rblk->w_buf.cur_subm == rblk->w_buf.nentries)) {
 			spin_unlock_irqrestore(&rblk->w_buf.w_lock, flags);
+			printk("UNLOCKED - CONTINUE!!!\n");
 			continue;
 		}
 		pgs_avail = rblk->w_buf.cur_mem - rblk->w_buf.cur_subm;
 		spin_unlock_irqrestore(&rblk->w_buf.w_lock, flags);
+		printk("UNLOCKED!!!\n");
 
 		switch (sync) {
 		case 0:
@@ -1519,7 +1530,6 @@ submit_io:
 			pr_err("rrpc: I/O submission failed: %d\n", err);
 			mempool_free(rqd, rrpc->rq_pool);
 			bio_put(bio);
-			continue;
 		}
 
 		/* if (trrqd->inflight_rq.l_end == new_rrqd->inflight_rq.l_end) */
