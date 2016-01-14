@@ -226,7 +226,8 @@ static int __rrpc_lock_laddr(struct rrpc *rrpc, sector_t laddr,
 	r->l_start = laddr;
 	r->l_end = laddr_end;
 
-	printk("Locking: s:%lu, e:%lu\n", laddr, laddr_end);
+	printk("Locking: s:%lu, e:%lu (r:%p)\n",
+					laddr, laddr_end, r);
 	list_add_tail(&r->list, &rrpc->inflights.reqs);
 	spin_unlock_irq(&rrpc->inflights.lock);
 	return 0;
@@ -261,7 +262,8 @@ static inline void rrpc_unlock_laddr(struct rrpc *rrpc,
 {
 	unsigned long flags;
 
-	printk("Unlocking: s:%lu, e:%lu\n", r->l_start, r->l_end);
+	printk("Unlocking: s:%lu, e:%lu (r:%p)\n",
+						r->l_start, r->l_end, r);
 	BUG_ON(rrpc == NULL);
 	BUG_ON(r == NULL);
 	BUG_ON(&rrpc->inflights == NULL);
@@ -277,7 +279,7 @@ static inline void rrpc_unlock_rq(struct rrpc *rrpc, struct rrpc_rq *rrqd,
 	struct rrpc_inflight_rq *r = rrpc_get_inflight_rq(rrqd);
 
 	if ((r->l_start + pages) > rrpc->nr_pages)
-		printk(KERN_CRIT "start:%lu, pages:%u, npages: %llu\n",
+		printk("start:%lu, pages:%u, npages: %llu\n",
 				r->l_start, pages, rrpc->nr_pages);
 	BUG_ON((r->l_start + pages) > rrpc->nr_pages);
 
