@@ -32,6 +32,9 @@ static void rrpc_page_invalidate(struct rrpc *rrpc, struct rrpc_addr *a)
 	struct rrpc_block *rblk = a->rblk;
 	unsigned int pg_offset;
 
+	pr_err_ratelimited("INVALIDATE: blk:%lu, addr:%lu\n",
+						rblk->parent->id, a->addr);
+
 	lockdep_assert_held(&rrpc->rev_lock);
 
 	if (a->addr == ADDR_EMPTY || !rblk)
@@ -54,6 +57,8 @@ static void rrpc_invalidate_range(struct rrpc *rrpc, sector_t slba,
 	sector_t i;
 
 	spin_lock(&rrpc->rev_lock);
+	pr_err_ratelimited("INVALIDATE_R: sl:%lu, len:%u\n",
+								slba, len);
 	for (i = slba; i < slba + len; i++) {
 		struct rrpc_addr *gp = &rrpc->trans_map[i];
 
@@ -992,8 +997,8 @@ static int rrpc_write_ppalist_rq(struct rrpc *rrpc, struct bio *bio,
 			return NVM_IO_REQUEUE;
 		}
 
-		/* printk("WRITE_RQ(i:%d): blk:%lu, laddr:%lu,addr:%llu, bio_sec:%lu\n", */
-		/* i, p->rblk->parent->id, laddr + i, p->addr, bio->bi_iter.bi_sector); */
+		printk("WRITE_RQ(i:%d): blk:%lu, laddr:%lu,addr:%llu, bio_sec:%lu\n",
+		i, p->rblk->parent->id, laddr + i, p->addr, bio->bi_iter.bi_sector);
 
 		w_buf = &p->rblk->w_buf;
 		rlun = p->rblk->rlun;
