@@ -52,9 +52,30 @@ struct rrpc_rq {
 	unsigned long flags;
 };
 
+struct rrpc_multi_rq {
+	struct rrpc_addr *addr;
+};
+
+/* Sync strategies from write buffer to media */
+enum {
+	NVM_SYNC_SOFT	= 0x0,		/* Only submit at max_write_pgs
+					 * supported by the device. Typically 64
+					 * pages (256k).
+					 */
+	NVM_SYNC_HARD	= 0x1,		/* Submit the whole buffer. Add padding
+					 * if necessary to respect the device's
+					 * min_write_pgs.
+					 */
+	NVM_SYNC_OPORT	= 0x2,		/* Submit what we can, always respecting
+					 * the device's min_write_pgs.
+					 */
+};
+
 struct buf_entry {
 	struct rrpc_rq *rrqd;
+	struct rrpc_addr *addr;
 	void *data;
+	int flags;
 };
 
 struct rrpc_w_buf {
@@ -160,6 +181,7 @@ struct rrpc {
 	mempool_t *gcb_pool;
 	mempool_t *rq_pool;
 	mempool_t *rrq_pool;
+	mempool_t *m_rrq_pool;
 	mempool_t *block_pool;
 	mempool_t *write_buf_pool;
 
