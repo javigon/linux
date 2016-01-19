@@ -782,6 +782,8 @@ static int __nvm_configure_remove(struct nvm_ioctl_remove *remove)
 static int nvm_configure_show(const char *val)
 {
 	struct nvm_dev *dev;
+	struct nvm_target *t = NULL;
+	struct nvm_tgt_type *tt;
 	char opcode, devname[DISK_NAME_LEN];
 	int ret;
 
@@ -803,6 +805,14 @@ static int nvm_configure_show(const char *val)
 		return 0;
 
 	dev->mt->lun_info_print(dev);
+
+	down_write(&nvm_lock);
+	list_for_each_entry(dev, &nvm_devices, devices)
+		list_for_each_entry(t, &dev->online_targets, list) {
+			tt = t->type;
+			tt->print_debug(t->disk->private_data);
+		}
+	up_write(&nvm_lock);
 
 	return 0;
 }

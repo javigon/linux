@@ -166,6 +166,14 @@ struct rrpc {
 			    * to point to the next write lun
 			    */
 
+#ifdef CONFIG_NVM_DEBUG
+	atomic_t inflight_writes;
+	atomic_t req_writes;
+	atomic_t sub_writes;
+	atomic_t sync_writes;
+	atomic_t inflight_reads;
+#endif
+
 	spinlock_t bio_lock;
 	struct bio_list requeue_bios;
 	struct work_struct ws_requeue;

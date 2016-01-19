@@ -809,6 +809,11 @@ static void rrpc_sync_buffer(struct rrpc *rrpc, struct rrpc_addr *p,
 
 	rrpc_unlock_addr(rrpc, inflight);
 
+#ifdef CONFIG_NVM_DEBUG
+		atomic_dec(&rrpc->inflight_writes);
+		atomic_inc(&rrpc->sync_writes);
+#endif
+
 	if (buf->cur_sync > buf->cur_subm) {
 		printk(KERN_CRIT "ERROR: sync:%d, sub:%d, blk:%lu, addr:%llu\n",
 				buf->cur_sync,
@@ -882,6 +887,9 @@ static void rrpc_end_io(struct nvm_rq *rqd)
 	if ((bio_data_dir(rqd->bio) == READ)) {
 		rrpc_unlock_rq(rrpc, rrqd, nr_pages);
 		mempool_free(rrqd, rrpc->rrq_pool);
+#ifdef CONFIG_NVM_DEBUG
+		atomic_dec(&rrpc->inflight_writes);
+#endif
 	}
 
 	if (nr_pages > 1)
@@ -931,6 +939,10 @@ static int rrpc_read_ppalist_rq(struct rrpc *rrpc, struct bio *bio,
 		}
 
 		m_rrqd[i].addr = gp;
+
+#ifdef CONFIG_NVM_DEBUG
+		atomic_inc(&rrpc->inflight_reads);
+#endif
 	}
 
 	rqd->opcode = NVM_OP_HBREAD;
@@ -968,6 +980,10 @@ static int rrpc_read_rq(struct rrpc *rrpc, struct bio *bio, struct nvm_rq *rqd,
 
 	rqd->opcode = NVM_OP_HBREAD;
 	rrqd->addr = gp;
+
+#ifdef CONFIG_NVM_DEBUG
+		atomic_inc(&rrpc->inflight_reads);
+#endif
 
 	printk("READ(1):laddr:%lu,addr:%llu\n", laddr, gp->addr);
 
@@ -1052,6 +1068,10 @@ static int rrpc_write_ppalist_rq(struct rrpc *rrpc, struct bio *bio,
 
 		entry_flags = (i + 1 == nr_pages) ? 1 : 0;
 
+#ifdef CONFIG_NVM_DEBUG
+		atomic_inc(&rrpc->inflight_writes);
+		atomic_inc(&rrpc->req_writes);
+#endif
 		rrpc_write_to_buffer(rrpc->dev, bio, rrqd, w_buf, entry_flags);
 		bio_advance(bio, RRPC_EXPOSED_PAGE_SIZE);
 
@@ -1099,6 +1119,11 @@ static int rrpc_write_rq(struct rrpc *rrpc, struct bio *bio,
 	rlun = p->rblk->rlun;
 
 	rrqd->addr = p;
+
+#ifdef CONFIG_NVM_DEBUG
+	atomic_inc(&rrpc->inflight_writes);
+	atomic_inc(&rrpc->req_writes);
+#endif
 
 	rrpc_write_to_buffer(rrpc->dev, bio, rrqd, w_buf, entry_flags);
 
@@ -1628,8 +1653,6 @@ submit_io:
 		spin_unlock_irqrestore(&rblk->w_buf.w_lock, flags);
 		printk("UNLOCKED!!!\n");
 
-		BUG_ON(rblk->w_buf.cur_subm > rblk->w_buf.nentries);
-
 		err = nvm_submit_io(dev, rqd);
 		if (err) {
 			printk(KERN_CRIT "ERROR::SUBMISSION IO FAILED\n");
@@ -1637,6 +1660,9 @@ submit_io:
 			mempool_free(rqd, rrpc->rq_pool);
 			bio_put(bio);
 		}
+#ifdef CONFIG_NVM_DEBUG
+		atomic_add(pgs_to_sync, &rrpc->sub_writes);
+#endif
 	}
 }
 
@@ -2148,6 +2174,14 @@ static void *rrpc_init(struct nvm_dev *dev, struct gendisk *tdisk,
 	/* simple round-robin strategy */
 	atomic_set(&rrpc->next_lun, -1);
 
+#ifdef CONFIG_NVM_DEBUG
+	atomic_set(&rrpc->inflight_writes, 0);
+	atomic_set(&rrpc->req_writes, 0);
+	atomic_set(&rrpc->sub_writes, 0);
+	atomic_set(&rrpc->sync_writes, 0);
+	atomic_set(&rrpc->inflight_reads, 0);
+#endif
+
 	ret = rrpc_luns_init(rrpc, lun_begin, lun_end);
 	if (ret) {
 		pr_err("nvm: rrpc: could not initialize luns\n");
@@ -2202,6 +2236,18 @@ err:
 	return ERR_PTR(ret);
 }
 
+static void rrpc_print_debug(void *private)
+{
+	struct rrpc *rrpc = private;
+
+	pr_info("rrpc: %u\t%u\t%u\t%u\t%u\n",
+				atomic_read(&rrpc->inflight_writes),
+				atomic_read(&rrpc->req_writes),
+				atomic_read(&rrpc->sub_writes),
+				atomic_read(&rrpc->sync_writes),
+				atomic_read(&rrpc->inflight_reads));
+}
+
 /* round robin, page-based FTL, and cost-based GC */
 static struct nvm_tgt_type tt_rrpc = {
 	.name		= "rrpc",
@@ -2213,6 +2259,8 @@ static struct nvm_tgt_type tt_rrpc = {
 
 	.init		= rrpc_init,
 	.exit		= rrpc_exit,
+
+	.print_debug	= rrpc_print_debug,
 };
 
 static int __init rrpc_module_init(void)
