@@ -209,7 +209,7 @@ static void rrpc_put_blk(struct rrpc *rrpc, struct rrpc_block *rblk)
 	struct rrpc_lun *rlun = rblk->rlun;
 	struct nvm_lun *lun = rlun->parent;
 	struct rrpc_w_buf *buf = &rblk->w_buf;
-	unsigned long flags;
+	unsigned long flags, flags2;
 
 try:
 	spin_lock_irqsave(&buf->w_lock, flags);
@@ -226,10 +226,10 @@ try:
 		rrpc_free_w_buffer(rrpc, rblk);
 	spin_unlock_irqrestore(&buf->w_lock, flags);
 
-	spin_lock(&lun->lock);
+	spin_lock_irqsave(&lun->lock, flags2);
 	nvm_put_blk_unlocked(rrpc->dev, rblk->parent);
 	list_del(&rblk->list);
-	spin_unlock(&lun->lock);
+	spin_unlock_irqrestore(&lun->lock, flags2);
 }
 
 static void rrpc_put_blks(struct rrpc *rrpc)
@@ -253,12 +253,13 @@ static struct rrpc_block *rrpc_get_blk(struct rrpc *rrpc, struct rrpc_lun *rlun,
 	struct nvm_lun *lun = rlun->parent;
 	struct nvm_block *blk;
 	struct rrpc_block *rblk;
+	unsigned long lock_flags;
 
-	spin_lock(&lun->lock);
+	spin_lock_irqsave(&lun->lock, lock_flags);
 	blk = nvm_get_blk_unlocked(rrpc->dev, rlun->parent, flags);
 	if (!blk) {
 		pr_err("nvm: rrpc: cannot get new block from media manager\n");
-		spin_unlock(&lun->lock);
+		spin_unlock_irqrestore(&lun->lock, lock_flags);
 		return NULL;
 	}
 
@@ -281,7 +282,7 @@ static struct rrpc_block *rrpc_get_blk(struct rrpc *rrpc, struct rrpc_lun *rlun,
 	rblk->w_buf.data = mempool_alloc(rrpc->write_buf_pool, GFP_ATOMIC);
 	if (!rblk->w_buf.data) {
 		pr_err("nvm: rrpc: cannot allocate write buffer for block\n");
-		spin_unlock(&lun->lock);
+		spin_unlock_irqrestore(&lun->lock, lock_flags);
 		rrpc_put_blk(rrpc, rblk);
 		return NULL;
 	}
@@ -290,7 +291,7 @@ static struct rrpc_block *rrpc_get_blk(struct rrpc *rrpc, struct rrpc_lun *rlun,
 	if (!rblk->w_buf.entries) {
 		pr_err("nvm: rrpc: cannot allocate write buffer for block\n");
 		mempool_free(rblk->w_buf.data, rrpc->write_buf_pool);
-		spin_unlock(&lun->lock);
+		spin_unlock_irqrestore(&lun->lock, lock_flags);
 		rrpc_put_blk(rrpc, rblk);
 		return NULL;
 	}
@@ -312,7 +313,7 @@ static struct rrpc_block *rrpc_get_blk(struct rrpc *rrpc, struct rrpc_lun *rlun,
 		/* pr_err("nvm: rrpc: cannot allocate sync bitmap block\n"); */
 		/* mempool_free(rblk->w_buf.data, rrpc->write_buf_pool); */
 		/* mempool_free(rblk->w_buf.entries, rrpc->block_pool); */
-		/* spin_unlock(&lun->lock); */
+		/* spin_unlock_irqrestore(&lun->lock, lock_flags); */
 		/* rrpc_put_blk(rrpc, rblk); */
 		/* return NULL; */
 	/* } */
@@ -322,7 +323,7 @@ static struct rrpc_block *rrpc_get_blk(struct rrpc *rrpc, struct rrpc_lun *rlun,
 	spin_lock_init(&rblk->w_buf.w_lock);
 
 	list_add_tail(&rblk->list, &rlun->open_list);
-	spin_unlock(&lun->lock);
+	spin_unlock_irqrestore(&lun->lock, lock_flags);
 
 	return rblk;
 }
@@ -505,6 +506,7 @@ static void rrpc_block_gc(struct work_struct *work)
 	struct nvm_dev *dev = rrpc->dev;
 	struct nvm_lun *lun = rblk->parent->lun;
 	struct rrpc_lun *rlun = &rrpc->luns[lun->id - rrpc->lun_offset];
+	unsigned long flags;
 
 	/* printk(KERN_CRIT "BLOCK GC!!!!\n"); */
 
@@ -522,9 +524,9 @@ static void rrpc_block_gc(struct work_struct *work)
 	return;
 
 put_back:
-	spin_lock(&rlun->lock);
+	spin_lock_irqsave(&rlun->lock, flags);
 	list_add_tail(&rblk->prio, &rlun->prio_list);
-	spin_unlock(&rlun->lock);
+	spin_unlock_irqrestore(&rlun->lock, flags);
 }
 
 /* the block with highest number of invalid pages, will be in the beginning
@@ -563,13 +565,14 @@ static void rrpc_lun_gc(struct work_struct *work)
 	struct nvm_lun *lun = rlun->parent;
 	struct rrpc_block_gc *gcb;
 	unsigned int nr_blocks_need;
+	unsigned long flags;
 
 	nr_blocks_need = rrpc->dev->blks_per_lun / GC_LIMIT_INVERSE;
 
 	if (nr_blocks_need < rrpc->nr_luns)
 		nr_blocks_need = rrpc->nr_luns;
 
-	spin_lock(&rlun->lock);
+	spin_lock_irqsave(&rlun->lock, flags);
 	while (nr_blocks_need > lun->nr_free_blocks &&
 					!list_empty(&rlun->prio_list)) {
 		struct rrpc_block *rblock = block_prio_find_max(rlun);
@@ -596,7 +599,7 @@ static void rrpc_lun_gc(struct work_struct *work)
 
 		nr_blocks_need--;
 	}
-	spin_unlock(&rlun->lock);
+	spin_unlock_irqrestore(&rlun->lock, flags);
 
 	/* TODO: Hint that request queue can be started again */
 }
@@ -609,10 +612,11 @@ static void rrpc_gc_queue(struct work_struct *work)
 	struct rrpc_block *rblk = gcb->rblk;
 	struct nvm_lun *lun = rblk->parent->lun;
 	struct rrpc_lun *rlun = &rrpc->luns[lun->id - rrpc->lun_offset];
+	unsigned long flags;
 
-	spin_lock(&rlun->lock);
+	spin_lock_irqsave(&rlun->lock, flags);
 	list_add_tail(&rblk->prio, &rlun->prio_list);
-	spin_unlock(&rlun->lock);
+	spin_unlock_irqrestore(&rlun->lock, flags);
 
 	mempool_free(gcb, rrpc->gcb_pool);
 	pr_debug("nvm: block '%lu' is full, allow GC (sched)\n",
@@ -709,6 +713,7 @@ static struct rrpc_addr *rrpc_map_page(struct rrpc *rrpc, sector_t laddr,
 	struct rrpc_block *rblk;
 	struct nvm_lun *lun;
 	u64 paddr;
+	unsigned long flags;
 
 	rlun = rrpc_get_lun_rr(rrpc, is_gc);
 	lun = rlun->parent;
@@ -716,7 +721,7 @@ static struct rrpc_addr *rrpc_map_page(struct rrpc *rrpc, sector_t laddr,
 	if (!is_gc && lun->nr_free_blocks < rrpc->nr_luns * 4)
 		return NULL;
 
-	spin_lock(&rlun->lock);
+	spin_lock_irqsave(&rlun->lock, flags);
 
 	rblk = rlun->cur;
 retry:
@@ -746,10 +751,10 @@ retry:
 		}
 	}
 
-	spin_unlock(&rlun->lock);
+	spin_unlock_irqrestore(&rlun->lock, flags);
 	return rrpc_update_map(rrpc, laddr, rblk, paddr);
 err:
-	spin_unlock(&rlun->lock);
+	spin_unlock_irqrestore(&rlun->lock, flags);
 	return NULL;
 }
 
@@ -812,22 +817,23 @@ static void rrpc_sync_buffer(struct rrpc *rrpc, struct rrpc_addr *p,
 	if (unlikely(buf->cur_sync == buf->nentries)) {
 		struct nvm_block *blk = rblk->parent;
 		struct rrpc_lun *rlun = rblk->rlun;
+		unsigned long flags2;
 
 		/* BUG_ON(!bitmap_full(buf->sync_bitmap, buf->nentries)); */
 		BUG_ON((buf->cur_mem != buf->cur_sync) &&
 					(buf->cur_mem != buf->nentries) &&
 					(buf->cur_mem != buf->cur_sync));
 
-		/* printk("BEFORE\n"); */
-		spin_lock(&lun->lock);
-		/* printk("IN\n"); */
+		/* printk(KERN_CRIT "BEFORE\n"); */
+		spin_lock_irqsave(&lun->lock, flags2);
+		/* printk(KERN_CRIT "IN\n"); */
 		lun->nr_open_blocks--;
 		lun->nr_closed_blocks++;
 		blk->state &= ~NVM_BLK_ST_OPEN;
 		blk->state |= NVM_BLK_ST_CLOSED;
 		list_move_tail(&rblk->list, &rlun->closed_list);
-		spin_unlock(&lun->lock);
-		/* printk("AFTER\n"); */
+		spin_unlock_irqrestore(&lun->lock, flags2);
+		/* printk(KERN_CRIT "AFTER\n"); */
 
 		rrpc_free_w_buffer(rrpc, rblk);
 		rrpc_run_gc(rrpc, rblk);
@@ -1378,7 +1384,7 @@ static void rrpc_submit_write(struct work_struct *work)
 	unsigned long flags;
 	int pgs_to_sync, pgs_avail;
 	int entry_flags;
-	int sync = NVM_SYNC_SOFT;
+	int sync = NVM_SYNC_HARD;
 	int err;
 	int i;
 
@@ -1430,7 +1436,7 @@ static void rrpc_submit_write(struct work_struct *work)
 		}
 
 		// JAVIER: This will go
-		pgs_to_sync = (pgs_avail == 0) ? 0 : 1;
+		/* pgs_to_sync = (pgs_avail == 0) ? 0 : 1; */
 
 		//JAVIER: Better way
 		if (pgs_to_sync == 0) {
