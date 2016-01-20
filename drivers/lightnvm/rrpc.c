@@ -1486,6 +1486,7 @@ static void rrpc_submit_write(struct work_struct *work)
 			err = rrpc_alloc_page_in_bio(rrpc, bio, data);
 			if (err) {
 				mempool_free(rqd, rrpc->rq_pool);
+				mempool_free(m_rrqd, rrpc->m_rrq_pool);
 				bio_put(bio); //FIXME: Is this the right way?
 				spin_unlock_irqrestore(&rblk->w_buf.w_lock, flags);
 				continue;
@@ -1498,6 +1499,10 @@ static void rrpc_submit_write(struct work_struct *work)
 				spin_unlock_irqrestore(&rblk->w_buf.w_lock, flags);
 				continue;
 			}
+
+			/* TODO: This address should be skipped */
+			if (addr->addr == ADDR_EMPTY)
+				pr_err_ratelimited("rrpc: submitting empty rq");
 
 			rqd->ppa_addr = rrpc_ppa_to_gaddr(dev, addr->addr);
 			m_rrqd[0].addr = addr;
@@ -1530,6 +1535,15 @@ static void rrpc_submit_write(struct work_struct *work)
 			addr = rblk->w_buf.subm->addr;
 			entry_flags = rblk->w_buf.subm->flags;
 
+			err = rrpc_alloc_page_in_bio(rrpc, bio, data);
+			if (err) {
+				mempool_free(rqd, rrpc->rq_pool);
+				mempool_free(m_rrqd, rrpc->m_rrq_pool);
+				bio_put(bio); //FIXME: Is this the right way?
+				spin_unlock_irqrestore(&rblk->w_buf.w_lock, flags);
+				continue;
+			}
+
 			if (rrpc_lock_addr(rrpc, addr, &m_rrqd[i].inflight)) {
 				mempool_free(rqd, rrpc->rq_pool);
 				mempool_free(m_rrqd, rrpc->m_rrq_pool);
@@ -1538,17 +1552,12 @@ static void rrpc_submit_write(struct work_struct *work)
 				continue;
 			}
 
-			m_rrqd[i].addr = addr;
-
-			err = rrpc_alloc_page_in_bio(rrpc, bio, data);
-			if (err) {
-				mempool_free(rqd, rrpc->rq_pool);
-				bio_put(bio); //FIXME: Is this the right way?
-				spin_unlock_irqrestore(&rblk->w_buf.w_lock, flags);
-				continue;
-			}
+			/* TODO: This address should be skipped */
+			if (addr->addr == ADDR_EMPTY)
+				pr_err_ratelimited("rrpc: submitting empty rq");
 
 			rqd->ppa_list[i] = rrpc_ppa_to_gaddr(dev, addr->addr);
+			m_rrqd[i].addr = addr;
 
 			if (entry_flags == 1) {
 				rrpc_unlock_rq(rrpc, rrqd, pgs_to_sync);
