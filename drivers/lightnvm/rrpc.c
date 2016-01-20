@@ -1263,6 +1263,8 @@ static int rrpc_buffer_write(struct rrpc *rrpc, struct bio *bio,
 {
 	uint8_t nr_pages = rrpc_get_pages(bio);
 
+	rrqd->nr_pages = nr_pages;
+
 	if (nr_pages > 1)
 		return rrpc_write_ppalist_rq(rrpc, bio, rrqd, flags, nr_pages);
 	else
@@ -1514,7 +1516,7 @@ static void rrpc_submit_write(struct work_struct *work)
 			m_rrqd[0].addr = addr;
 
 			if (entry_flags == 1) {
-				rrpc_unlock_rq(rrpc, rrqd, pgs_to_sync);
+				rrpc_unlock_rq(rrpc, rrqd, rrqd->nr_pages);
 				mempool_free(rrqd, rrpc->rrq_pool);
 			}
 
@@ -1566,7 +1568,7 @@ static void rrpc_submit_write(struct work_struct *work)
 			m_rrqd[i].addr = addr;
 
 			if (entry_flags == 1) {
-				rrpc_unlock_rq(rrpc, rrqd, pgs_to_sync);
+				rrpc_unlock_rq(rrpc, rrqd, rrqd->nr_pages);
 				mempool_free(rrqd, rrpc->rrq_pool);
 			}
 
