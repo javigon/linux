@@ -278,7 +278,6 @@ static inline int rrpc_lock_laddr(struct rrpc *rrpc, sector_t laddr,
 	return __rrpc_lock_laddr(rrpc, laddr, pages, r);
 }
 
-
 static inline int rrpc_check_addr(struct rrpc *rrpc, struct rrpc_addr *addr)
 {
 	struct rrpc_inflight_addr *t;
@@ -364,8 +363,12 @@ static inline void rrpc_unlock_rq(struct rrpc *rrpc, struct rrpc_rq *rrqd,
 {
 	struct rrpc_inflight_rq *r = rrpc_get_inflight_rq(rrqd);
 
-	if ((r->l_start + pages) > rrpc->nr_pages)
-	BUG_ON((r->l_start + pages) > rrpc->nr_pages);
+	if (r->l_start + pages > rrpc->nr_pages) {
+		printk(KERN_CRIT "ls:%lu, np:%u(%u)\n",
+				r->l_start, pages, rrqd->nr_pages);
+		BUG_ON(1);
+	}
+	// BUG_ON((r->l_start + pages) > rrpc->nr_pages);
 
 	rrpc_unlock_laddr(rrpc, r);
 }
