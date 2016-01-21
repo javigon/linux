@@ -626,6 +626,9 @@ static void __delete_object(struct kmemleak_object *object)
 {
 	unsigned long flags;
 
+	BUG_ON(!(object->flags & OBJECT_ALLOCATED)); //JAVIER!
+	BUG_ON(atomic_read(&object->use_count) < 1);
+
 	WARN_ON(!(object->flags & OBJECT_ALLOCATED));
 	WARN_ON(atomic_read(&object->use_count) < 1);
 

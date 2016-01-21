@@ -61,7 +61,6 @@ struct rrpc_inflight_addr {
 //TODO: JAVIER: You do not need addr - it is in inflight
 struct rrpc_multi_rq {
 	struct rrpc_inflight_addr inflight;
-	struct rrpc_addr *addr;
 };
 
 /* Sync strategies from write buffer to media */
@@ -358,17 +357,21 @@ static inline void rrpc_unlock_addr(struct rrpc *rrpc,
 	spin_unlock_irqrestore(&rrpc->inflight_addrs.lock, flags);
 }
 
+static inline void rrpc_unlock_addr_range(struct rrpc *rrpc,
+				struct rrpc_multi_rq *r, int nr_addrs)
+{
+	int i;
+
+	for (i = 0; i < nr_addrs; i ++)
+		rrpc_unlock_addr(rrpc, &r[i].inflight);
+}
+
 static inline void rrpc_unlock_rq(struct rrpc *rrpc, struct rrpc_rq *rrqd,
 								unsigned pages)
 {
 	struct rrpc_inflight_rq *r = rrpc_get_inflight_rq(rrqd);
 
-	if (r->l_start + pages > rrpc->nr_pages) {
-		printk(KERN_CRIT "ls:%lu, np:%u(%u)\n",
-				r->l_start, pages, rrqd->nr_pages);
-		BUG_ON(1);
-	}
-	// BUG_ON((r->l_start + pages) > rrpc->nr_pages);
+	BUG_ON((r->l_start + pages) > rrpc->nr_pages);
 
 	rrpc_unlock_laddr(rrpc, r);
 }

@@ -46,7 +46,9 @@ static int rrpc_page_invalidate(struct rrpc *rrpc, struct rrpc_addr *a)
 	spin_lock(&rblk->lock);
 
 	div_u64_rem(a->addr, rrpc->dev->pgs_per_blk, &pg_offset);
-	WARN_ON(test_and_set_bit(pg_offset, rblk->invalid_pages));
+	// JAVIER!!!!
+	/* WARN_ON(test_and_set_bit(pg_offset, rblk->invalid_pages)); */
+	BUG_ON(test_and_set_bit(pg_offset, rblk->invalid_pages));
 	rblk->nr_invalid_pages++;
 
 	spin_unlock(&rblk->lock);
@@ -195,6 +197,12 @@ static void rrpc_set_lun_cur(struct rrpc_lun *rlun, struct rrpc_block *rblk)
 static void rrpc_free_w_buffer(struct rrpc *rrpc, struct rrpc_block *rblk)
 {
 	/* printk(KERN_CRIT "Free blk:%lu\n", rblk->parent->id); */
+	//TO GO - can happen in put block
+	struct rrpc_w_buf *buf = &rblk->w_buf;
+	BUG_ON((buf->cur_mem != buf->cur_sync) &&
+					(buf->cur_mem != buf->nentries) &&
+					(buf->cur_mem != buf->cur_subm));
+
 	/* TODO: Reuse the same buffers if the block size is the same */
 	mempool_free(rblk->w_buf.data, rrpc->write_buf_pool);
 	mempool_free(rblk->w_buf.entries, rrpc->block_pool);
@@ -224,6 +232,15 @@ try:
 		spin_unlock_irqrestore(&buf->w_lock, flags);
 		schedule();
 		goto try;
+	}
+
+	if (rblk->w_buf.cur_mem != 0) {
+		printk(KERN_CRIT "PUT BLOCK!!!: blk:%lu(m:%d,s:%d,sy:%d)\n",
+					rblk->parent->id,
+					rblk->w_buf.cur_mem,
+					rblk->w_buf.cur_subm,
+					rblk->w_buf.cur_sync);
+		WARN_ON(1);
 	}
 
 	BUG_ON(!bitmap_full(buf->sync_bitmap, buf->cur_sync));
@@ -259,7 +276,36 @@ static struct rrpc_block *rrpc_get_blk(struct rrpc *rrpc, struct rrpc_lun *rlun,
 	struct nvm_lun *lun = rlun->parent;
 	struct nvm_block *blk;
 	struct rrpc_block *rblk;
+	struct buf_entry *entries;
+	unsigned long *sync_bitmap;
+	void *data;
 	unsigned long lock_flags;
+	int nentries = dev->pgs_per_blk * dev->sec_per_pg;
+
+	data = mempool_alloc(rrpc->write_buf_pool, GFP_ATOMIC);
+	if (!data) {
+		pr_err("nvm: rrpc: cannot allocate write buffer for block\n");
+		return NULL;
+	}
+
+	entries = mempool_alloc(rrpc->block_pool, GFP_ATOMIC);
+	if (!entries) {
+		pr_err("nvm: rrpc: cannot allocate write buffer for block\n");
+		mempool_free(data, rrpc->write_buf_pool);
+		return NULL;
+	}
+
+	/* JAVIER: Mempool? */
+	sync_bitmap = kmalloc(BITS_TO_LONGS(nentries) *
+					sizeof(unsigned long), GFP_ATOMIC);
+	if (!sync_bitmap) {
+		pr_err("nvm: rrpc: cannot allocate sync bitmap block\n");
+		mempool_free(data, rrpc->write_buf_pool);
+		mempool_free(entries, rrpc->block_pool);
+		return NULL;
+	}
+
+	bitmap_zero(sync_bitmap, nentries);
 
 	spin_lock_irqsave(&lun->lock, lock_flags);
 	blk = nvm_get_blk_unlocked(rrpc->dev, rlun->parent, flags);
@@ -277,54 +323,18 @@ static struct rrpc_block *rrpc_get_blk(struct rrpc *rrpc, struct rrpc_lun *rlun,
 	rblk->next_page = 0;
 	rblk->nr_invalid_pages = 0;
 
-	/* Set up block write buffer */
-	/* printk("Setting up write buffer for blk(lun:%d):%lu(bppa:%lu), data_size:%d, sec_per_blk:%d\n", */
-			/* rlun->parent->id, */
-			/* rblk->parent->id, */
-			/* dev->sec_per_blk * rblk->parent->id, */
-			/* dev->sec_size, */
-			/* dev->pgs_per_blk * dev->sec_per_pg); */
-
-	rblk->w_buf.data = mempool_alloc(rrpc->write_buf_pool, GFP_ATOMIC);
-	if (!rblk->w_buf.data) {
-		pr_err("nvm: rrpc: cannot allocate write buffer for block\n");
-		spin_unlock_irqrestore(&lun->lock, lock_flags);
-		rrpc_put_blk(rrpc, rblk);
-		return NULL;
-	}
-
-	rblk->w_buf.entries = mempool_alloc(rrpc->block_pool, GFP_ATOMIC);
-	if (!rblk->w_buf.entries) {
-		pr_err("nvm: rrpc: cannot allocate write buffer for block\n");
-		mempool_free(rblk->w_buf.data, rrpc->write_buf_pool);
-		spin_unlock_irqrestore(&lun->lock, lock_flags);
-		rrpc_put_blk(rrpc, rblk);
-		return NULL;
-	}
+	rblk->w_buf.data = data;
+	rblk->w_buf.entries = entries;
+	rblk->w_buf.sync_bitmap = sync_bitmap;
 
 	rblk->w_buf.entries->data  = rblk->w_buf.data;
 	rblk->w_buf.mem = rblk->w_buf.entries;
 	rblk->w_buf.subm = rblk->w_buf.entries;
-	rblk->w_buf.sync = rblk->w_buf.entries;
 	//FIXME: JAVIER Should we use sec_per_pl, which considers planes?
-	rblk->w_buf.nentries = dev->pgs_per_blk * dev->sec_per_pg;
+	rblk->w_buf.nentries = nentries;
 	rblk->w_buf.cur_mem = 0;
 	rblk->w_buf.cur_subm = 0;
 	rblk->w_buf.cur_sync = 0;
-
-	/* JAVIER: Mempool? */
-	rblk->w_buf.sync_bitmap = kmalloc(BITS_TO_LONGS(rblk->w_buf.nentries) *
-					sizeof(unsigned long), GFP_ATOMIC);
-	if (!rblk->w_buf.sync_bitmap) {
-		pr_err("nvm: rrpc: cannot allocate sync bitmap block\n");
-		mempool_free(rblk->w_buf.data, rrpc->write_buf_pool);
-		mempool_free(rblk->w_buf.entries, rrpc->block_pool);
-		spin_unlock_irqrestore(&lun->lock, lock_flags);
-		rrpc_put_blk(rrpc, rblk);
-		return NULL;
-	}
-
-	bitmap_zero(rblk->w_buf.sync_bitmap, rblk->w_buf.nentries);
 
 	spin_lock_init(&rblk->w_buf.w_lock);
 
@@ -477,7 +487,8 @@ try:
 		/* turn the command around and write the data back to a new
 		 * address
 		 */
-		if (rrpc_submit_io(rrpc, bio, rrqd, NVM_IOTYPE_GC)) {
+		if (rrpc_submit_io(rrpc, bio, rrqd, NVM_IOTYPE_GC)
+							!= NVM_IO_DONE) {
 			pr_err("rrpc: gc write failed.\n");
 			rrpc_inflight_laddr_release(rrpc, rrqd);
 			goto finished;
@@ -672,6 +683,7 @@ try:
 	if (gp->rblk) {
 		if (rrpc_page_invalidate(rrpc, gp)) {
 			spin_unlock(&rrpc->rev_lock);
+			/* pr_err_ratelimited("cant: laddr:%lu\n", laddr); */
 			schedule();
 			goto try;
 		}
@@ -781,12 +793,13 @@ static void rrpc_run_gc(struct rrpc *rrpc, struct rrpc_block *rblk)
 	queue_work(rrpc->kgc_wq, &gcb->ws_gc);
 }
 
-static void rrpc_sync_buffer(struct rrpc *rrpc, struct rrpc_addr *p,
-				struct rrpc_inflight_addr *inflight)
+static void rrpc_sync_buffer(struct rrpc *rrpc,
+					struct rrpc_inflight_addr *inflight)
 {
 	struct rrpc_block *rblk;
 	struct rrpc_w_buf *buf;
 	struct nvm_lun *lun;
+	struct rrpc_addr *p = inflight->addr;
 	unsigned long bppa;
 	unsigned long flags;
 
@@ -824,7 +837,7 @@ static void rrpc_sync_buffer(struct rrpc *rrpc, struct rrpc_addr *p,
 		BUG_ON(!bitmap_full(buf->sync_bitmap, buf->nentries));
 		BUG_ON((buf->cur_mem != buf->cur_sync) &&
 					(buf->cur_mem != buf->nentries) &&
-					(buf->cur_mem != buf->cur_sync));
+					(buf->cur_mem != buf->cur_subm));
 
 		spin_lock_irqsave(&lun->lock, flags2);
 		lun->nr_open_blocks--;
@@ -848,7 +861,7 @@ static void rrpc_end_io_write(struct rrpc *rrpc, struct nvm_rq *rqd,
 	int i;
 
 	for (i = 0; i < nr_pages; i++)
-		rrpc_sync_buffer(rrpc, m_rrqd[i].addr, &m_rrqd[i].inflight);
+		rrpc_sync_buffer(rrpc, &m_rrqd[i].inflight);
 
 	mempool_free(m_rrqd, rrpc->m_rrq_pool);
 	rrpc_writer_kick(rrpc);
@@ -865,8 +878,9 @@ static void rrpc_end_io(struct nvm_rq *rqd)
 
 	bio_put(rqd->bio);
 
-	if (rqd->flags & NVM_IOTYPE_GC)
-		return;
+	//JAVIER
+	/* if (rqd->flags & NVM_IOTYPE_GC) */
+		/* return; */
 
 	if ((bio_data_dir(rqd->bio) == READ)) {
 		rrpc_unlock_rq(rrpc, rrqd, nr_pages);
@@ -905,7 +919,7 @@ static int rrpc_read_ppalist_rq(struct rrpc *rrpc, struct bio *bio,
 
 	for (i = 0; i < nr_pages; i++) {
 		/* We assume that mapping occurs at 4KB granularity */
-		BUG_ON(!(laddr + i >= 0 && laddr + i < rrpc->nr_pages));
+		BUG_ON(!((laddr + i >= 0) && (laddr + i < rrpc->nr_pages)));
 		gp = &rrpc->trans_map[laddr + i];
 
 		if (gp->rblk) {
@@ -921,7 +935,7 @@ static int rrpc_read_ppalist_rq(struct rrpc *rrpc, struct bio *bio,
 			return NVM_IO_DONE;
 		}
 
-		m_rrqd[i].addr = gp;
+		m_rrqd[i].inflight.addr = gp;
 
 #ifdef CONFIG_NVM_DEBUG
 		atomic_inc(&rrpc->inflight_reads);
@@ -994,8 +1008,8 @@ static void rrpc_write_to_buffer(struct nvm_dev *dev, struct bio *bio,
 
 	buf = w_buf->mem->data;
 	memcpy(buf, bio_data(bio), bio_len);
-	w_buf->cur_mem++;
 
+	w_buf->cur_mem++;
 	w_buf->mem++;
 	w_buf->mem->data = w_buf->data + (w_buf->cur_mem * dev->sec_size);
 
@@ -1167,7 +1181,7 @@ static int rrpc_read_from_w_buf(struct rrpc *rrpc, struct nvm_rq *rqd,
 	}
 
 	for (i = 0; i < nr_pages; i++) {
-		addr = m_rrqd[i].addr;
+		addr = m_rrqd[i].inflight.addr;
 		rblk = addr->rblk;
 
 		/* If the write buffer exists, the block is open */
@@ -1410,7 +1424,7 @@ try:
 		/* If the write thread has already submitted all I/Os in the
 		 * write buffer for this block ignore that the block is in the
 		 * open list; it is on its way to the closed list. This enables
-		 * us to avoid taking a block on the list.
+		 * us to avoid taking a lock on the list.
 		 */
 		if (unlikely(rblk->w_buf.cur_subm == rblk->w_buf.nentries)) {
 			spin_unlock_irqrestore(&rblk->w_buf.w_lock, flags);
@@ -1431,7 +1445,7 @@ try:
 				pgs_to_sync = dev->min_write_pgs *
 					(pgs_avail / dev->min_write_pgs);
 			else
-				pgs_to_sync = pgs_avail; //TODO: ADD PADDING LOGIC!
+				pgs_to_sync = pgs_avail; //TODO: ADD PADDING
 			break;
 		case NVM_SYNC_OPORT:
 			if (pgs_avail >= dev->max_write_pgs)
@@ -1444,7 +1458,7 @@ try:
 		}
 
 		// JAVIER: This will go
-		/* pgs_to_sync = (pgs_avail == 0) ? 0 : 1; */
+		pgs_to_sync = (pgs_avail == 0) ? 0 : 1;
 
 		//JAVIER: Better way
 		if (pgs_to_sync == 0) {
@@ -1455,23 +1469,29 @@ try:
 		bio = bio_alloc(GFP_ATOMIC, pgs_to_sync);
 		if (!bio) {
 			pr_err("nvm: rrpc: could not alloc write bio\n");
-			goto err1;
+			goto out1;
 		}
 
 		rqd = mempool_alloc(rrpc->rq_pool, GFP_ATOMIC);
 		if (!rqd) {
 			pr_err_ratelimited("rrpc: not able to create w req.");
-			goto err2;
+			goto out2;
 		}
 
 		m_rrqd = mempool_alloc(rrpc->m_rrq_pool, GFP_ATOMIC);
 		if (!m_rrqd) {
 			pr_err_ratelimited("rrpc: not able to create w rea.");
-			goto err3;
+			goto out3;
 		}
 
+		/* rev = &rrpc->rev_trans_map[addr->addr - rrpc->poffset]; */
+		/* bio->bi_iter.bi_sector = rrpc_get_sector(rev->addr); */
 		bio->bi_iter.bi_sector = 0; /* artificial bio */
 		bio->bi_rw = WRITE;
+
+		rrqd = rblk->w_buf.subm->rrqd;
+		if (unlikely(rrqd->flags & NVM_IOTYPE_GC))
+			pgs_to_sync = 1;
 
 		rqd->opcode = NVM_OP_HBWRITE;
 		rqd->bio = bio;
@@ -1480,22 +1500,27 @@ try:
 		rqd->priv = m_rrqd;
 
 		if (pgs_to_sync == 1) {
+			unsigned long bppa =
+				rrpc->dev->sec_per_blk * rblk->parent->id;
+
 			rrqd = rblk->w_buf.subm->rrqd;
 			addr = rblk->w_buf.subm->addr;
-			rqd->flags = rrqd->flags; //JAVIER!
+			rqd->flags = rrqd->flags;
 			entry_flags = rblk->w_buf.subm->flags;
 			data = rblk->w_buf.subm->data;
 
-			if (rrpc_lock_addr(rrpc, addr, &m_rrqd[0].inflight)) {
-				printk(KERN_CRIT "JAVIER!\n");
-				goto err3;
-			}
+			//JAVIER: THIS SHOULD GO
+			BUG_ON(test_bit((addr->addr - bppa),
+						rblk->w_buf.sync_bitmap));
 
-			//TODO: FREE RRQD TOO WHEN FAILING?
+			if (rrpc_lock_addr(rrpc, addr, &m_rrqd[0].inflight))
+				goto out3;
+
 			err = rrpc_alloc_page_in_bio(rrpc, bio, data);
 			if (err) {
 				printk(KERN_CRIT "ERROR!\n");
-				goto err4;
+				rrpc_unlock_addr(rrpc, &m_rrqd[0].inflight);
+				goto out4;
 			}
 
 			/* TODO: This address should be skipped */
@@ -1503,25 +1528,27 @@ try:
 				pr_err_ratelimited("rrpc: submitting empty rq");
 
 			rqd->ppa_addr = rrpc_ppa_to_gaddr(dev, addr->addr);
-			m_rrqd[0].addr = addr;
 
 			if (entry_flags == 1) {
 				struct rrpc_inflight_rq *r = rrpc_get_inflight_rq(rrqd);
-				if (rrqd->flags & NVM_IOTYPE_GC)
-						printk(KERN_CRIT "GC\n");
+				/* if (rrqd->flags & NVM_IOTYPE_GC) */
+						/* printk(KERN_CRIT "GC(1)\n"); */
 				if (r->l_start + rrqd->nr_pages > rrpc->nr_pages) {
 					BUG_ON(rrqd == NULL);
-					printk(KERN_CRIT "blk:%lu(m:%d,s%d,sy:%d), ls:%lu, addr:%llu(%llu), np:%u, i:%d/%d\n",
+					printk(KERN_CRIT "blk:%lu(m:%d,s%d,sy:%d), ls:%lu,le:%lu,rev:%llu/%llu,addr:%llu(%llu), np:%u, i:%d/%d\n",
 						rblk->parent->id,
 						rblk->w_buf.cur_mem,
 						rblk->w_buf.cur_subm,
 						rblk->w_buf.cur_sync,
 						r->l_start,
+						r->l_end,
+						rrpc->rev_trans_map[addr->addr - rrpc->poffset].addr,
+						rrpc->trans_map[rrpc->rev_trans_map[addr->addr - rrpc->poffset].addr].addr,
 						addr->addr,
 						rrqd->addr->addr,
 						rrqd->nr_pages,
 						0, pgs_to_sync);
-					BUG_ON(1);
+					/* BUG_ON(1); */
 				}
 
 				rrpc_unlock_rq(rrpc, rrqd, rrqd->nr_pages);
@@ -1539,28 +1566,33 @@ try:
 							&rqd->dma_ppa_list);
 		if (!rqd->ppa_list) {
 			pr_err("rrpc: not able to allocate ppa list\n");
-			goto err4;
+			goto out4;
 		}
 
 		for (i = 0; i < pgs_to_sync; i++) {
 			rrqd = rblk->w_buf.subm->rrqd;
+			rqd->flags = NVM_IOTYPE_NONE;
 			addr = rblk->w_buf.subm->addr;
 			entry_flags = rblk->w_buf.subm->flags;
 			data = rblk->w_buf.subm->data;
 
 			if (rrpc_lock_addr(rrpc, addr, &m_rrqd[i].inflight)) {
-				printk(KERN_CRIT "JAVIER!\n");
+				struct rrpc_inflight_rq *r = rrpc_get_inflight_rq(rrqd);
+				printk(KERN_CRIT "Locked: laddr:%lu, addr:%llu!\n",
+						r->l_start,
+						addr->addr);
 				if (i > 0) {
 					rqd->nr_pages = i;
 					goto submit_io;
 				}
-				goto err5;
+				goto out5;
 			}
 
 			err = rrpc_alloc_page_in_bio(rrpc, bio, data);
 			if (err) {
 				printk(KERN_CRIT "ERROR!\n");
-				goto err5;
+				rrpc_unlock_addr_range(rrpc, m_rrqd, i);
+				goto out5;
 			}
 
 			/* TODO: This address should be skipped */
@@ -1568,15 +1600,16 @@ try:
 				pr_err_ratelimited("rrpc: submitting empty rq");
 
 			rqd->ppa_list[i] = rrpc_ppa_to_gaddr(dev, addr->addr);
-			m_rrqd[i].addr = addr;
+
+			if (rrqd->flags & NVM_IOTYPE_GC) {
+				printk(KERN_CRIT "JAVIER!! GC\n");
+			}
 
 			if (entry_flags == 1) {
 				struct rrpc_inflight_rq *r = rrpc_get_inflight_rq(rrqd);
-				if (rrqd->flags & NVM_IOTYPE_GC)
-						printk(KERN_CRIT "GC\n");
 				if (r->l_start + rrqd->nr_pages > rrpc->nr_pages) {
 					BUG_ON(rrqd == NULL);
-					printk(KERN_CRIT "blk:%lu-%d(m:%d,s%d,sy:%d), ls:%lu, addr:%llu(%llu), np:%u, i:%d/%d\n",
+					printk(KERN_CRIT "blk:%lu-%d(m:%d,s%d,sy:%d), ls:%lu, addr:%llu(%llu), np:%u, f:%lu, i:%d/%d\n",
 						rblk->parent->id,
 						rblk->parent->state,
 						rblk->w_buf.cur_mem,
@@ -1586,6 +1619,7 @@ try:
 						addr->addr,
 						rrqd->addr->addr,
 						rrqd->nr_pages,
+						rrqd->flags,
 						i, pgs_to_sync);
 					BUG_ON(1);
 				}
@@ -1599,6 +1633,7 @@ try:
 		}
 
 submit_io:
+		BUG_ON(rblk->w_buf.cur_subm > rblk->w_buf.nentries);
 		spin_unlock_irqrestore(&rblk->w_buf.w_lock, flags);
 
 		err = nvm_submit_io(dev, rqd);
@@ -1614,15 +1649,15 @@ submit_io:
 
 	return;
 
-err5:
+out5:
 	nvm_dev_dma_free(rrpc->dev, rqd->ppa_list, rqd->dma_ppa_list);
-err4:
+out4:
 	mempool_free(m_rrqd, rrpc->m_rrq_pool);
-err3:
+out3:
 	mempool_free(rqd, rrpc->rq_pool);
-err2:
+out2:
 	bio_put(bio); //Right way to free bio?
-err1:
+out1:
 	spin_unlock_irqrestore(&rblk->w_buf.w_lock, flags);
 }
 
@@ -1883,7 +1918,9 @@ static int rrpc_core_init(struct rrpc *rrpc)
 	spin_lock_init(&rrpc->inflight_addrs.lock);
 	INIT_LIST_HEAD(&rrpc->inflight_addrs.reqs);
 
-	rrpc->kw_wq = alloc_workqueue("rrpc-writer", WQ_MEM_RECLAIM, 1);
+	rrpc->kw_wq = alloc_workqueue("rrpc-writer",
+				WQ_MEM_RECLAIM | WQ_UNBOUND, 1);
+			/*JAVIER: WQ_MEM_RECLAIM | WQ_UNBOUND, rrpc->nr_luns); */
 	if (!rrpc->kw_wq)
 		return -ENOMEM;
 
