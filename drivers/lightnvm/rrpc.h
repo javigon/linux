@@ -90,16 +90,16 @@ struct rrpc_w_buf {
 	struct buf_entry *entries;	/* Entries */
 	struct buf_entry *mem;		/* Points to the next writable entry */
 	struct buf_entry *subm;		/* Points to the last submitted entry */
-	struct buf_entry *sync;		/* Points to the last committed entry */
 	int cur_mem;			/* Current memory entry. Follows mem */
 	int cur_subm;			/* Entries have been submitted to dev */
 	int cur_sync;			/* Entries have been synced to media */
 	int nentries;			/* Number of entries in write buffer */
 
-	void *data;		/* Actual data */
-	// void *sync_bitmap;	#<{(| Bitmap representing physical addresses that
-				 // * have been synced to the media
-				 // |)}>#
+	void *data;			/* Actual data */
+	unsigned long *sync_bitmap;	/* Bitmap representing physical
+					 * addresses that have been synced to
+					 * the media
+					 */
 
 	spinlock_t w_lock;
 	spinlock_t sync_lock;

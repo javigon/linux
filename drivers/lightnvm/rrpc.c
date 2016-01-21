@@ -198,13 +198,12 @@ static void rrpc_free_w_buffer(struct rrpc *rrpc, struct rrpc_block *rblk)
 	/* TODO: Reuse the same buffers if the block size is the same */
 	mempool_free(rblk->w_buf.data, rrpc->write_buf_pool);
 	mempool_free(rblk->w_buf.entries, rrpc->block_pool);
-	/* kfree(rblk->w_buf.sync_bitmap); */
+	kfree(rblk->w_buf.sync_bitmap);
 
 	rblk->w_buf.entries = NULL;
 	rblk->w_buf.mem = NULL;
 	rblk->w_buf.subm = NULL;
-	rblk->w_buf.sync = NULL;
-	/* rblk->w_buf.sync_bitmap = NULL; */
+	rblk->w_buf.sync_bitmap = NULL;
 	rblk->w_buf.nentries = 0;
 	rblk->w_buf.cur_mem = 0;
 	rblk->w_buf.cur_subm = 0;
@@ -220,13 +219,14 @@ static void rrpc_put_blk(struct rrpc *rrpc, struct rrpc_block *rblk)
 
 try:
 	spin_lock_irqsave(&buf->w_lock, flags);
-	/* BUG_ON(!bitmap_full(buf->sync_bitmap, buf->nentries)); */
 	/* Flush inflight I/Os */
 	if ((buf->cur_mem != buf->cur_sync)) {
 		spin_unlock_irqrestore(&buf->w_lock, flags);
 		schedule();
 		goto try;
 	}
+
+	BUG_ON(!bitmap_full(buf->sync_bitmap, buf->cur_sync));
 
 	spin_lock_irqsave(&lun->lock, flags2);
 	nvm_put_blk_unlocked(rrpc->dev, rblk->parent);
@@ -313,18 +313,18 @@ static struct rrpc_block *rrpc_get_blk(struct rrpc *rrpc, struct rrpc_lun *rlun,
 	rblk->w_buf.cur_sync = 0;
 
 	/* JAVIER: Mempool? */
-	/* rblk->w_buf.sync_bitmap = kmalloc(BITS_TO_LONGS(rblk->w_buf.nentries) * */
-						/* sizeof(long), GFP_ATOMIC); */
-	/* if (!rblk->w_buf.sync_bitmap) { */
-		/* pr_err("nvm: rrpc: cannot allocate sync bitmap block\n"); */
-		/* mempool_free(rblk->w_buf.data, rrpc->write_buf_pool); */
-		/* mempool_free(rblk->w_buf.entries, rrpc->block_pool); */
-		/* spin_unlock_irqrestore(&lun->lock, lock_flags); */
-		/* rrpc_put_blk(rrpc, rblk); */
-		/* return NULL; */
-	/* } */
+	rblk->w_buf.sync_bitmap = kmalloc(BITS_TO_LONGS(rblk->w_buf.nentries) *
+					sizeof(unsigned long), GFP_ATOMIC);
+	if (!rblk->w_buf.sync_bitmap) {
+		pr_err("nvm: rrpc: cannot allocate sync bitmap block\n");
+		mempool_free(rblk->w_buf.data, rrpc->write_buf_pool);
+		mempool_free(rblk->w_buf.entries, rrpc->block_pool);
+		spin_unlock_irqrestore(&lun->lock, lock_flags);
+		rrpc_put_blk(rrpc, rblk);
+		return NULL;
+	}
 
-	/* bitmap_set(rblk->w_buf.sync_bitmap, 0, rblk->w_buf.nentries); */
+	bitmap_zero(rblk->w_buf.sync_bitmap, rblk->w_buf.nentries);
 
 	spin_lock_init(&rblk->w_buf.w_lock);
 
@@ -782,7 +782,7 @@ static void rrpc_run_gc(struct rrpc *rrpc, struct rrpc_block *rblk)
 }
 
 static void rrpc_sync_buffer(struct rrpc *rrpc, struct rrpc_addr *p,
-				struct rrpc_inflight_addr *inflight, int pos)
+				struct rrpc_inflight_addr *inflight)
 {
 	struct rrpc_block *rblk;
 	struct rrpc_w_buf *buf;
@@ -799,9 +799,8 @@ static void rrpc_sync_buffer(struct rrpc *rrpc, struct rrpc_addr *p,
 
 	// XXX: Javier: Can we simplify locks?
 	spin_lock_irqsave(&rblk->w_buf.w_lock, flags);
-	/* set_bit((p->addr - bppa) + pos, buf->sync_bitmap); */
+	WARN_ON(test_and_set_bit((p->addr - bppa), buf->sync_bitmap));
 	buf->cur_sync++;
-	buf->sync++;
 
 #ifdef CONFIG_NVM_DEBUG
 		atomic_dec(&rrpc->inflight_writes);
@@ -822,7 +821,7 @@ static void rrpc_sync_buffer(struct rrpc *rrpc, struct rrpc_addr *p,
 		struct rrpc_lun *rlun = rblk->rlun;
 		unsigned long flags2;
 
-		/* BUG_ON(!bitmap_full(buf->sync_bitmap, buf->nentries)); */
+		BUG_ON(!bitmap_full(buf->sync_bitmap, buf->nentries));
 		BUG_ON((buf->cur_mem != buf->cur_sync) &&
 					(buf->cur_mem != buf->nentries) &&
 					(buf->cur_mem != buf->cur_sync));
@@ -849,7 +848,7 @@ static void rrpc_end_io_write(struct rrpc *rrpc, struct nvm_rq *rqd,
 	int i;
 
 	for (i = 0; i < nr_pages; i++)
-		rrpc_sync_buffer(rrpc, m_rrqd[i].addr, &m_rrqd[i].inflight, i);
+		rrpc_sync_buffer(rrpc, m_rrqd[i].addr, &m_rrqd[i].inflight);
 
 	mempool_free(m_rrqd, rrpc->m_rrq_pool);
 	rrpc_writer_kick(rrpc);
