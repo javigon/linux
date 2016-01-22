@@ -1388,32 +1388,31 @@ static int rrpc_alloc_page_in_bio(struct rrpc *rrpc, struct bio *bio,
 	void *ptr;
 	int err;
 
-	page = mempool_alloc(rrpc->page_pool, GFP_ATOMIC);
+	/* page = mempool_alloc(rrpc->page_pool, GFP_ATOMIC); */
+	/* if (!page) { */
+		/* pr_err("nvm: rrpc: could not alloc page\n"); */
+		/* return -1; */
+	/* } */
+
+	BUG_ON(!virt_addr_valid(data));
+	BUG_ON(PAGE_SIZE != RRPC_EXPOSED_PAGE_SIZE);
+	page = virt_to_page(data); // Can we use this?
+	if (!page) {
+		pr_err("nvm: rrpc: could not alloc page\n");
+		return -1;
+	}
+	page = alloc_page(GFP_ATOMIC);
 	if (!page) {
 		pr_err("nvm: rrpc: could not alloc page\n");
 		return -1;
 	}
 
-	/* BUG_ON(!virt_addr_valid(data)); */
-	/* BUG_ON(PAGE_SIZE != RRPC_EXPOSED_PAGE_SIZE); */
-	/* page = virt_to_page(data); // Can we use this? */
-	/* if (!page) { */
-		/* pr_err("nvm: rrpc: could not alloc page\n"); */
-		/* spin_unlock_irq(&rblk->w_buf.sync_lock); */
-		/* return; */
-	/* } */
-	/* page = alloc_page(GFP_NOIO); */
-	/* if (!page) { */
-		/* pr_err("nvm: rrpc: could not alloc page\n"); */
-		/* return; */
-	/* } */
-
-	ptr = kmap(page);
-	memcpy(ptr, data, RRPC_EXPOSED_PAGE_SIZE);
-	kunmap(ptr);
+	/* ptr = kmap(page); */
+	/* memcpy(ptr, data, RRPC_EXPOSED_PAGE_SIZE); */
+	/* kunmap(ptr); */
 
 	// XXX: Better way to deal with such fail? Retry?
-	err = bio_add_pc_page(q, bio, page, RRPC_EXPOSED_PAGE_SIZE, 0);
+	err = bio_add_page(bio, page, RRPC_EXPOSED_PAGE_SIZE, 0);
 	if (err != RRPC_EXPOSED_PAGE_SIZE) {
 		pr_err("nvm: rrpc: could not add page to bio\n");
 		mempool_free(page, rrpc->page_pool);
