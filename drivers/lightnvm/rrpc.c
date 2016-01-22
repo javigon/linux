@@ -415,12 +415,22 @@ static int rrpc_move_valid_pages(struct rrpc *rrpc, struct rrpc_block *rblk)
 	struct request_queue *q = rrpc->dev->q;
 	struct rrpc_rev_addr *rev;
 	struct rrpc_rq *rrqd;
+	struct nvm_lun *lun = rblk->parent->lun;
 	struct bio *bio;
 	struct page *page;
 	int slot;
 	int nr_pgs_per_blk = rrpc->dev->pgs_per_blk;
 	u64 phys_addr;
+	unsigned long flags;
 	DECLARE_COMPLETION_ONSTACK(wait);
+
+	spin_lock(&lun->lock);
+	if (rblk->parent->state & NVM_BLK_ST_OPEN) {
+		printk(KERN_CRIT "GC open block - return to list\n");
+		spin_unlock(&lun->lock);
+		return -1;
+	}
+	spin_unlock(&lun->lock);
 
 	if (bitmap_full(rblk->invalid_pages, nr_pgs_per_blk))
 		return 0;
