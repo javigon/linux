@@ -868,15 +868,7 @@ static void rrpc_sync_buffer(struct rrpc *rrpc,
 		atomic_inc(&rrpc->sync_writes);
 #endif
 
-	if (buf->cur_sync > buf->cur_subm) {
-		printk(KERN_CRIT "ERROR: sync:%d, sub:%d, blk:%lu, addr:%llu\n",
-				buf->cur_sync,
-				buf->cur_subm,
-				rblk->parent->id,
-				p->addr);
-		BUG_ON(1);
-	}
-	/* BUG_ON(buf->cur_sync > buf->cur_subm); */
+	BUG_ON(buf->cur_sync > buf->cur_subm);
 	if (unlikely(buf->cur_sync == buf->nentries)) {
 		struct nvm_block *blk = rblk->parent;
 		struct rrpc_lun *rlun = rblk->rlun;
@@ -914,7 +906,7 @@ static void rrpc_end_io_write(struct rrpc *rrpc, struct nvm_rq *rqd,
 	rrpc_unlock_rq(rrpc, m_rrqd[0].rrqd, m_rrqd[0].rrqd->nr_pages);
 	mempool_free(m_rrqd[0].rrqd, rrpc->rrq_pool);
 	mempool_free(m_rrqd, rrpc->m_rrq_pool);
-	rrpc_writer_kick(rrpc);
+	rrpc_writer_kick(rrpc); // JAVIER: NECESSARY?
 }
 
 static void rrpc_end_io(struct nvm_rq *rqd)
@@ -1408,9 +1400,9 @@ static blk_qc_t rrpc_make_rq(struct request_queue *q, struct bio *bio)
 static int rrpc_alloc_page_in_bio(struct rrpc *rrpc, struct bio *bio,
 								void *data)
 {
-	struct request_queue *q = rrpc->dev->q;
+	/* struct request_queue *q = rrpc->dev->q; */
 	struct page *page;
-	void *ptr;
+	/* void *ptr; */
 	int err;
 
 	/* page = mempool_alloc(rrpc->page_pool, GFP_ATOMIC); */
@@ -1522,8 +1514,6 @@ try:
 			continue;
 		}
 
-		BUG_ON(rblk->w_buf.subm->rrqd->inflight_rq.l_start > rrpc->nr_pages);
-
 		bio = bio_alloc(GFP_ATOMIC, pgs_to_sync);
 		if (!bio) {
 			pr_err("nvm: rrpc: could not alloc write bio\n");
@@ -1542,16 +1532,12 @@ try:
 			goto out3;
 		}
 
-		/* rev = &rrpc->rev_trans_map[addr->addr - rrpc->poffset]; */
-		/* bio->bi_iter.bi_sector = rrpc_get_sector(rev->addr); */
 		bio->bi_iter.bi_sector = 0; /* artificial bio */
 		bio->bi_rw = WRITE;
 
 		rrqd = rblk->w_buf.subm->rrqd;
 		if (unlikely(rrqd->flags & NVM_IOTYPE_GC))
 			pgs_to_sync = 1;
-
-		BUG_ON(rrqd->inflight_rq.l_start > rrpc->nr_pages);
 
 		rqd->opcode = NVM_OP_HBWRITE;
 		rqd->bio = bio;
@@ -1568,8 +1554,6 @@ try:
 			rqd->flags = rrqd->flags;
 			entry_flags = rblk->w_buf.subm->flags;
 			data = rblk->w_buf.subm->data;
-
-			BUG_ON(rrqd->inflight_rq.l_start > rrpc->nr_pages);
 
 			//JAVIER: THIS SHOULD GO
 			if (test_bit((addr->addr - bppa),
