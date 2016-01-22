@@ -507,6 +507,13 @@ try:
 
 		bio_add_pc_page(q, bio, page, RRPC_EXPOSED_PAGE_SIZE, 0);
 
+		printk(KERN_CRIT "GC: sending: laddr:%llu, locked:%lu/%lu, old_phys:%llu (empty:%llu)==\n",
+				rev->addr,
+				rrqd->inflight_rq.l_start,
+				rrqd->inflight_rq.l_end,
+				phys_addr,
+				ADDR_EMPTY);
+
 		/* turn the command around and write the data back to a new
 		 * address
 		 */
@@ -518,6 +525,7 @@ try:
 		}
 		wait_for_completion_io(&wait);
 
+		printk(KERN_CRIT "Released!!!\n");
 		// XXX: JAVIER: We do not need to release - it happens on buffer
 		/* rrpc_inflight_laddr_release(rrpc, rrqd); */
 		if (bio->bi_error)
@@ -842,7 +850,8 @@ static void rrpc_sync_buffer(struct rrpc *rrpc,
 
 	// XXX: Javier: Can we simplify locks?
 	spin_lock_irqsave(&rblk->w_buf.w_lock, flags);
-	WARN_ON(test_and_set_bit((p->addr - bppa), buf->sync_bitmap));
+	BUG_ON(test_and_set_bit((p->addr - bppa), buf->sync_bitmap));
+	/* WARN_ON(test_and_set_bit((p->addr - bppa), buf->sync_bitmap)); */
 	buf->cur_sync++;
 
 #ifdef CONFIG_NVM_DEBUG
@@ -1022,10 +1031,11 @@ static int rrpc_read_rq(struct rrpc *rrpc, struct bio *bio, struct nvm_rq *rqd,
  * are written. This buffer is also used to write at the right page
  * granurality
  */
-static void rrpc_write_to_buffer(struct nvm_dev *dev, struct bio *bio,
+static void rrpc_write_to_buffer(struct rrpc *rrpc, struct bio *bio,
 				struct rrpc_rq *rrqd, struct rrpc_w_buf *w_buf,
 				int flags)
 {
+	struct nvm_dev *dev = rrpc->dev;
 	void *buf;
 	unsigned long lock_flags;
 	unsigned int bio_len = RRPC_EXPOSED_PAGE_SIZE;
@@ -1040,6 +1050,8 @@ static void rrpc_write_to_buffer(struct nvm_dev *dev, struct bio *bio,
 
 	buf = w_buf->mem->data;
 	memcpy(buf, bio_data(bio), bio_len);
+
+	BUG_ON(w_buf->mem->rrqd->inflight_rq.l_start > rrpc->nr_pages);
 
 	w_buf->cur_mem++;
 	w_buf->mem++;
@@ -1090,7 +1102,7 @@ static int rrpc_write_ppalist_rq(struct rrpc *rrpc, struct bio *bio,
 		atomic_inc(&rrpc->inflight_writes);
 		atomic_inc(&rrpc->req_writes);
 #endif
-		rrpc_write_to_buffer(rrpc->dev, bio, rrqd, w_buf, entry_flags);
+		rrpc_write_to_buffer(rrpc, bio, rrqd, w_buf, entry_flags);
 		bio_advance(bio, RRPC_EXPOSED_PAGE_SIZE);
 
 		queue_work(rrpc->kw_wq, &rlun->ws_writer);
@@ -1127,8 +1139,11 @@ static int rrpc_write_rq(struct rrpc *rrpc, struct bio *bio,
 	}
 
 	if (is_gc)
-		printk(KERN_CRIT "GC!! laddr:%lu, addr:%llu\n",
+		printk(KERN_CRIT "GC!! laddr:%lu, addr:%llu ==\n",
 				laddr, p->addr);
+
+	BUG_ON(laddr > rrpc->nr_pages);
+	BUG_ON(rrqd->inflight_rq.l_start > rrpc->nr_pages);
 
 	w_buf = &p->rblk->w_buf;
 	rlun = p->rblk->rlun;
@@ -1141,8 +1156,9 @@ static int rrpc_write_rq(struct rrpc *rrpc, struct bio *bio,
 	atomic_inc(&rrpc->req_writes);
 #endif
 
-	rrpc_write_to_buffer(rrpc->dev, bio, rrqd, w_buf, entry_flags);
+	rrpc_write_to_buffer(rrpc, bio, rrqd, w_buf, entry_flags);
 
+	BUG_ON(rrqd->inflight_rq.l_start > rrpc->nr_pages);
 	queue_work(rrpc->kw_wq, &rlun->ws_writer);
 	return NVM_IO_DONE;
 }
@@ -1497,6 +1513,8 @@ try:
 			continue;
 		}
 
+		BUG_ON(rblk->w_buf.subm->rrqd->inflight_rq.l_start > rrpc->nr_pages);
+
 		bio = bio_alloc(GFP_ATOMIC, pgs_to_sync);
 		if (!bio) {
 			pr_err("nvm: rrpc: could not alloc write bio\n");
@@ -1524,6 +1542,8 @@ try:
 		if (unlikely(rrqd->flags & NVM_IOTYPE_GC))
 			pgs_to_sync = 1;
 
+		BUG_ON(rrqd->inflight_rq.l_start > rrpc->nr_pages);
+
 		rqd->opcode = NVM_OP_HBWRITE;
 		rqd->bio = bio;
 		rqd->ins = &rrpc->instance;
@@ -1540,9 +1560,16 @@ try:
 			entry_flags = rblk->w_buf.subm->flags;
 			data = rblk->w_buf.subm->data;
 
+			BUG_ON(rrqd->inflight_rq.l_start > rrpc->nr_pages);
+
 			//JAVIER: THIS SHOULD GO
-			BUG_ON(test_bit((addr->addr - bppa),
-						rblk->w_buf.sync_bitmap));
+			if (test_bit((addr->addr - bppa),
+						rblk->w_buf.sync_bitmap)) {
+				printk(KERN_CRIT "COLL: off:%llu, addr:%llu ==\n",
+						addr->addr - bppa,
+						addr->addr);
+				/* BUG_ON(1); */
+			}
 
 			if (rrpc_lock_addr(rrpc, addr, &m_rrqd[0].inflight))
 				goto out3;
@@ -1579,7 +1606,7 @@ try:
 						rrqd->addr->addr,
 						rrqd->nr_pages,
 						0, pgs_to_sync);
-					/* BUG_ON(1); */
+					BUG_ON(1);
 				}
 
 				m_rrqd[0].rrqd = rrqd;
