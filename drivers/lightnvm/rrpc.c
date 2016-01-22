@@ -47,8 +47,11 @@ static int rrpc_page_invalidate(struct rrpc *rrpc, struct rrpc_addr *a)
 
 	div_u64_rem(a->addr, rrpc->dev->pgs_per_blk, &pg_offset);
 	// JAVIER!!!!
+	if (test_and_set_bit(pg_offset, rblk->invalid_pages)) {
+		printk(KERN_CRIT "blk:%lu, pg_offset:%d, addr:%llu\n",
+				rblk->parent->id, pg_offset, a->addr);
+	}
 	/* WARN_ON(test_and_set_bit(pg_offset, rblk->invalid_pages)); */
-	BUG_ON(test_and_set_bit(pg_offset, rblk->invalid_pages));
 	rblk->nr_invalid_pages++;
 
 	spin_unlock(&rblk->lock);
@@ -212,6 +215,7 @@ static void rrpc_free_w_buffer(struct rrpc *rrpc, struct rrpc_block *rblk)
 	rblk->w_buf.mem = NULL;
 	rblk->w_buf.subm = NULL;
 	rblk->w_buf.sync_bitmap = NULL;
+	rblk->w_buf.data = NULL;
 	rblk->w_buf.nentries = 0;
 	rblk->w_buf.cur_mem = 0;
 	rblk->w_buf.cur_subm = 0;
@@ -863,6 +867,8 @@ static void rrpc_end_io_write(struct rrpc *rrpc, struct nvm_rq *rqd,
 	for (i = 0; i < nr_pages; i++)
 		rrpc_sync_buffer(rrpc, &m_rrqd[i].inflight);
 
+	rrpc_unlock_rq(rrpc, m_rrqd[0].rrqd, m_rrqd[0].rrqd->nr_pages);
+	mempool_free(m_rrqd[0].rrqd, rrpc->rrq_pool);
 	mempool_free(m_rrqd, rrpc->m_rrq_pool);
 	rrpc_writer_kick(rrpc);
 }
@@ -1551,8 +1557,9 @@ try:
 					/* BUG_ON(1); */
 				}
 
-				rrpc_unlock_rq(rrpc, rrqd, rrqd->nr_pages);
-				mempool_free(rrqd, rrpc->rrq_pool);
+				m_rrqd[0].rrqd = rrqd;
+				/* rrpc_unlock_rq(rrpc, rrqd, rrqd->nr_pages); */
+				/* mempool_free(rrqd, rrpc->rrq_pool); */
 			}
 
 			rblk->w_buf.subm++;
