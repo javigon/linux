@@ -31,6 +31,7 @@ static int rrpc_page_invalidate(struct rrpc *rrpc, struct rrpc_addr *a)
 {
 	struct rrpc_block *rblk = a->rblk;
 	unsigned int pg_offset;
+	unsigned long flags;
 
 	/* pr_err_ratelimited("INVALIDATE: blk:%lu, addr:%llu, off:%llu\n", */
 				/* rblk->parent->id, a->addr, rrpc->poffset); */
@@ -43,7 +44,7 @@ static int rrpc_page_invalidate(struct rrpc *rrpc, struct rrpc_addr *a)
 	if (rrpc_check_addr(rrpc, a))
 		return 1;
 
-	spin_lock(&rblk->lock);
+	spin_lock_irqsave(&rblk->lock, flags);
 
 	div_u64_rem(a->addr, rrpc->dev->pgs_per_blk, &pg_offset);
 	// JAVIER!!!!
@@ -54,7 +55,7 @@ static int rrpc_page_invalidate(struct rrpc *rrpc, struct rrpc_addr *a)
 	/* WARN_ON(test_and_set_bit(pg_offset, rblk->invalid_pages)); */
 	rblk->nr_invalid_pages++;
 
-	spin_unlock(&rblk->lock);
+	spin_unlock_irqrestore(&rblk->lock, flags);
 
 	rrpc->rev_trans_map[a->addr - rrpc->poffset].addr = ADDR_EMPTY;
 
@@ -65,21 +66,22 @@ static void rrpc_invalidate_range(struct rrpc *rrpc, sector_t slba,
 								unsigned len)
 {
 	sector_t i;
+	unsigned long flags;
 
-	spin_lock(&rrpc->rev_lock);
+	spin_lock_irqsave(&rrpc->rev_lock, flags);
 	for (i = slba; i < slba + len; i++) {
 		struct rrpc_addr *gp = &rrpc->trans_map[i];
 
+	BUG_ON(1); //JAVIER!!
 try:
 		if (rrpc_page_invalidate(rrpc, gp)) {
-			spin_unlock(&rrpc->rev_lock);
+			spin_unlock_irqrestore(&rrpc->rev_lock, flags);
 			schedule();
 			goto try;
 		}
-		BUG_ON(1); //JAVIER!!
 		gp->rblk = NULL;
 	}
-	spin_unlock(&rrpc->rev_lock);
+	spin_unlock_irqrestore(&rrpc->rev_lock, flags);
 }
 
 static struct rrpc_rq *rrpc_inflight_laddr_acquire(struct rrpc *rrpc,
@@ -440,23 +442,30 @@ static int rrpc_move_valid_pages(struct rrpc *rrpc, struct rrpc_block *rblk)
 		phys_addr = (rblk->parent->id * nr_pgs_per_blk) + slot;
 
 try:
-		spin_lock(&rrpc->rev_lock);
+		spin_lock_irqsave(&rrpc->rev_lock, flags);
 		/* Get logical address from physical to logical table */
 		rev = &rrpc->rev_trans_map[phys_addr - rrpc->poffset];
 		/* already updated by previous regular write */
 		if (rev->addr == ADDR_EMPTY) {
-			spin_unlock(&rrpc->rev_lock);
+			spin_unlock_irqrestore(&rrpc->rev_lock, flags);
 			continue;
 		}
 
 		rrqd = rrpc_inflight_laddr_acquire(rrpc, rev->addr, 1);
 		if (IS_ERR_OR_NULL(rrqd)) {
-			spin_unlock(&rrpc->rev_lock);
+			spin_unlock_irqrestore(&rrpc->rev_lock, flags);
 			schedule();
 			goto try;
 		}
 
-		spin_unlock(&rrpc->rev_lock);
+		printk(KERN_CRIT "GC1: sending: laddr:%llu, locked:%lu/%lu, old_phys:%llu (empty:%llu)==\n",
+				rev->addr,
+				rrqd->inflight_rq.l_start,
+				rrqd->inflight_rq.l_end,
+				phys_addr,
+				ADDR_EMPTY);
+
+		spin_unlock_irqrestore(&rrpc->rev_lock, flags);
 
 		/* Perform read to do GC */
 		bio->bi_iter.bi_sector = rrpc_get_sector(rev->addr);
@@ -677,17 +686,23 @@ static struct rrpc_addr *rrpc_update_map(struct rrpc *rrpc, sector_t laddr,
 {
 	struct rrpc_addr *gp;
 	struct rrpc_rev_addr *rev;
+	unsigned long flags;
 
-	BUG_ON(laddr >= rrpc->nr_pages);
+	//JAVIER
+	if (laddr > rrpc->nr_pages) {
+		printk("laddr:%lu, blk:%lu, paddr:%llu\n",
+				laddr, rblk->parent->id, paddr);
+	}
+	/* BUG_ON(laddr >= rrpc->nr_pages); */
 
 try:
 	gp = &rrpc->trans_map[laddr];
 
-	spin_lock(&rrpc->rev_lock);
+	spin_lock_irqsave(&rrpc->rev_lock, flags);
 	if (gp->rblk) {
 		if (rrpc_page_invalidate(rrpc, gp)) {
-			spin_unlock(&rrpc->rev_lock);
-			/* pr_err_ratelimited("cant: laddr:%lu\n", laddr); */
+			spin_unlock_irqrestore(&rrpc->rev_lock, flags);
+			pr_err_ratelimited("cant: laddr:%lu\n", laddr);
 			schedule();
 			goto try;
 		}
@@ -698,7 +713,7 @@ try:
 
 	rev = &rrpc->rev_trans_map[gp->addr - rrpc->poffset];
 	rev->addr = laddr;
-	spin_unlock(&rrpc->rev_lock);
+	spin_unlock_irqrestore(&rrpc->rev_lock, flags);
 
 	return gp;
 }
@@ -706,8 +721,9 @@ try:
 static u64 rrpc_alloc_addr(struct rrpc *rrpc, struct rrpc_block *rblk)
 {
 	u64 addr = ADDR_EMPTY;
+	unsigned long flags;
 
-	spin_lock(&rblk->lock);
+	spin_lock_irqsave(&rblk->lock, flags);
 	if (block_is_full(rrpc, rblk))
 		goto out;
 
@@ -715,7 +731,7 @@ static u64 rrpc_alloc_addr(struct rrpc *rrpc, struct rrpc_block *rblk)
 
 	rblk->next_page++;
 out:
-	spin_unlock(&rblk->lock);
+	spin_unlock_irqrestore(&rblk->lock, flags);
 	return addr;
 }
 
