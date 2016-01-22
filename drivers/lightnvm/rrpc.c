@@ -858,7 +858,7 @@ static void rrpc_sync_buffer(struct rrpc *rrpc,
 	bppa = rrpc->dev->sec_per_blk * rblk->parent->id;
 
 	// XXX: Javier: Can we simplify locks?
-	spin_lock_irqsave(&rblk->w_buf.w_lock, flags);
+	/* spin_lock_irqsave(&rblk->w_buf.w_lock, flags); */
 	BUG_ON(test_and_set_bit((p->addr - bppa), buf->sync_bitmap));
 	/* WARN_ON(test_and_set_bit((p->addr - bppa), buf->sync_bitmap)); */
 	buf->cur_sync++;
@@ -899,7 +899,7 @@ static void rrpc_sync_buffer(struct rrpc *rrpc,
 		rrpc_run_gc(rrpc, rblk);
 	}
 	rrpc_unlock_addr(rrpc, inflight);
-	spin_unlock_irqrestore(&rblk->w_buf.w_lock, flags);
+	/* spin_unlock_irqrestore(&rblk->w_buf.w_lock, flags); */
 }
 
 static void rrpc_end_io_write(struct rrpc *rrpc, struct nvm_rq *rqd,
