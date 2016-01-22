@@ -288,6 +288,9 @@ static struct rrpc_block *rrpc_get_blk(struct rrpc *rrpc, struct rrpc_lun *rlun,
 	unsigned long lock_flags;
 	int nentries = dev->pgs_per_blk * dev->sec_per_pg;
 
+	if (unlikely(flags == 1))
+		goto get_blk;
+
 	data = mempool_alloc(rrpc->write_buf_pool, GFP_ATOMIC);
 	if (!data) {
 		pr_err("nvm: rrpc: cannot allocate write buffer for block\n");
@@ -313,6 +316,7 @@ static struct rrpc_block *rrpc_get_blk(struct rrpc *rrpc, struct rrpc_lun *rlun,
 
 	bitmap_zero(sync_bitmap, nentries);
 
+get_blk:
 	spin_lock_irqsave(&lun->lock, lock_flags);
 	blk = nvm_get_blk_unlocked(rrpc->dev, rlun->parent, flags);
 	if (!blk) {
@@ -322,9 +326,14 @@ static struct rrpc_block *rrpc_get_blk(struct rrpc *rrpc, struct rrpc_lun *rlun,
 	}
 
 	rblk = &rlun->blocks[blk->id];
-	BUG_ON(rblk == NULL);
-
 	blk->priv = rblk;
+
+	if (unlikely(flags == 1)) {
+		spin_unlock_irqrestore(&lun->lock, lock_flags);
+		return rblk;
+	}
+
+	/* Initialize write buffer in rblk */
 	bitmap_zero(rblk->invalid_pages, dev->pgs_per_blk);
 	rblk->next_page = 0;
 	rblk->nr_invalid_pages = 0;
