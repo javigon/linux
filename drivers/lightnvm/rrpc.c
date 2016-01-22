@@ -1451,7 +1451,7 @@ static void rrpc_submit_write(struct work_struct *work)
 	struct nvm_rq *rqd;
 	struct rrpc_block *rblk, *trblk;
 	struct bio *bio;
-	unsigned long flags;
+	unsigned long flags, flags2;
 	int pgs_to_sync, pgs_avail;
 	int entry_flags;
 	int sync = NVM_SYNC_HARD;
@@ -1465,7 +1465,8 @@ static void rrpc_submit_write(struct work_struct *work)
 	 * sync strategy performed in this write thread.
 	 */
 try:
-	list_for_each_entry_safe(rblk, trblk, &rlun->open_list, list) {
+	spin_lock_irqsave(&rlun->parent->lock, flags2);
+	list_for_each_entry_safe_reverse(rblk, trblk, &rlun->open_list, list) {
 		if (!spin_trylock_irqsave(&rblk->w_buf.w_lock, flags))
 			continue;
 
@@ -1476,6 +1477,7 @@ try:
 		 */
 		if (unlikely(rblk->w_buf.cur_subm == rblk->w_buf.nentries)) {
 			spin_unlock_irqrestore(&rblk->w_buf.w_lock, flags);
+			spin_unlock_irqrestore(&rlun->parent->lock, flags2);
 			schedule();
 			goto try;
 		}
@@ -1687,6 +1689,7 @@ try:
 submit_io:
 		BUG_ON(rblk->w_buf.cur_subm > rblk->w_buf.nentries);
 		spin_unlock_irqrestore(&rblk->w_buf.w_lock, flags);
+		spin_unlock_irqrestore(&rlun->parent->lock, flags2);
 
 		err = nvm_submit_io(dev, rqd);
 		if (err) {
@@ -1694,11 +1697,13 @@ submit_io:
 			mempool_free(rqd, rrpc->rq_pool);
 			bio_put(bio);
 		}
+	spin_lock_irqsave(&rlun->parent->lock, flags2);
 #ifdef CONFIG_NVM_DEBUG
 		atomic_add(pgs_to_sync, &rrpc->sub_writes);
 #endif
 	}
 
+	spin_unlock(&rlun->parent->lock);
 	return;
 
 out5:
@@ -1711,6 +1716,7 @@ out2:
 	bio_put(bio); //Right way to free bio?
 out1:
 	spin_unlock_irqrestore(&rblk->w_buf.w_lock, flags);
+	spin_unlock_irqrestore(&rlun->parent->lock, flags2);
 }
 
 static void rrpc_requeue(struct work_struct *work)
