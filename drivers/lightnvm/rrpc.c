@@ -843,13 +843,11 @@ static void rrpc_run_gc(struct rrpc *rrpc, struct rrpc_block *rblk)
 	queue_work(rrpc->kgc_wq, &gcb->ws_gc);
 }
 
-static void rrpc_sync_buffer(struct rrpc *rrpc,
-					struct rrpc_rq *rrqd)
+static void rrpc_sync_buffer(struct rrpc *rrpc, struct rrpc_addr *p)
 {
 	struct rrpc_block *rblk;
 	struct rrpc_w_buf *buf;
 	struct nvm_lun *lun;
-	struct rrpc_addr *p = rrqd->addr;
 	unsigned long bppa;
 
 	BUG_ON(p == NULL);
@@ -885,16 +883,16 @@ static void rrpc_end_io_write(struct rrpc *rrpc, struct nvm_rq *rqd,
 							uint8_t nr_pages)
 {
 	struct rrpc_multi_rq *m_rrqd = nvm_rq_to_pdu(rqd);
+	struct rrpc_rq *rrqd;
 	int i;
 
-	BUG_ON(nr_pages > 1);
-
 	for (i = 0; i < nr_pages; i++) {
-		rrpc_sync_buffer(rrpc, m_rrqd[i].rrqd);
-		/* if (m_rrqd[i].flags == 1) { */
-			/* rrpc_unlock_rq(rrpc, m_rrqd[i].rrqd, m_rrqd[i].rrqd->nr_pages); */
-			/* mempool_free(m_rrqd[i].rrqd, rrpc->rrq_pool); */
-		/* } */
+		rrqd = m_rrqd[i].rrqd;
+		rrpc_sync_buffer(rrpc, m_rrqd[i].addr);
+		if (atomic_dec_and_test(&rrqd->refs)) {
+			rrpc_unlock_rq(rrpc, rrqd, rrqd->nr_pages);
+			mempool_free(rrqd, rrpc->rrq_pool);
+		}
 	}
 
 	mempool_free(m_rrqd, rrpc->m_rrq_pool);
@@ -1025,10 +1023,11 @@ static int rrpc_read_rq(struct rrpc *rrpc, struct bio *bio, struct nvm_rq *rqd,
  * granurality
  */
 static void rrpc_write_to_buffer(struct rrpc *rrpc, struct bio *bio,
-				struct rrpc_rq *rrqd, struct rrpc_w_buf *w_buf)
+				struct rrpc_rq *rrqd, struct rrpc_addr *addr,
+				struct rrpc_w_buf *w_buf,
+				unsigned long flags)
 {
 	struct nvm_dev *dev = rrpc->dev;
-	void *buf;
 	unsigned int bio_len = RRPC_EXPOSED_PAGE_SIZE;
 
 	spin_lock(&w_buf->w_lock);
@@ -1036,10 +1035,10 @@ static void rrpc_write_to_buffer(struct rrpc *rrpc, struct bio *bio,
 	BUG_ON(w_buf->cur_mem == w_buf->nentries);
 
 	w_buf->mem->rrqd = rrqd;
-	w_buf->mem->addr = rrqd->addr;
+	w_buf->mem->addr = addr;
+	w_buf->mem->flags = flags;
 
-	buf = w_buf->mem->data;
-	memcpy(buf, bio_data(bio), bio_len);
+	memcpy(w_buf->mem->data, bio_data(bio), bio_len);
 
 	//JAVIER - This will go
 	BUG_ON(w_buf->mem->rrqd->inflight_rq.l_start > rrpc->nr_pages);
@@ -1069,6 +1068,8 @@ static int rrpc_write_ppalist_rq(struct rrpc *rrpc, struct bio *bio,
 		return NVM_IO_REQUEUE;
 	}
 
+	atomic_set(&rrqd->refs, nr_pages);
+
 	for (i = 0; i < nr_pages; i++) {
 		/* We assume that mapping occurs at 4KB granularity */
 		p = rrpc_map_page(rrpc, laddr + i, is_gc);
@@ -1083,14 +1084,13 @@ static int rrpc_write_ppalist_rq(struct rrpc *rrpc, struct bio *bio,
 		w_buf = &p->rblk->w_buf;
 		rlun = p->rblk->rlun;
 
-		rrqd->flags = flags;
 		rrqd->addr = p;
 
 #ifdef CONFIG_NVM_DEBUG
 		atomic_inc(&rrpc->inflight_writes);
 		atomic_inc(&rrpc->req_writes);
 #endif
-		rrpc_write_to_buffer(rrpc, bio, rrqd, w_buf);
+		rrpc_write_to_buffer(rrpc, bio, rrqd, p, w_buf, flags);
 		bio_advance(bio, RRPC_EXPOSED_PAGE_SIZE);
 
 		queue_work(rrpc->kw_wq, &rlun->ws_writer);
@@ -1116,6 +1116,8 @@ static int rrpc_write_rq(struct rrpc *rrpc, struct bio *bio,
 		return NVM_IO_REQUEUE;
 	}
 
+	atomic_set(&rrqd->refs, 1);
+
 	p = rrpc_map_page(rrpc, laddr, is_gc);
 	if (!p) {
 		BUG_ON(is_gc);
@@ -1136,14 +1138,13 @@ static int rrpc_write_rq(struct rrpc *rrpc, struct bio *bio,
 	rlun = p->rblk->rlun;
 
 	rrqd->addr = p;
-	rrqd->flags = flags;
 
 #ifdef CONFIG_NVM_DEBUG
 	atomic_inc(&rrpc->inflight_writes);
 	atomic_inc(&rrpc->req_writes);
 #endif
 
-	rrpc_write_to_buffer(rrpc, bio, rrqd, w_buf);
+	rrpc_write_to_buffer(rrpc, bio, rrqd, p, w_buf, flags);
 
 	BUG_ON(rrqd->inflight_rq.l_start > rrpc->nr_pages);
 	queue_work(rrpc->kw_wq, &rlun->ws_writer);
@@ -1285,7 +1286,7 @@ static int rrpc_submit_read(struct rrpc *rrpc, struct bio *bio,
 	rqd->bio = bio;
 	rqd->ins = &rrpc->instance;
 	rqd->nr_pages = nr_pages;
-	rqd->flags = rrqd->flags = flags;
+	rqd->flags = flags;
 
 	left = rrpc_read_from_w_buf(rrpc, rqd, m_rrqd);
 	if (left < 0)
@@ -1435,7 +1436,8 @@ static void rrpc_submit_write(struct work_struct *work)
 	struct rrpc_multi_rq *m_rrqd;
 	void *data;
 	struct nvm_rq *rqd;
-	struct rrpc_block *rblk, *trblk;
+	struct rrpc_block *rblk;
+	/* struct rrpc_block *trblk; */
 	struct bio *bio;
 	int pgs_to_sync, pgs_avail;
 	int sync = NVM_SYNC_HARD;
@@ -1449,8 +1451,8 @@ static void rrpc_submit_write(struct work_struct *work)
 	 * sync strategy performed in this write thread.
 	 */
 try:
-	/* spin_lock_irqsave(&rlun->parent->lock, flags2); */
-	list_for_each_entry_safe_reverse(rblk, trblk, &rlun->open_list, list) {
+	spin_lock(&rlun->parent->lock);
+	list_for_each_entry(rblk, &rlun->open_list, list) {
 		if (!spin_trylock(&rblk->w_buf.w_lock))
 			continue;
 
@@ -1461,7 +1463,7 @@ try:
 		 */
 		if (unlikely(rblk->w_buf.cur_subm == rblk->w_buf.nentries)) {
 			spin_unlock(&rblk->w_buf.w_lock);
-			/* spin_unlock_irqrestore(&rlun->parent->lock, flags2); */
+			spin_unlock(&rlun->parent->lock);
 			schedule();
 			goto try;
 		}
@@ -1492,7 +1494,7 @@ try:
 		}
 
 		// JAVIER: This will go
-		pgs_to_sync = (pgs_avail == 0) ? 0 : 1;
+		/* pgs_to_sync = (pgs_avail == 0) ? 0 : 1; */
 
 		//JAVIER: Better way
 		if (pgs_to_sync == 0) {
@@ -1521,9 +1523,9 @@ try:
 		bio->bi_iter.bi_sector = 0; /* artificial bio */
 		bio->bi_rw = WRITE;
 
-		rrqd = rblk->w_buf.subm->rrqd;
-		if (unlikely(rrqd->flags & NVM_IOTYPE_GC))
-			pgs_to_sync = 1;
+		/* rrqd = rblk->w_buf.subm->rrqd; */
+		/* if (unlikely(rrqd->flags & NVM_IOTYPE_GC)) */
+			/* pgs_to_sync = 1; */
 
 		rqd->opcode = NVM_OP_HBWRITE;
 		rqd->bio = bio;
@@ -1537,7 +1539,7 @@ try:
 
 			rrqd = rblk->w_buf.subm->rrqd;
 			addr = rblk->w_buf.subm->addr;
-			rqd->flags = rrqd->flags;
+			rqd->flags = rblk->w_buf.subm->flags;
 			data = rblk->w_buf.subm->data;
 
 			//JAVIER: THIS SHOULD GO
@@ -1588,6 +1590,7 @@ try:
 			}
 
 			m_rrqd[0].rrqd = rrqd;
+			m_rrqd[0].addr = addr;
 
 			rblk->w_buf.subm++;
 			rblk->w_buf.cur_subm++;
@@ -1605,8 +1608,8 @@ try:
 
 		for (i = 0; i < pgs_to_sync; i++) {
 			rrqd = rblk->w_buf.subm->rrqd;
-			rqd->flags = NVM_IOTYPE_NONE;
 			addr = rblk->w_buf.subm->addr;
+			rqd->flags = rblk->w_buf.subm->flags;
 			data = rblk->w_buf.subm->data;
 #if 0
 			if (rrpc_lock_addr(rrpc, addr, &m_rrqd[i].inflight)) {
@@ -1634,7 +1637,7 @@ try:
 
 			rqd->ppa_list[i] = rrpc_ppa_to_gaddr(dev, addr->addr);
 
-			if (rrqd->flags & NVM_IOTYPE_GC) {
+			if (rblk->w_buf.subm->flags & NVM_IOTYPE_GC) {
 				printk(KERN_CRIT "JAVIER!! GC\n");
 			}
 
@@ -1652,10 +1655,13 @@ try:
 					addr->addr,
 					rrqd->addr->addr,
 					rrqd->nr_pages,
-					rrqd->flags,
+					rblk->w_buf.subm->flags,
 					i, pgs_to_sync);
 				BUG_ON(1);
 			}
+
+			m_rrqd[i].rrqd = rrqd;
+			m_rrqd[i].addr = addr;
 
 			rblk->w_buf.subm++;
 			rblk->w_buf.cur_subm++;
@@ -1664,7 +1670,6 @@ try:
 submit_io:
 		BUG_ON(rblk->w_buf.cur_subm > rblk->w_buf.nentries);
 		spin_unlock(&rblk->w_buf.w_lock);
-		/* spin_unlock_irqrestore(&rlun->parent->lock, flags2); */
 
 		err = nvm_submit_io(dev, rqd);
 		if (err) {
@@ -1672,12 +1677,12 @@ submit_io:
 			mempool_free(rqd, rrpc->rq_pool);
 			bio_put(bio);
 		}
-	/* spin_lock_irqsave(&rlun->parent->lock, flags2); */
 #ifdef CONFIG_NVM_DEBUG
 		atomic_add(pgs_to_sync, &rrpc->sub_writes);
 #endif
 	}
 
+	spin_unlock(&rlun->parent->lock);
 	return;
 
 out5:
@@ -1690,7 +1695,7 @@ out2:
 	bio_put(bio); //Right way to free bio?
 out1:
 	spin_unlock(&rblk->w_buf.w_lock);
-	/* spin_unlock_irqrestore(&rlun->parent->lock, flags2); */
+	spin_unlock(&rlun->parent->lock);
 }
 
 static void rrpc_requeue(struct work_struct *work)

@@ -50,17 +50,18 @@ struct rrpc_rq {
 	struct rrpc_inflight_rq inflight_rq;
 	struct rrpc_addr *addr;
 	int nr_pages;
-	unsigned long flags;
+	atomic_t refs;
 };
 
-struct rrpc_inflight_addr {
-	struct list_head list;
-	struct rrpc_addr *addr;
-};
+// struct rrpc_inflight_addr {
+	// struct list_head list;
+	// struct rrpc_addr *addr;
+// };
 
 //TODO: JAVIER: You do not need addr - it is in inflight
 struct rrpc_multi_rq {
 	// struct rrpc_inflight_addr inflight;
+	struct rrpc_addr *addr;
 	struct rrpc_rq *rrqd;
 };
 
@@ -81,10 +82,10 @@ enum {
 
 struct buf_entry {
 	struct rrpc_rq *rrqd;
-	struct rrpc_addr *addr;
-	sector_t laddr;
-	unsigned long blk_id;
 	void *data;
+	struct rrpc_addr *addr;
+	// unsigned long blk_id;
+	unsigned long flags;
 };
 
 struct rrpc_w_buf {
