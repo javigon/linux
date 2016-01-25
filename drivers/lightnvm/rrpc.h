@@ -82,6 +82,8 @@ enum {
 struct buf_entry {
 	struct rrpc_rq *rrqd;
 	struct rrpc_addr *addr;
+	sector_t laddr;
+	unsigned long blk_id;
 	void *data;
 	int flags;
 };
@@ -101,8 +103,13 @@ struct rrpc_w_buf {
 					 * the media
 					 */
 
+	struct work_struct ws_end;
+	struct rrpc_block *rblk;
+
+	//DEBUGGING
+	unsigned long blk_id;
+
 	spinlock_t w_lock;
-	spinlock_t sync_lock;
 };
 
 struct rrpc_block {
@@ -190,7 +197,7 @@ struct rrpc {
 	spinlock_t rev_lock;
 
 	struct rrpc_inflight inflight_laddrs;
-	struct rrpc_inflight inflight_addrs;
+	// struct rrpc_inflight inflight_addrs;
 
 	mempool_t *addr_pool;
 	mempool_t *page_pool;
@@ -205,6 +212,7 @@ struct rrpc {
 	struct workqueue_struct *krqd_wq;
 	struct workqueue_struct *kgc_wq;
 	struct workqueue_struct *kw_wq;
+	struct workqueue_struct *sync_wq;
 };
 
 struct rrpc_block_gc {
@@ -278,6 +286,7 @@ static inline int rrpc_lock_laddr(struct rrpc *rrpc, sector_t laddr,
 	return __rrpc_lock_laddr(rrpc, laddr, pages, r);
 }
 
+#if 0
 static inline int rrpc_check_addr(struct rrpc *rrpc, struct rrpc_addr *addr)
 {
 	struct rrpc_inflight_addr *t;
@@ -303,11 +312,11 @@ static inline int rrpc_lock_addr(struct rrpc *rrpc, struct rrpc_addr *addr,
 	struct rrpc_inflight_addr *rtmp;
 	unsigned long flags;
 
-	spin_lock_irqsave(&rrpc->inflight_addrs.lock, flags);
+	spin_lock(&rrpc->inflight_addrs.lock);
 	list_for_each_entry(rtmp, &rrpc->inflight_addrs.reqs, list) {
 		if (unlikely(r->addr == rtmp->addr)) {
 			/* physic address is in inflight */
-			spin_unlock_irqrestore(&rrpc->inflight_addrs.lock, flags);
+			spin_unlock(&rrpc->inflight_addrs.lock);
 			return 1;
 		}
 	}
@@ -315,9 +324,30 @@ static inline int rrpc_lock_addr(struct rrpc *rrpc, struct rrpc_addr *addr,
 	r->addr = addr;
 
 	list_add_tail(&r->list, &rrpc->inflight_addrs.reqs);
-	spin_unlock_irqrestore(&rrpc->inflight_addrs.lock, flags);
+	spin_unlock(&rrpc->inflight_addrs.lock);
 	return 0;
 }
+
+static inline void rrpc_unlock_addr(struct rrpc *rrpc,
+						struct rrpc_inflight_addr *r)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&rrpc->inflight_addrs.lock, flags);
+	list_del_init(&r->list);
+	spin_unlock_irqrestore(&rrpc->inflight_addrs.lock, flags);
+}
+
+static inline void rrpc_unlock_addr_range(struct rrpc *rrpc,
+				struct rrpc_multi_rq *r, int nr_addrs)
+{
+	int i;
+
+	for (i = 0; i < nr_addrs; i ++)
+		rrpc_unlock_addr(rrpc, &r[i].inflight);
+}
+
+#endif
 
 static inline struct rrpc_inflight_rq *rrpc_get_inflight_rq(struct rrpc_rq *rrqd)
 {
@@ -346,25 +376,6 @@ static inline void rrpc_unlock_laddr(struct rrpc *rrpc,
 	spin_lock_irqsave(&rrpc->inflight_laddrs.lock, flags);
 	list_del_init(&r->list);
 	spin_unlock_irqrestore(&rrpc->inflight_laddrs.lock, flags);
-}
-
-static inline void rrpc_unlock_addr(struct rrpc *rrpc,
-						struct rrpc_inflight_addr *r)
-{
-	unsigned long flags;
-
-	spin_lock_irqsave(&rrpc->inflight_addrs.lock, flags);
-	list_del_init(&r->list);
-	spin_unlock_irqrestore(&rrpc->inflight_addrs.lock, flags);
-}
-
-static inline void rrpc_unlock_addr_range(struct rrpc *rrpc,
-				struct rrpc_multi_rq *r, int nr_addrs)
-{
-	int i;
-
-	for (i = 0; i < nr_addrs; i ++)
-		rrpc_unlock_addr(rrpc, &r[i].inflight);
 }
 
 static inline void rrpc_unlock_rq(struct rrpc *rrpc, struct rrpc_rq *rrqd,

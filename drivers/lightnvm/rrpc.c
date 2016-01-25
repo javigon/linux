@@ -31,7 +31,6 @@ static int rrpc_page_invalidate(struct rrpc *rrpc, struct rrpc_addr *a)
 {
 	struct rrpc_block *rblk = a->rblk;
 	unsigned int pg_offset;
-	unsigned long flags;
 
 	/* pr_err_ratelimited("INVALIDATE: blk:%lu, addr:%llu, off:%llu\n", */
 				/* rblk->parent->id, a->addr, rrpc->poffset); */
@@ -41,10 +40,10 @@ static int rrpc_page_invalidate(struct rrpc *rrpc, struct rrpc_addr *a)
 	if (a->addr == ADDR_EMPTY || !rblk)
 		return 0;
 
-	if (rrpc_check_addr(rrpc, a))
-		return 1;
+	/* if (rrpc_check_addr(rrpc, a)) */
+		/* return 1; */
 
-	spin_lock_irqsave(&rblk->lock, flags);
+	spin_lock(&rblk->lock);
 
 	div_u64_rem(a->addr, rrpc->dev->pgs_per_blk, &pg_offset);
 	// JAVIER!!!!
@@ -55,7 +54,7 @@ static int rrpc_page_invalidate(struct rrpc *rrpc, struct rrpc_addr *a)
 	/* WARN_ON(test_and_set_bit(pg_offset, rblk->invalid_pages)); */
 	rblk->nr_invalid_pages++;
 
-	spin_unlock_irqrestore(&rblk->lock, flags);
+	spin_unlock(&rblk->lock);
 
 	rrpc->rev_trans_map[a->addr - rrpc->poffset].addr = ADDR_EMPTY;
 
@@ -285,7 +284,6 @@ static struct rrpc_block *rrpc_get_blk(struct rrpc *rrpc, struct rrpc_lun *rlun,
 	struct buf_entry *entries;
 	unsigned long *sync_bitmap;
 	void *data;
-	unsigned long lock_flags;
 	int nentries = dev->pgs_per_blk * dev->sec_per_pg;
 
 	data = mempool_alloc(rrpc->write_buf_pool, GFP_ATOMIC);
@@ -313,11 +311,11 @@ static struct rrpc_block *rrpc_get_blk(struct rrpc *rrpc, struct rrpc_lun *rlun,
 
 	bitmap_zero(sync_bitmap, nentries);
 
-	spin_lock_irqsave(&lun->lock, lock_flags);
+	spin_lock(&lun->lock);
 	blk = nvm_get_blk_unlocked(rrpc->dev, rlun->parent, flags);
 	if (!blk) {
 		pr_err("nvm: rrpc: cannot get new block from media manager\n");
-		spin_unlock_irqrestore(&lun->lock, lock_flags);
+		spin_unlock(&lun->lock);
 		return NULL;
 	}
 
@@ -345,7 +343,7 @@ static struct rrpc_block *rrpc_get_blk(struct rrpc *rrpc, struct rrpc_lun *rlun,
 	spin_lock_init(&rblk->w_buf.w_lock);
 
 	list_add_tail(&rblk->list, &rlun->open_list);
-	spin_unlock_irqrestore(&lun->lock, lock_flags);
+	spin_unlock(&lun->lock);
 
 	return rblk;
 }
@@ -754,9 +752,8 @@ try:
 static u64 rrpc_alloc_addr(struct rrpc *rrpc, struct rrpc_block *rblk)
 {
 	u64 addr = ADDR_EMPTY;
-	unsigned long flags;
 
-	spin_lock_irqsave(&rblk->lock, flags);
+	spin_lock(&rblk->lock);
 	if (block_is_full(rrpc, rblk))
 		goto out;
 
@@ -764,7 +761,7 @@ static u64 rrpc_alloc_addr(struct rrpc *rrpc, struct rrpc_block *rblk)
 
 	rblk->next_page++;
 out:
-	spin_unlock_irqrestore(&rblk->lock, flags);
+	spin_unlock(&rblk->lock);
 	return addr;
 }
 
@@ -847,24 +844,23 @@ static void rrpc_run_gc(struct rrpc *rrpc, struct rrpc_block *rblk)
 }
 
 static void rrpc_sync_buffer(struct rrpc *rrpc,
-					struct rrpc_inflight_addr *inflight)
+					struct rrpc_rq *rrqd)
 {
 	struct rrpc_block *rblk;
 	struct rrpc_w_buf *buf;
 	struct nvm_lun *lun;
-	struct rrpc_addr *p = inflight->addr;
+	struct rrpc_addr *p = rrqd->addr;
 	unsigned long bppa;
-	/* unsigned long flags; */
 
+	BUG_ON(p == NULL);
 	rblk = p->rblk;
+	BUG_ON(rblk == NULL);
 	buf = &rblk->w_buf;
+	BUG_ON(buf == NULL);
 	lun = rblk->parent->lun;
 
-	// JAVIER: Do this more efficiently
 	bppa = rrpc->dev->sec_per_blk * rblk->parent->id;
 
-	// XXX: Javier: Can we simplify locks?
-	/* spin_lock_irqsave(&rblk->w_buf.w_lock, flags); */
 	BUG_ON(test_and_set_bit((p->addr - bppa), buf->sync_bitmap));
 	/* WARN_ON(test_and_set_bit((p->addr - bppa), buf->sync_bitmap)); */
 	buf->cur_sync++; //JAVIER: Do we need this?
@@ -883,8 +879,7 @@ static void rrpc_sync_buffer(struct rrpc *rrpc,
 
 		rrpc_run_gc(rrpc, rblk);
 	}
-	rrpc_unlock_addr(rrpc, inflight);
-	/* spin_unlock_irqrestore(&rblk->w_buf.w_lock, flags); */
+	/* rrpc_unlock_addr(rrpc, inflight); */
 }
 
 static void rrpc_end_io_write(struct rrpc *rrpc, struct nvm_rq *rqd,
@@ -893,8 +888,10 @@ static void rrpc_end_io_write(struct rrpc *rrpc, struct nvm_rq *rqd,
 	struct rrpc_multi_rq *m_rrqd = nvm_rq_to_pdu(rqd);
 	int i;
 
+	BUG_ON(nr_pages > 1);
+
 	for (i = 0; i < nr_pages; i++) {
-		rrpc_sync_buffer(rrpc, &m_rrqd[i].inflight);
+		rrpc_sync_buffer(rrpc, m_rrqd[i].rrqd);
 		rrpc_unlock_rq(rrpc, m_rrqd[i].rrqd, m_rrqd[i].rrqd->nr_pages);
 		mempool_free(m_rrqd[i].rrqd, rrpc->rrq_pool);
 	}
@@ -1032,10 +1029,9 @@ static void rrpc_write_to_buffer(struct rrpc *rrpc, struct bio *bio,
 {
 	struct nvm_dev *dev = rrpc->dev;
 	void *buf;
-	unsigned long lock_flags;
 	unsigned int bio_len = RRPC_EXPOSED_PAGE_SIZE;
 
-	spin_lock_irqsave(&w_buf->w_lock, lock_flags);
+	spin_lock(&w_buf->w_lock);
 
 	BUG_ON(w_buf->cur_mem == w_buf->nentries);
 
@@ -1053,7 +1049,7 @@ static void rrpc_write_to_buffer(struct rrpc *rrpc, struct bio *bio,
 	w_buf->mem++;
 	w_buf->mem->data = w_buf->data + (w_buf->cur_mem * dev->sec_size);
 
-	spin_unlock_irqrestore(&w_buf->w_lock, lock_flags);
+	spin_unlock(&w_buf->w_lock);
 }
 
 static int rrpc_write_ppalist_rq(struct rrpc *rrpc, struct bio *bio,
@@ -1446,7 +1442,7 @@ static void rrpc_submit_write(struct work_struct *work)
 	struct nvm_rq *rqd;
 	struct rrpc_block *rblk, *trblk;
 	struct bio *bio;
-	unsigned long flags;
+	/* unsigned long flags; */
 	/* unsigned long flags2; */
 	int pgs_to_sync, pgs_avail;
 	int entry_flags;
@@ -1463,7 +1459,7 @@ static void rrpc_submit_write(struct work_struct *work)
 try:
 	/* spin_lock_irqsave(&rlun->parent->lock, flags2); */
 	list_for_each_entry_safe_reverse(rblk, trblk, &rlun->open_list, list) {
-		if (!spin_trylock_irqsave(&rblk->w_buf.w_lock, flags))
+		if (!spin_trylock(&rblk->w_buf.w_lock))
 			continue;
 
 		/* If the write thread has already submitted all I/Os in the
@@ -1472,7 +1468,7 @@ try:
 		 * us to avoid taking a lock on the list.
 		 */
 		if (unlikely(rblk->w_buf.cur_subm == rblk->w_buf.nentries)) {
-			spin_unlock_irqrestore(&rblk->w_buf.w_lock, flags);
+			spin_unlock(&rblk->w_buf.w_lock);
 			/* spin_unlock_irqrestore(&rlun->parent->lock, flags2); */
 			schedule();
 			goto try;
@@ -1508,7 +1504,7 @@ try:
 
 		//JAVIER: Better way
 		if (pgs_to_sync == 0) {
-			spin_unlock_irqrestore(&rblk->w_buf.w_lock, flags);
+			spin_unlock(&rblk->w_buf.w_lock);
 			continue;
 		}
 
@@ -1562,13 +1558,13 @@ try:
 				/* BUG_ON(1); */
 			}
 
-			if (rrpc_lock_addr(rrpc, addr, &m_rrqd[0].inflight))
-				goto out3;
+			/* if (rrpc_lock_addr(rrpc, addr, &m_rrqd[0].inflight)) */
+				/* goto out3; */
 
 			err = rrpc_alloc_page_in_bio(rrpc, bio, data);
 			if (err) {
 				printk(KERN_CRIT "ERROR!\n");
-				rrpc_unlock_addr(rrpc, &m_rrqd[0].inflight);
+				/* rrpc_unlock_addr(rrpc, &m_rrqd[0].inflight); */
 				goto out4;
 			}
 
@@ -1625,7 +1621,7 @@ try:
 			addr = rblk->w_buf.subm->addr;
 			entry_flags = rblk->w_buf.subm->flags;
 			data = rblk->w_buf.subm->data;
-
+#if 0
 			if (rrpc_lock_addr(rrpc, addr, &m_rrqd[i].inflight)) {
 				struct rrpc_inflight_rq *r = rrpc_get_inflight_rq(rrqd);
 				printk(KERN_CRIT "Locked: laddr:%lu, addr:%llu!\n",
@@ -1637,11 +1633,11 @@ try:
 				}
 				goto out5;
 			}
-
+#endif
 			err = rrpc_alloc_page_in_bio(rrpc, bio, data);
 			if (err) {
 				printk(KERN_CRIT "ERROR!\n");
-				rrpc_unlock_addr_range(rrpc, m_rrqd, i);
+				/* rrpc_unlock_addr_range(rrpc, m_rrqd, i); */
 				goto out5;
 			}
 
@@ -1684,7 +1680,7 @@ try:
 
 submit_io:
 		BUG_ON(rblk->w_buf.cur_subm > rblk->w_buf.nentries);
-		spin_unlock_irqrestore(&rblk->w_buf.w_lock, flags);
+		spin_unlock(&rblk->w_buf.w_lock);
 		/* spin_unlock_irqrestore(&rlun->parent->lock, flags2); */
 
 		err = nvm_submit_io(dev, rqd);
@@ -1710,7 +1706,7 @@ out3:
 out2:
 	bio_put(bio); //Right way to free bio?
 out1:
-	spin_unlock_irqrestore(&rblk->w_buf.w_lock, flags);
+	spin_unlock(&rblk->w_buf.w_lock);
 	/* spin_unlock_irqrestore(&rlun->parent->lock, flags2); */
 }
 
@@ -1968,8 +1964,8 @@ static int rrpc_core_init(struct rrpc *rrpc)
 	spin_lock_init(&rrpc->inflight_laddrs.lock);
 	INIT_LIST_HEAD(&rrpc->inflight_laddrs.reqs);
 
-	spin_lock_init(&rrpc->inflight_addrs.lock);
-	INIT_LIST_HEAD(&rrpc->inflight_addrs.reqs);
+	/* spin_lock_init(&rrpc->inflight_addrs.lock); */
+	/* INIT_LIST_HEAD(&rrpc->inflight_addrs.reqs); */
 
 	rrpc->kw_wq = alloc_workqueue("rrpc-writer",
 				WQ_MEM_RECLAIM | WQ_UNBOUND, 1);
