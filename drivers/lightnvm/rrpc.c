@@ -914,10 +914,10 @@ static void rrpc_end_io(struct nvm_rq *rqd)
 	struct rrpc_rq *rrqd = nvm_rq_to_pdu(rqd);
 	uint8_t nr_pages = rqd->nr_pages;
 
+	bio_put(rqd->bio);
+
 	if ((bio_data_dir(rqd->bio) == WRITE))
 		rrpc_end_io_write(rrpc, rqd, nr_pages);
-
-	bio_put(rqd->bio);
 
 	//JAVIER
 	/* if (rqd->flags & NVM_IOTYPE_GC) */
@@ -1402,32 +1402,31 @@ static int rrpc_alloc_page_in_bio(struct rrpc *rrpc, struct bio *bio,
 {
 	/* struct request_queue *q = rrpc->dev->q; */
 	struct page *page;
-	/* void *ptr; */
+	void *ptr;
 	int err;
 
-	/* page = mempool_alloc(rrpc->page_pool, GFP_ATOMIC); */
+	page = mempool_alloc(rrpc->page_pool, GFP_ATOMIC);
+	if (!page) {
+		pr_err("nvm: rrpc: could not alloc page\n");
+		return -1;
+	}
+
+	/* BUG_ON(!virt_addr_valid(data)); */
+	/* BUG_ON(PAGE_SIZE != RRPC_EXPOSED_PAGE_SIZE); */
+	/* page = virt_to_page(data); // Can we use this? */
+	/* if (!page) { */
+		/* pr_err("nvm: rrpc: could not alloc page\n"); */
+		/* return -1; */
+	/* } */
+	/* page = alloc_page(GFP_ATOMIC); */
 	/* if (!page) { */
 		/* pr_err("nvm: rrpc: could not alloc page\n"); */
 		/* return -1; */
 	/* } */
 
-	BUG_ON(!virt_addr_valid(data));
-	BUG_ON(PAGE_SIZE != RRPC_EXPOSED_PAGE_SIZE);
-
-	page = virt_to_page(data); // Can we use this?
-	if (!page) {
-		pr_err("nvm: rrpc: could not alloc page\n");
-		return -1;
-	}
-	page = alloc_page(GFP_ATOMIC);
-	if (!page) {
-		pr_err("nvm: rrpc: could not alloc page\n");
-		return -1;
-	}
-
-	/* ptr = kmap(page); */
-	/* memcpy(ptr, data, RRPC_EXPOSED_PAGE_SIZE); */
-	/* kunmap(ptr); */
+	ptr = kmap(page);
+	memcpy(ptr, data, RRPC_EXPOSED_PAGE_SIZE);
+	kunmap(ptr);
 
 	// XXX: Better way to deal with such fail? Retry?
 	err = bio_add_page(bio, page, RRPC_EXPOSED_PAGE_SIZE, 0);
