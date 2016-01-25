@@ -1245,6 +1245,7 @@ static int rrpc_read_from_w_buf(struct rrpc *rrpc, struct nvm_rq *rqd,
 			//happens when logic addresses are scattered
 			//across different LUNS
 			printk(KERN_CRIT "READING PATH NOT DONE\n");
+			atomic_dec(&rblk->w_buf.refs);
 			return -1;
 		}
 		atomic_dec(&rblk->w_buf.refs);
