@@ -85,7 +85,6 @@ struct buf_entry {
 	sector_t laddr;
 	unsigned long blk_id;
 	void *data;
-	int flags;
 };
 
 struct rrpc_w_buf {
