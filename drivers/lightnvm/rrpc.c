@@ -720,7 +720,7 @@ try:
 	if (gp->rblk) {
 		if (rrpc_page_invalidate(rrpc, gp)) {
 			spin_unlock_irqrestore(&rrpc->rev_lock, flags);
-			pr_err_ratelimited("cant: laddr:%lu\n", laddr);
+			printk(KERN_CRIT "cant: laddr:%lu\n", laddr);
 			schedule();
 			goto try;
 		}
@@ -839,7 +839,7 @@ static void rrpc_sync_buffer(struct rrpc *rrpc,
 	struct nvm_lun *lun;
 	struct rrpc_addr *p = inflight->addr;
 	unsigned long bppa;
-	unsigned long flags;
+	/* unsigned long flags; */
 
 	rblk = p->rblk;
 	buf = &rblk->w_buf;
@@ -852,7 +852,7 @@ static void rrpc_sync_buffer(struct rrpc *rrpc,
 	/* spin_lock_irqsave(&rblk->w_buf.w_lock, flags); */
 	BUG_ON(test_and_set_bit((p->addr - bppa), buf->sync_bitmap));
 	/* WARN_ON(test_and_set_bit((p->addr - bppa), buf->sync_bitmap)); */
-	buf->cur_sync++;
+	buf->cur_sync++; //JAVIER: Do we need this?
 
 #ifdef CONFIG_NVM_DEBUG
 		atomic_dec(&rrpc->inflight_writes);
@@ -860,12 +860,11 @@ static void rrpc_sync_buffer(struct rrpc *rrpc,
 #endif
 
 	BUG_ON(buf->cur_sync > buf->cur_subm);
-	if (unlikely(buf->cur_sync == buf->nentries)) {
+	if (unlikely(bitmap_full(buf->sync_bitmap, buf->nentries))) {
 		struct nvm_block *blk = rblk->parent;
 		struct rrpc_lun *rlun = rblk->rlun;
 		unsigned long flags2;
 
-		BUG_ON(!bitmap_full(buf->sync_bitmap, buf->nentries));
 		BUG_ON((buf->cur_mem != buf->cur_sync) &&
 					(buf->cur_mem != buf->nentries) &&
 					(buf->cur_mem != buf->cur_subm));
@@ -891,11 +890,12 @@ static void rrpc_end_io_write(struct rrpc *rrpc, struct nvm_rq *rqd,
 	struct rrpc_multi_rq *m_rrqd = nvm_rq_to_pdu(rqd);
 	int i;
 
-	for (i = 0; i < nr_pages; i++)
+	for (i = 0; i < nr_pages; i++) {
 		rrpc_sync_buffer(rrpc, &m_rrqd[i].inflight);
+		rrpc_unlock_rq(rrpc, m_rrqd[i].rrqd, m_rrqd[i].rrqd->nr_pages);
+		mempool_free(m_rrqd[i].rrqd, rrpc->rrq_pool);
+	}
 
-	rrpc_unlock_rq(rrpc, m_rrqd[0].rrqd, m_rrqd[0].rrqd->nr_pages);
-	mempool_free(m_rrqd[0].rrqd, rrpc->rrq_pool);
 	mempool_free(m_rrqd, rrpc->m_rrq_pool);
 	rrpc_writer_kick(rrpc); // JAVIER: NECESSARY?
 }
@@ -1043,6 +1043,7 @@ static void rrpc_write_to_buffer(struct rrpc *rrpc, struct bio *bio,
 	buf = w_buf->mem->data;
 	memcpy(buf, bio_data(bio), bio_len);
 
+	//JAVIER - This will go
 	BUG_ON(w_buf->mem->rrqd->inflight_rq.l_start > rrpc->nr_pages);
 
 	w_buf->cur_mem++;
@@ -1442,7 +1443,8 @@ static void rrpc_submit_write(struct work_struct *work)
 	struct nvm_rq *rqd;
 	struct rrpc_block *rblk, *trblk;
 	struct bio *bio;
-	unsigned long flags, flags2;
+	unsigned long flags;
+	/* unsigned long flags2; */
 	int pgs_to_sync, pgs_avail;
 	int entry_flags;
 	int sync = NVM_SYNC_HARD;
@@ -1456,7 +1458,7 @@ static void rrpc_submit_write(struct work_struct *work)
 	 * sync strategy performed in this write thread.
 	 */
 try:
-	spin_lock_irqsave(&rlun->parent->lock, flags2);
+	/* spin_lock_irqsave(&rlun->parent->lock, flags2); */
 	list_for_each_entry_safe_reverse(rblk, trblk, &rlun->open_list, list) {
 		if (!spin_trylock_irqsave(&rblk->w_buf.w_lock, flags))
 			continue;
@@ -1468,7 +1470,7 @@ try:
 		 */
 		if (unlikely(rblk->w_buf.cur_subm == rblk->w_buf.nentries)) {
 			spin_unlock_irqrestore(&rblk->w_buf.w_lock, flags);
-			spin_unlock_irqrestore(&rlun->parent->lock, flags2);
+			/* spin_unlock_irqrestore(&rlun->parent->lock, flags2); */
 			schedule();
 			goto try;
 		}
@@ -1680,7 +1682,7 @@ try:
 submit_io:
 		BUG_ON(rblk->w_buf.cur_subm > rblk->w_buf.nentries);
 		spin_unlock_irqrestore(&rblk->w_buf.w_lock, flags);
-		spin_unlock_irqrestore(&rlun->parent->lock, flags2);
+		/* spin_unlock_irqrestore(&rlun->parent->lock, flags2); */
 
 		err = nvm_submit_io(dev, rqd);
 		if (err) {
@@ -1688,13 +1690,12 @@ submit_io:
 			mempool_free(rqd, rrpc->rq_pool);
 			bio_put(bio);
 		}
-	spin_lock_irqsave(&rlun->parent->lock, flags2);
+	/* spin_lock_irqsave(&rlun->parent->lock, flags2); */
 #ifdef CONFIG_NVM_DEBUG
 		atomic_add(pgs_to_sync, &rrpc->sub_writes);
 #endif
 	}
 
-	spin_unlock(&rlun->parent->lock);
 	return;
 
 out5:
@@ -1707,7 +1708,7 @@ out2:
 	bio_put(bio); //Right way to free bio?
 out1:
 	spin_unlock_irqrestore(&rblk->w_buf.w_lock, flags);
-	spin_unlock_irqrestore(&rlun->parent->lock, flags2);
+	/* spin_unlock_irqrestore(&rlun->parent->lock, flags2); */
 }
 
 static void rrpc_requeue(struct work_struct *work)
