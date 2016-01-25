@@ -49,8 +49,8 @@ static int rrpc_page_invalidate(struct rrpc *rrpc, struct rrpc_addr *a)
 	div_u64_rem(a->addr, rrpc->dev->pgs_per_blk, &pg_offset);
 	// JAVIER!!!!
 	if (test_and_set_bit(pg_offset, rblk->invalid_pages)) {
-		printk(KERN_CRIT "blk:%lu, pg_offset:%d, addr:%llu\n",
-				rblk->parent->id, pg_offset, a->addr);
+		printk(KERN_CRIT "blk:%lu, pg_offset:%d, addr:%llu (empty:%llu)\n",
+				rblk->parent->id, pg_offset, a->addr, ADDR_EMPTY);
 	}
 	/* WARN_ON(test_and_set_bit(pg_offset, rblk->invalid_pages)); */
 	rblk->nr_invalid_pages++;
@@ -723,6 +723,11 @@ static struct rrpc_addr *rrpc_update_map(struct rrpc *rrpc, sector_t laddr,
 	}
 	/* BUG_ON(laddr >= rrpc->nr_pages); */
 
+	if (paddr > rrpc->dev->blks_per_lun * rrpc->dev->pgs_per_blk *
+							rrpc->dev->sec_per_pg) {
+		printk("laddr:%lu, blk:%lu, paddr:%llu\n",
+				laddr, rblk->parent->id, paddr);
+	}
 try:
 	gp = &rrpc->trans_map[laddr];
 
