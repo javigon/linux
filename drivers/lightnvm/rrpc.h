@@ -101,6 +101,8 @@ struct rrpc_w_buf {
 					 * the media
 					 */
 
+	atomic_t refs;
+
 	spinlock_t w_lock;
 };
 

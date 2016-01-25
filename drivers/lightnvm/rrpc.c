@@ -203,9 +203,16 @@ static void rrpc_free_w_buffer(struct rrpc *rrpc, struct rrpc_block *rblk)
 	/* printk(KERN_CRIT "Free blk:%lu\n", rblk->parent->id); */
 	//TO GO - can happen in put block
 	struct rrpc_w_buf *buf = &rblk->w_buf;
+
+try:
 	BUG_ON((buf->cur_mem != buf->cur_sync) &&
 					(buf->cur_mem != buf->nentries) &&
 					(buf->cur_mem != buf->cur_subm));
+
+	if (unlikely(atomic_read(&buf->refs) != 0)) {
+		schedule();
+		goto try;
+	}
 
 	/* TODO: Reuse the same buffers if the block size is the same */
 	mempool_free(rblk->w_buf.data, rrpc->write_buf_pool);
@@ -339,6 +346,8 @@ static struct rrpc_block *rrpc_get_blk(struct rrpc *rrpc, struct rrpc_lun *rlun,
 	rblk->w_buf.cur_mem = 0;
 	rblk->w_buf.cur_subm = 0;
 	rblk->w_buf.cur_sync = 0;
+
+	atomic_set(&rblk->w_buf.refs, 0);
 
 	spin_lock_init(&rblk->w_buf.w_lock);
 
@@ -1204,6 +1213,7 @@ static int rrpc_read_from_w_buf(struct rrpc *rrpc, struct nvm_rq *rqd,
 		rblk = rrqd->addr->rblk;
 
 		/* If the write buffer exists, the block is open */
+		atomic_inc(&rblk->w_buf.refs);
 		if (rblk->w_buf.entries) {
 			blk_id = rblk->parent->id;
 			entry = rrqd->addr->addr -
@@ -1211,6 +1221,7 @@ static int rrpc_read_from_w_buf(struct rrpc *rrpc, struct nvm_rq *rqd,
 			read = rrpc_read_w_buf_entry(bio, rblk, entry, 0);
 			left -= read;
 		}
+		atomic_dec(&rblk->w_buf.refs);
 
 		goto out;
 	}
@@ -1220,6 +1231,7 @@ static int rrpc_read_from_w_buf(struct rrpc *rrpc, struct nvm_rq *rqd,
 		rblk = addr->rblk;
 
 		/* If the write buffer exists, the block is open */
+		atomic_inc(&rblk->w_buf.refs);
 		if (rblk->w_buf.entries) {
 			blk_id = rblk->parent->id;
 			entry = addr->addr - (blk_id * dev->sec_per_pg *
@@ -1235,6 +1247,7 @@ static int rrpc_read_from_w_buf(struct rrpc *rrpc, struct nvm_rq *rqd,
 			printk(KERN_CRIT "READING PATH NOT DONE\n");
 			return -1;
 		}
+		atomic_dec(&rblk->w_buf.refs);
 	}
 
 out:
@@ -1399,6 +1412,7 @@ static int rrpc_alloc_page_in_bio(struct rrpc *rrpc, struct bio *bio,
 
 	BUG_ON(!virt_addr_valid(data));
 	BUG_ON(PAGE_SIZE != RRPC_EXPOSED_PAGE_SIZE);
+
 	page = virt_to_page(data); // Can we use this?
 	if (!page) {
 		pr_err("nvm: rrpc: could not alloc page\n");
