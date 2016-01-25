@@ -659,11 +659,21 @@ static void rrpc_gc_queue(struct work_struct *work)
 	struct rrpc_block *rblk = gcb->rblk;
 	struct nvm_lun *lun = rblk->parent->lun;
 	struct rrpc_lun *rlun = &rrpc->luns[lun->id - rrpc->lun_offset];
-	unsigned long flags;
+	struct nvm_block *blk = rblk->parent;
 
-	spin_lock_irqsave(&rlun->lock, flags);
+	spin_lock(&rlun->lock);
 	list_add_tail(&rblk->prio, &rlun->prio_list);
-	spin_unlock_irqrestore(&rlun->lock, flags);
+	spin_unlock(&rlun->lock);
+
+	spin_lock(&lun->lock);
+	lun->nr_open_blocks--;
+	lun->nr_closed_blocks++;
+	blk->state &= ~NVM_BLK_ST_OPEN;
+	blk->state |= NVM_BLK_ST_CLOSED;
+	list_move_tail(&rblk->list, &rlun->closed_list);
+	spin_unlock(&lun->lock);
+
+	rrpc_free_w_buffer(rrpc, rblk);
 
 	mempool_free(gcb, rrpc->gcb_pool);
 	pr_debug("nvm: block '%lu' is full, allow GC (sched)\n",
@@ -861,23 +871,11 @@ static void rrpc_sync_buffer(struct rrpc *rrpc,
 
 	BUG_ON(buf->cur_sync > buf->cur_subm);
 	if (unlikely(bitmap_full(buf->sync_bitmap, buf->nentries))) {
-		struct nvm_block *blk = rblk->parent;
-		struct rrpc_lun *rlun = rblk->rlun;
-		unsigned long flags2;
 
 		BUG_ON((buf->cur_mem != buf->cur_sync) &&
 					(buf->cur_mem != buf->nentries) &&
 					(buf->cur_mem != buf->cur_subm));
 
-		spin_lock_irqsave(&lun->lock, flags2);
-		lun->nr_open_blocks--;
-		lun->nr_closed_blocks++;
-		blk->state &= ~NVM_BLK_ST_OPEN;
-		blk->state |= NVM_BLK_ST_CLOSED;
-		list_move_tail(&rblk->list, &rlun->closed_list);
-		spin_unlock_irqrestore(&lun->lock, flags2);
-
-		rrpc_free_w_buffer(rrpc, rblk);
 		rrpc_run_gc(rrpc, rblk);
 	}
 	rrpc_unlock_addr(rrpc, inflight);
