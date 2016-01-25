@@ -60,7 +60,7 @@ struct rrpc_inflight_addr {
 
 //TODO: JAVIER: You do not need addr - it is in inflight
 struct rrpc_multi_rq {
-	struct rrpc_inflight_addr inflight;
+	// struct rrpc_inflight_addr inflight;
 	struct rrpc_rq *rrqd;
 };
 
