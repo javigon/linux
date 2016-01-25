@@ -976,7 +976,7 @@ static int rrpc_read_ppalist_rq(struct rrpc *rrpc, struct bio *bio,
 			return NVM_IO_DONE;
 		}
 
-		m_rrqd[i].rrqd->addr = gp;
+		m_rrqd[i].addr = gp;
 
 #ifdef CONFIG_NVM_DEBUG
 		atomic_inc(&rrpc->inflight_reads);
@@ -1227,7 +1227,7 @@ static int rrpc_read_from_w_buf(struct rrpc *rrpc, struct nvm_rq *rqd,
 	}
 
 	for (i = 0; i < nr_pages; i++) {
-		addr = m_rrqd[i].rrqd->addr;
+		addr = m_rrqd[i].addr;
 		rblk = addr->rblk;
 
 		/* If the write buffer exists, the block is open */
