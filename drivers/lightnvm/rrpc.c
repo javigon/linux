@@ -1159,15 +1159,14 @@ static int rrpc_read_w_buf_entry(struct bio *bio, struct rrpc_block *rblk,
 	struct page *page;
 	void *kaddr;
 	void *data;
-	unsigned long flags;
 	int read = 0;
 
-	spin_lock_irqsave(&rblk->w_buf.w_lock, flags);
+	spin_lock(&rblk->w_buf.w_lock);
 	if (entry >= rblk->w_buf.cur_mem) {
-		spin_unlock_irqrestore(&rblk->w_buf.w_lock, flags);
+		spin_unlock(&rblk->w_buf.w_lock);
 		goto out;
 	}
-	spin_unlock_irqrestore(&rblk->w_buf.w_lock, flags);
+	spin_unlock(&rblk->w_buf.w_lock);
 
 	read_entry = &rblk->w_buf.entries[entry];
 	data = read_entry->data;

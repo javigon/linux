@@ -60,7 +60,6 @@ struct rrpc_rq {
 
 //TODO: JAVIER: You do not need addr - it is in inflight
 struct rrpc_multi_rq {
-	// struct rrpc_inflight_addr inflight;
 	struct rrpc_addr *addr;
 	struct rrpc_rq *rrqd;
 };
@@ -84,7 +83,6 @@ struct buf_entry {
 	struct rrpc_rq *rrqd;
 	void *data;
 	struct rrpc_addr *addr;
-	// unsigned long blk_id;
 	unsigned long flags;
 };
 
@@ -102,12 +100,6 @@ struct rrpc_w_buf {
 					 * addresses that have been synced to
 					 * the media
 					 */
-
-	struct work_struct ws_end;
-	struct rrpc_block *rblk;
-
-	//DEBUGGING
-	unsigned long blk_id;
 
 	spinlock_t w_lock;
 };
