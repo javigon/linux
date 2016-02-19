@@ -12,6 +12,7 @@ enum {
 	NVM_IOTYPE_NONE = 0,
 	NVM_IOTYPE_GC = 1,
 	NVM_IOTYPE_SYNC = 2,
+	NVM_IOTYPE_BUF = 4,
 };
 
 #define NVM_BLK_BITS (16)
@@ -214,6 +215,7 @@ struct nvm_tgt_instance {
 };
 
 #define ADDR_EMPTY (~0ULL)
+#define ADDR_PADDED (~0ULL - 1)
 
 #define NVM_VERSION_MAJOR 1
 #define NVM_VERSION_MINOR 0
@@ -238,8 +240,6 @@ struct nvm_rq {
 	void *metadata;
 	dma_addr_t dma_metadata;
 
-	void *priv; /* remove me */
-
 	struct completion *wait;
 	nvm_end_io_fn *end_io;
 
@@ -253,14 +253,24 @@ struct nvm_rq {
 
 static inline struct nvm_rq *nvm_rq_from_pdu(void *pdu)
 {
-//	return pdu - sizeof(struct nvm_rq);
-	return container_of(pdu, struct nvm_rq, priv);
+	return pdu - sizeof(struct nvm_rq);
 }
 
 static inline void *nvm_rq_to_pdu(struct nvm_rq *rqdata)
 {
-//	return rqdata + 1;
-	return rqdata->priv;
+	return rqdata + 1;
+}
+
+static inline int nvm_addr_in_cache(struct ppa_addr gp)
+{
+	if (gp.c.is_cached)
+		return 1;
+	return 0;
+}
+
+static inline u64 nvm_addr_to_cacheline(struct ppa_addr gp)
+{
+	return gp.c.line;
 }
 
 struct nvm_block;
@@ -435,10 +445,24 @@ static inline int ppa_to_slc(struct nvm_dev *dev, int slc_pg)
 	return dev->lptbl[slc_pg];
 }
 
+static inline struct ppa_addr addr_to_ppa(u64 paddr)
+{
+	struct ppa_addr ppa;
+
+	ppa.ppa = paddr;
+	return ppa;
+}
+
+static inline u64 ppa_to_addr(struct ppa_addr ppa)
+{
+	return ppa.ppa;
+}
+
 typedef blk_qc_t (nvm_tgt_make_rq_fn)(struct request_queue *, struct bio *);
 typedef sector_t (nvm_tgt_capacity_fn)(void *);
 typedef void *(nvm_tgt_init_fn)(struct nvm_dev *, struct gendisk *, int, int);
 typedef void (nvm_tgt_exit_fn)(void *);
+typedef void (nvm_tgt_print_debug_fn)(void *);
 
 struct nvm_tgt_type {
 	const char *name;
@@ -452,6 +476,9 @@ struct nvm_tgt_type {
 	/* module-specific init/teardown */
 	nvm_tgt_init_fn *init;
 	nvm_tgt_exit_fn *exit;
+
+	/* debugging */
+	nvm_tgt_print_debug_fn *print_debug;
 
 	/* For internal use */
 	struct list_head list;

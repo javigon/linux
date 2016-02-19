@@ -38,71 +38,83 @@
 
 #define NR_PHY_IN_LOG (PBLK_EXPOSED_PAGE_SIZE / PBLK_SECTOR)
 
-struct pblk_inflight {
-	struct list_head reqs;
+/* Sync strategies from write buffer to media */
+enum {
+	NVM_SYNC_SOFT	= 0x0,		/* Only submit at max_write_pgs
+					 * supported by the device, typically 64
+					 * pages (256k). This option ignores
+					 * sync I/Os from the upper layers
+					 * (e.g., REQ_FLUSH, REQ_FUA).
+					 */
+	NVM_SYNC_HARD	= 0x1,		/* Submit the whole buffer. Add padding
+					 * if necessary to respect the device's
+					 * min_write_pgs. Respect sync I/Os.
+					 */
+	NVM_SYNC_OPORT	= 0x2,		/* Submit what we can, always respecting
+					 * the device's min_write_pgs and sync
+					 * I/Os.
+					 */
+};
+
+struct pblk_l2p_lock {
+	struct list_head lock_list;
 	spinlock_t lock;
 };
 
-struct pblk_inflight_rq {
+struct pblk_l2p_update_ctx {
 	struct list_head list;
 	sector_t l_start;
 	sector_t l_end;
 };
 
-struct pblk_rq {
-	struct pblk *pblk;
-	struct pblk_addr *addr;
-	struct pblk_inflight_rq inflight_rq;
-	int nr_pages;
-
-	struct kref refs;
+/* Logical to physical mapping */
+struct pblk_addr {
+	struct ppa_addr ppa;		/* cacheline OR physical address */
+	struct pblk_block *rblk;	/* reference to pblk block for lookup */
 };
 
-struct pblk_buf_rq {
-	struct pblk_addr *addr;
-	struct pblk_rq *rrqd;
+/* Write context */
+struct pblk_w_ctx {
+	struct bio *bio;		/* Original bio - used for completing in
+					 * REQ_FUA, REQ_FLUSH case
+					 */
+	struct pblk_l2p_update_ctx upt_ctx;
+	sector_t lba;			/* Logic addr. associated with entry */
+	struct pblk_addr ppa;		/* Physic addr. associated with entry */
+	int flags;			/* Write context flags */
 };
 
-/* Sync strategies from write buffer to media */
-enum {
-	NVM_SYNC_SOFT	= 0x0,		/* Only submit at max_write_pgs
-					 * supported by the device. Typically 64
-					 * pages (256k).
-					 */
-	NVM_SYNC_HARD	= 0x1,		/* Submit the whole buffer. Add padding
-					 * if necessary to respect the device's
-					 * min_write_pgs.
-					 */
-	NVM_SYNC_OPORT	= 0x2,		/* Submit what we can, always respecting
-					 * the device's min_write_pgs.
-					 */
+struct pblk_rb_entry {
+	void *data;			/* Pointer to data on this entry */
+	struct pblk_w_ctx w_ctx;	/* Context for this entry */
 };
 
-struct buf_entry {
-	struct pblk_rq *rrqd;
-	void *data;
-	struct pblk_addr *addr;
-	unsigned long flags;
-};
-
-struct pblk_w_buf {
-	struct buf_entry *entries;	/* Entries */
-	struct buf_entry *mem;		/* Points to the next writable entry */
-	struct buf_entry *subm;		/* Points to the last submitted entry */
-	int cur_mem;			/* Current memory entry. Follows mem */
-	int cur_subm;			/* Entries have been submitted to dev */
-	int nentries;			/* Number of entries in write buffer */
-
-	void *data;			/* Actual data */
-	unsigned long *sync_bitmap;	/* Bitmap representing physical
-					 * addresses that have been synced to
-					 * the media
+struct pblk_rb {
+	struct pblk_rb_entry *entries;	/* Ring buffer entries */
+	unsigned long mem;		/* Write offset - points to next
+					 * writable entry in memory
 					 */
+	unsigned long subm;		/* Read offset - points to last entry
+					 * that has been submitted to the media
+					 * to be persisted
+					 */
+	unsigned long nentries;		/* Number of entries in write buffer -
+					   must be a power of two */
+	unsigned long grace_area;	/* Space in buffer that must be
+					 * respected between head and tail. This
+					 * space is memory-specific.
+					 */
+	unsigned long data_size;	/* Data buffer size in bytes - must be a
+					 * power of two.
+					 */
+	unsigned int seg_size;		/* Size of the data segments being
+					 * stored on each entry. Typically this
+					 * will be 4KB */
 
-	atomic_t refs;
+	void *data;			/* Data buffer*/
 
-	spinlock_t w_lock;
-	spinlock_t s_lock;
+	spinlock_t w_lock;		/* Write lock */
+	spinlock_t s_lock;		/* Submit lock */
 };
 
 struct pblk_block {
@@ -110,13 +122,17 @@ struct pblk_block {
 	struct pblk_lun *rlun;
 	struct list_head prio;
 	struct list_head list;
-	struct pblk_w_buf w_buf;
 
-#define MAX_INVALID_PAGES_STORAGE 8
+	unsigned long *sync_bitmap;	/* Bitmap representing physical
+					 * addresses that have been synced to
+					 * the media
+					 */
+
+#define MAX_INVALID_PAGES_STORAGE 64
 	/* Bitmap for invalid page entries */
 	unsigned long invalid_pages[MAX_INVALID_PAGES_STORAGE];
-	/* points to the next writable page within a block */
-	unsigned int next_page;
+	/* Bitmap for free (0) / used pages (1) in the block */
+	unsigned long *pages;
 	/* number of pages that are invalid, wrt host page size */
 	unsigned int nr_invalid_pages;
 
@@ -139,8 +155,8 @@ struct pblk_lun {
 					 */
 
 	struct work_struct ws_gc;
-	struct work_struct ws_writer;
 
+	spinlock_t lock_lists;
 	spinlock_t lock;
 };
 
@@ -162,6 +178,8 @@ struct pblk {
 	unsigned long long nr_sects;
 	unsigned long total_blocks;
 
+	struct pblk_rb rwb;
+
 	int min_write_pgs; /* minimum amount of pages required by controller */
 	int max_write_pgs; /* maximum amount of pages supported by controller */
 
@@ -174,32 +192,30 @@ struct pblk {
 
 #ifdef CONFIG_NVM_DEBUG
 	atomic_t inflight_writes;
+	atomic_t padded_writes;
 	atomic_t req_writes;
 	atomic_t sub_writes;
 	atomic_t sync_writes;
 	atomic_t inflight_reads;
+	atomic_t sync_reads;
 #endif
 
 	spinlock_t bio_lock;
 	struct bio_list requeue_bios;
 	struct work_struct ws_requeue;
+	struct work_struct ws_writer;
 
 	/* Simple translation map of logical addresses to physical addresses.
 	 * The logical addresses is known by the host system, while the physical
 	 * addresses are used when writing to the disk block device.
 	 */
 	struct pblk_addr *trans_map;
-	/* also store a reverse map for garbage collection */
-	struct pblk_rev_addr *rev_trans_map;
-	spinlock_t rev_lock;
-
-	struct pblk_inflight inflights;
+	struct pblk_l2p_lock l2p_locks;
 
 	mempool_t *page_pool;
 	mempool_t *gcb_pool;
-	mempool_t *rq_pool;
-	mempool_t *rrq_pool;
-	mempool_t *flush_pool;
+	mempool_t *r_rq_pool;
+	mempool_t *w_rq_pool;
 
 	struct timer_list gc_timer;
 	struct workqueue_struct *krqd_wq;
@@ -213,24 +229,66 @@ struct pblk_block_gc {
 	struct work_struct ws_gc;
 };
 
-/* Logical to physical mapping */
-struct pblk_addr {
-	u64 addr;
-	struct pblk_block *rblk;
-};
+/* pblk ring buffer operations */
+int pblk_rb_init(struct pblk_rb *rb, struct pblk_rb_entry *rb_entry_base,
+			void *rb_data_base, unsigned long grace_area_sz,
+			unsigned int power_size, unsigned int power_seg_sz);
+int pblk_rb_write_entry(struct pblk_rb *rb, void *data, struct pblk_w_ctx w_ctx,
+							unsigned int pos);
+unsigned long pblk_rb_write_init(struct pblk_rb *rb);
+void pblk_rb_write_commit(struct pblk_rb *rb, unsigned int nentries);
+void pblk_rb_write_rollback(struct pblk_rb *rb);
+unsigned long pblk_rb_count_init(struct pblk_rb *rb);
+unsigned int pblk_rb_read(struct pblk_rb *rb, void *buf,
+					struct pblk_w_ctx *w_ctx_list,
+					unsigned int nentries);
+void pblk_rb_read_commit(struct pblk_rb *rb, unsigned int entries);
+void pblk_rb_read_rollback(struct pblk_rb *rb);
+unsigned int pblk_rb_read_entry_to_bio(struct pblk_rb *rb, struct bio *bio,
+								u64 pos);
+// unsigned pblk_rb_get_ref(struct pblk_rb *rb, void *ptr, unsigned nentries);
+// unsigned pblk_rb_get_ref_lock(struct pblk_rb *rb, void *ptr, unsigned nentries);
+// void pblk_rb_commit(struct pblk_rb *rb, int rw);
 
-/* Physical to logical mapping */
-struct pblk_rev_addr {
-	u64 addr;
-};
+unsigned long pblk_rb_space(struct pblk_rb *rb);
+unsigned long pblk_rb_count(struct pblk_rb *rb);
+
+static inline void pblk_memcpy_addr(struct pblk_addr *to,
+							struct pblk_addr *from)
+{
+	to->ppa = from->ppa;
+	to->rblk = from->rblk;
+}
+
+/* Calculate the page offset of within a block from a generic address */
+static inline unsigned int pblk_gaddr_to_pg_offset(struct nvm_dev *dev,
+							struct ppa_addr p)
+{
+	/* FIXME: The calculation is correct, but the variable naming is
+	 * misleading. Change this.
+	 */
+	return (unsigned int) (p.g.pg * dev->sec_per_pl) +
+				(p.g.pl * dev->sec_per_pg ) + p.g.sec;
+}
+
+static inline struct ppa_addr pblk_cacheline_to_ppa(u64 addr)
+{
+	struct ppa_addr gp;
+
+	//TODO: Check that last bit is not set
+	gp.c.line = (u64)addr;
+	gp.c.is_cached = 1;
+
+	return gp;
+}
 
 static inline struct pblk_block *pblk_get_rblk(struct pblk_lun *rlun,
 								int blk_id)
 {
 	struct pblk *pblk = rlun->pblk;
-	int blk_pos = blk_id % pblk->dev->blks_per_lun;
+	int lun_blk = blk_id % pblk->dev->blks_per_lun;
 
-	return &rlun->blocks[blk_pos];
+	return &rlun->blocks[lun_blk];
 }
 
 static inline sector_t pblk_get_laddr(struct bio *bio)
@@ -248,25 +306,23 @@ static inline sector_t pblk_get_sector(sector_t laddr)
 	return laddr * NR_PHY_IN_LOG;
 }
 
-static inline int request_intersects(struct pblk_inflight_rq *r,
+static inline int request_intersects(struct pblk_l2p_update_ctx *r,
 				sector_t laddr_start, sector_t laddr_end)
 {
 	return (laddr_end >= r->l_start) && (laddr_start <= r->l_end);
 }
 
 static int __pblk_lock_laddr(struct pblk *pblk, sector_t laddr,
-				unsigned pages, struct pblk_inflight_rq *r)
+				unsigned pages, struct pblk_l2p_update_ctx *r)
 {
 	sector_t laddr_end = laddr + pages - 1;
-	struct pblk_inflight_rq *rtmp;
+	struct pblk_l2p_update_ctx *rtmp;
 
-	WARN_ON(irqs_disabled());
-
-	spin_lock_irq(&pblk->inflights.lock);
-	list_for_each_entry(rtmp, &pblk->inflights.reqs, list) {
+	spin_lock(&pblk->l2p_locks.lock);
+	list_for_each_entry(rtmp, &pblk->l2p_locks.lock_list, list) {
 		if (unlikely(request_intersects(rtmp, laddr, laddr_end))) {
 			/* existing, overlapping request, come back later */
-			spin_unlock_irq(&pblk->inflights.lock);
+			spin_unlock(&pblk->l2p_locks.lock);
 			return 1;
 		}
 	}
@@ -274,54 +330,45 @@ static int __pblk_lock_laddr(struct pblk *pblk, sector_t laddr,
 	r->l_start = laddr;
 	r->l_end = laddr_end;
 
-	list_add_tail(&r->list, &pblk->inflights.reqs);
-	spin_unlock_irq(&pblk->inflights.lock);
+	list_add_tail(&r->list, &pblk->l2p_locks.lock_list);
+	spin_unlock(&pblk->l2p_locks.lock);
 	return 0;
 }
 
 static inline int pblk_lock_laddr(struct pblk *pblk, sector_t laddr,
 				unsigned pages,
-				struct pblk_inflight_rq *r)
+				struct pblk_l2p_update_ctx *r)
 {
 	BUG_ON((laddr + pages) > pblk->nr_sects);
 
 	return __pblk_lock_laddr(pblk, laddr, pages, r);
 }
 
-static inline struct pblk_inflight_rq
-				*pblk_get_inflight_rq(struct pblk_rq *rrqd)
-{
-	return &rrqd->inflight_rq;
-}
-
 static inline int pblk_lock_rq(struct pblk *pblk, struct bio *bio,
-							struct pblk_rq *rrqd)
+					struct pblk_l2p_update_ctx *l2p_ctx)
 {
 	sector_t laddr = pblk_get_laddr(bio);
 	unsigned int pages = pblk_get_pages(bio);
-	struct pblk_inflight_rq *r = pblk_get_inflight_rq(rrqd);
 
-	return pblk_lock_laddr(pblk, laddr, pages, r);
+	return pblk_lock_laddr(pblk, laddr, pages, l2p_ctx);
 }
 
 static inline void pblk_unlock_laddr(struct pblk *pblk,
-						struct pblk_inflight_rq *r)
+						struct pblk_l2p_update_ctx *r)
 {
-	unsigned long flags;
-
-	spin_lock_irqsave(&pblk->inflights.lock, flags);
+	spin_lock(&pblk->l2p_locks.lock);
 	list_del_init(&r->list);
-	spin_unlock_irqrestore(&pblk->inflights.lock, flags);
+	spin_unlock(&pblk->l2p_locks.lock);
 }
 
-static inline void pblk_unlock_rq(struct pblk *pblk, struct pblk_rq *rrqd)
+static inline void pblk_unlock_rq(struct pblk *pblk, struct bio *bio,
+					struct pblk_l2p_update_ctx *l2p_ctx)
 {
-	struct pblk_inflight_rq *r = pblk_get_inflight_rq(rrqd);
-	uint8_t nr_pages = rrqd->nr_pages;
+	unsigned int nr_pages = pblk_get_pages(bio);
 
-	BUG_ON((r->l_start + nr_pages) > pblk->nr_sects);
+	BUG_ON((l2p_ctx->l_start + nr_pages) > pblk->nr_sects);
 
-	pblk_unlock_laddr(pblk, r);
+	pblk_unlock_laddr(pblk, l2p_ctx);
 }
 
 #endif /* PBLK_H_ */

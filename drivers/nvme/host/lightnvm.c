@@ -539,7 +539,7 @@ static int nvme_nvm_submit_io(struct nvm_dev *dev, struct nvm_rq *rqd)
 		return -ENOMEM;
 
 	cmd = kzalloc(sizeof(struct nvme_nvm_command) +
-				sizeof(struct nvme_nvm_completion), GFP_KERNEL);
+				sizeof(struct nvme_nvm_completion), GFP_ATOMIC);
 	if (!cmd) {
 		blk_mq_free_request(rq);
 		return -ENOMEM;

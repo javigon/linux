@@ -20,12 +20,15 @@
 
 #include "pblk.h"
 
-static struct kmem_cache *pblk_gcb_cache, *pblk_rq_cache, *pblk_rrq_cache,
-			*pblk_buf_rrq_cache, *pblk_wb_cache, *pblk_block_cache;
+static struct kmem_cache *pblk_gcb_cache, *pblk_r_rq_cache, *pblk_w_rq_cache;
+static unsigned long pblk_r_rq_size, pblk_w_rq_size;
 static DECLARE_RWSEM(pblk_lock);
 
 static int pblk_submit_io(struct pblk *pblk, struct bio *bio,
-				struct pblk_rq *rqd, unsigned long flags);
+							unsigned long flags);
+//TODO
+/* static void pblk_flush_completion(struct pblk_rq *rrqd, */
+						/* struct completion *wait); */
 
 #define pblk_for_each_lun(pblk, rlun, i) \
 		for ((i) = 0, rlun = &(pblk)->luns[0]; \
@@ -36,45 +39,39 @@ static void pblk_page_invalidate(struct pblk *pblk, struct pblk_addr *a)
 	struct pblk_block *rblk = a->rblk;
 	unsigned int pg_offset;
 
-	lockdep_assert_held(&pblk->rev_lock);
+	BUG_ON(nvm_addr_in_cache(a->ppa));
 
-	if (a->addr == ADDR_EMPTY || !rblk)
+	if (a->ppa.ppa == ADDR_EMPTY) {
+		BUG_ON(a->rblk);
 		return;
+	}
 
-	spin_lock(&rblk->lock);
-
-	div_u64_rem(a->addr, pblk->dev->pgs_per_blk, &pg_offset);
+	pg_offset = pblk_gaddr_to_pg_offset(pblk->dev, a->ppa);
 	WARN_ON(test_and_set_bit(pg_offset, rblk->invalid_pages));
 	rblk->nr_invalid_pages++;
 
-	spin_unlock(&rblk->lock);
-
-	pblk->rev_trans_map[a->addr - pblk->poffset].addr = ADDR_EMPTY;
+	ppa_set_empty(&a->ppa);
+	a->rblk = NULL;
 }
 
+//TODO
+#if 0
 static void pblk_invalidate_range(struct pblk *pblk, sector_t slba,
 								unsigned len)
 {
 	sector_t i;
 
-	spin_lock(&pblk->rev_lock);
+	spin_lock(&pblk->l2p_lock);
 	for (i = slba; i < slba + len; i++) {
 		struct pblk_addr *gp = &pblk->trans_map[i];
 
 		pblk_page_invalidate(pblk, gp);
-		gp->rblk = NULL;
 	}
-	spin_unlock(&pblk->rev_lock);
+	spin_unlock(&pblk->l2p_lock);
 }
+#endif
 
-static void pblk_free_rrqd(struct kref *ref)
-{
-	struct pblk_rq *rrqd = container_of(ref, struct pblk_rq, refs);
-	struct pblk *pblk = rrqd->pblk;
-
-	mempool_free(rrqd, pblk->rrq_pool);
-}
-
+#if 0
 static void pblk_release_and_free_rrqd(struct kref *ref)
 {
 	struct pblk_rq *rrqd = container_of(ref, struct pblk_rq, refs);
@@ -93,8 +90,10 @@ static struct pblk_rq *pblk_inflight_laddr_acquire(struct pblk *pblk,
 	rrqd = mempool_alloc(pblk->rrq_pool, GFP_ATOMIC);
 	if (!rrqd)
 		return ERR_PTR(-ENOMEM);
-	rrqd->pblk = pblk;
+	memset(rrqd, 0, sizeof(struct pblk_rq));
 	kref_init(&rrqd->refs);
+
+	rrqd->pblk = pblk;
 
 	inf = pblk_get_inflight_rq(rrqd);
 	if (pblk_lock_laddr(pblk, laddr, pages, inf)) {
@@ -109,7 +108,10 @@ static void pblk_inflight_laddr_release(struct pblk *pblk, struct pblk_rq *rrqd)
 {
 	kref_put(&rrqd->refs, pblk_release_and_free_rrqd);
 }
+#endif
 
+//TODO
+#if 0
 static void pblk_discard(struct pblk *pblk, struct bio *bio)
 {
 	sector_t slba = bio->bi_iter.bi_sector / NR_PHY_IN_LOG;
@@ -130,24 +132,56 @@ static void pblk_discard(struct pblk *pblk, struct bio *bio)
 	pblk_invalidate_range(pblk, slba, len);
 	pblk_inflight_laddr_release(pblk, rrqd);
 }
+#endif
 
 static int block_is_full(struct pblk *pblk, struct pblk_block *rblk)
 {
-	return (rblk->next_page == pblk->dev->pgs_per_blk);
+	return (bitmap_full(rblk->pages, pblk->dev->sec_per_blk));
 }
 
+
+//TODO
+#if 0
+/* Calculate relative addr for the given block, considering instantiated LUNs */
+static u64 block_to_rel_addr(struct pblk *pblk, struct pblk_block *rblk)
+{
+	struct nvm_block *blk = rblk->parent;
+	int lun_blk = blk->id % (pblk->dev->blks_per_lun * pblk->nr_luns);
+
+	return lun_blk * pblk->dev->sec_per_blk;
+}
+#endif
+
+/* Calculate global addr for the given block */
 static u64 block_to_addr(struct pblk *pblk, struct pblk_block *rblk)
 {
 	struct nvm_block *blk = rblk->parent;
 
-	return blk->id * pblk->dev->pgs_per_blk;
+	return blk->id * pblk->dev->sec_per_blk;
 }
 
+static u64 global_addr(struct pblk *pblk, struct pblk_block *rblk, u64 paddr)
+{
+	return block_to_addr(pblk, rblk) + paddr;
+}
+
+static inline u64 pblk_next_free_pg(struct pblk *pblk, struct pblk_block *rblk)
+{
+	struct nvm_dev *dev = pblk->dev;
+	int free_page;
+
+	lockdep_assert_held(&rblk->lock);
+
+	free_page = find_first_zero_bit(rblk->pages, dev->sec_per_blk);
+	WARN_ON(test_and_set_bit(free_page, rblk->pages));
+
+	return free_page;
+}
 static struct ppa_addr linear_to_generic_addr(struct nvm_dev *dev,
 							struct ppa_addr r)
 {
 	struct ppa_addr l;
-	int secs, pgs, blks, luns;
+	int secs, pgs, pls, blks, luns;
 	sector_t ppa = r.ppa;
 
 	l.ppa = 0;
@@ -156,7 +190,11 @@ static struct ppa_addr linear_to_generic_addr(struct nvm_dev *dev,
 	l.g.sec = secs;
 
 	sector_div(ppa, dev->sec_per_pg);
-	div_u64_rem(ppa, dev->sec_per_blk, &pgs);
+	div_u64_rem(ppa, dev->nr_planes, &pls);
+	l.g.pl = pls;
+
+	sector_div(ppa, dev->nr_planes);
+	div_u64_rem(ppa, dev->pgs_per_blk, &pgs);
 	l.g.pg = pgs;
 
 	sector_div(ppa, dev->pgs_per_blk);
@@ -194,56 +232,34 @@ static void pblk_set_lun_cur(struct pblk_lun *rlun, struct pblk_block *rblk)
 	rlun->cur = rblk;
 }
 
-static void pblk_free_w_buffer(struct pblk *pblk, struct pblk_block *rblk)
-{
-try:
-	spin_lock(&rblk->w_buf.s_lock);
-	if (atomic_read(&rblk->w_buf.refs) > 0) {
-		spin_unlock(&rblk->w_buf.s_lock);
-		schedule();
-		goto try;
-	}
-
-	mempool_free(rblk->w_buf.entries, pblk->block_pool);
-	rblk->w_buf.entries = NULL;
-	spin_unlock(&rblk->w_buf.s_lock);
-
-	/* TODO: Reuse the same buffers if the block size is the same */
-	mempool_free(rblk->w_buf.data, pblk->write_buf_pool);
-	kfree(rblk->w_buf.sync_bitmap);
-
-	rblk->w_buf.mem = NULL;
-	rblk->w_buf.subm = NULL;
-	rblk->w_buf.sync_bitmap = NULL;
-	rblk->w_buf.data = NULL;
-	rblk->w_buf.nentries = 0;
-	rblk->w_buf.cur_mem = 0;
-	rblk->w_buf.cur_subm = 0;
-}
-
 static void pblk_put_blk(struct pblk *pblk, struct pblk_block *rblk)
 {
 	struct pblk_lun *rlun = rblk->rlun;
 	struct nvm_lun *lun = rlun->parent;
-	struct pblk_w_buf *buf = &rblk->w_buf;
 
-try:
-	spin_lock(&buf->w_lock);
-	/* Flush inflight I/Os */
-	if (!bitmap_full(buf->sync_bitmap, buf->cur_mem)) {
-		spin_unlock(&buf->w_lock);
-		schedule();
-		goto try;
-	}
-	spin_unlock(&buf->w_lock);
+	//TODO
+/* try_sync: */
+	/* Flushing inflight I/Os */
+	/* if (!bitmap_full(w_buf->sync_bitmap, w_buf->cur_mem)) { */
+		/* schedule(); */
+		/* goto try_sync; */
+	/* } */
 
-	if (rblk->w_buf.entries)
-		pblk_free_w_buffer(pblk, rblk);
+/* try_refs: */
+	/* if (!kref_put(&rblk->w_buf.refs, pblk_free_w_buffer)) { */
+		/* schedule(); */
+		/* goto try_refs; */
+	/* } */
 
 	spin_lock(&lun->lock);
 	nvm_put_blk_unlocked(pblk->dev, rblk->parent);
-	list_del(&rblk->list);
 	spin_unlock(&lun->lock);
+
+	spin_lock(&rlun->lock_lists);
+	list_del(&rblk->list);
+	spin_unlock(&rlun->lock_lists);
+
+	kfree(rblk->pages);
 }
 
 static void pblk_put_blks(struct pblk *pblk)
@@ -267,70 +283,65 @@ static struct pblk_block *pblk_get_blk(struct pblk *pblk, struct pblk_lun *rlun,
 	struct nvm_lun *lun = rlun->parent;
 	struct nvm_block *blk;
 	struct pblk_block *rblk;
-	struct buf_entry *entries;
-	unsigned long *sync_bitmap;
-	void *data;
-	int nentries = dev->pgs_per_blk * dev->sec_per_pg;
+	unsigned long *sync_bitmap, *page_bitmap;
+	int nr_entries = dev->sec_per_blk;
 
-	data = mempool_alloc(pblk->write_buf_pool, GFP_ATOMIC);
-	if (!data) {
-		pr_err("nvm: pblk: cannot allocate write buffer for block\n");
-		return NULL;
-	}
-
-	entries = mempool_alloc(pblk->block_pool, GFP_ATOMIC);
-	if (!entries) {
-		pr_err("nvm: pblk: cannot allocate write buffer for block\n");
-		mempool_free(data, pblk->write_buf_pool);
-		return NULL;
-	}
-
-	/* TODO: Mempool? */
-	sync_bitmap = kmalloc(BITS_TO_LONGS(nentries) *
-					sizeof(unsigned long), GFP_ATOMIC);
+	sync_bitmap = kmalloc(BITS_TO_LONGS(nr_entries) * sizeof(unsigned long),
+								GFP_KERNEL);
 	if (!sync_bitmap) {
-		mempool_free(data, pblk->write_buf_pool);
-		mempool_free(entries, pblk->block_pool);
-		return NULL;
+		pr_err("nvm: pblk: cannot allocate sync_bitmap for block\n");
+		goto fail_alloc_sync;
 	}
+	bitmap_zero(sync_bitmap, nr_entries);
 
-	bitmap_zero(sync_bitmap, nentries);
+	page_bitmap = kmalloc(BITS_TO_LONGS(nr_entries) * sizeof(unsigned long),
+								GFP_KERNEL);
+	if (!page_bitmap) {
+		pr_err("nvm: pblk: cannot allocate page_bitmap for block\n");
+		goto fail_alloc_page;
+	}
+	bitmap_zero(page_bitmap, nr_entries);
 
 	spin_lock(&lun->lock);
-	blk = nvm_get_blk_unlocked(pblk->dev, rlun->parent, flags);
+	blk = nvm_get_blk_unlocked(pblk->dev, lun, flags);
 	if (!blk) {
 		pr_err("nvm: pblk: cannot get new block from media manager\n");
 		spin_unlock(&lun->lock);
-		return NULL;
+		goto fail_get_blk;
 	}
+	spin_unlock(&lun->lock);
 
 	rblk = pblk_get_rblk(rlun, blk->id);
 
 	blk->priv = rblk;
-	bitmap_zero(rblk->invalid_pages, dev->pgs_per_blk);
-	rblk->next_page = 0;
+	bitmap_zero(rblk->invalid_pages, dev->sec_per_blk);
+	rblk->pages = page_bitmap;
+	rblk->sync_bitmap = sync_bitmap;
 	rblk->nr_invalid_pages = 0;
 
-	rblk->w_buf.data = data;
-	rblk->w_buf.entries = entries;
-	rblk->w_buf.sync_bitmap = sync_bitmap;
-
-	rblk->w_buf.entries->data  = rblk->w_buf.data;
-	rblk->w_buf.mem = rblk->w_buf.entries;
-	rblk->w_buf.subm = rblk->w_buf.entries;
-	rblk->w_buf.nentries = nentries;
-	rblk->w_buf.cur_mem = 0;
-	rblk->w_buf.cur_subm = 0;
-
-	atomic_set(&rblk->w_buf.refs, 0);
-
-	spin_lock_init(&rblk->w_buf.w_lock);
-	spin_lock_init(&rblk->w_buf.s_lock);
-
+	spin_lock(&rlun->lock_lists);
 	list_add_tail(&rblk->list, &rlun->open_list);
-	spin_unlock(&lun->lock);
+	spin_unlock(&rlun->lock_lists);
+
+	if (nvm_erase_blk(dev, rblk->parent))
+		goto fail_erase;
 
 	return rblk;
+
+fail_erase:
+	spin_lock(&lun->lock);
+	nvm_put_blk_unlocked(pblk->dev, rblk->parent);
+	spin_unlock(&lun->lock);
+
+	spin_lock(&rlun->lock_lists);
+	list_del(&rblk->list);
+	spin_unlock(&rlun->lock_lists);
+fail_get_blk:
+	kfree(page_bitmap);
+fail_alloc_page:
+	kfree(sync_bitmap);
+fail_alloc_sync:
+	return NULL;
 }
 
 static struct pblk_lun *get_next_lun(struct pblk *pblk)
@@ -353,13 +364,7 @@ static void pblk_gc_kick(struct pblk *pblk)
 
 static void pblk_writer_kick(struct pblk *pblk)
 {
-	struct pblk_lun *rlun;
-	unsigned int i;
-
-	for (i = 0; i < pblk->nr_luns; i++) {
-		rlun = &pblk->luns[i];
-		queue_work(pblk->kw_wq, &rlun->ws_writer);
-	}
+	queue_work(pblk->kw_wq, &pblk->ws_writer);
 }
 
 /*
@@ -373,6 +378,8 @@ static void pblk_gc_timer(unsigned long data)
 	mod_timer(&pblk->gc_timer, jiffies + msecs_to_jiffies(10));
 }
 
+//TODO
+#if 0
 static void pblk_end_sync_bio(struct bio *bio)
 {
 	struct completion *waiting = bio->bi_private;
@@ -382,6 +389,7 @@ static void pblk_end_sync_bio(struct bio *bio)
 
 	complete(waiting);
 }
+#endif
 
 /*
  * pblk_move_valid_pages -- migrate live data off the block
@@ -395,17 +403,20 @@ static void pblk_end_sync_bio(struct bio *bio)
  */
 static int pblk_move_valid_pages(struct pblk *pblk, struct pblk_block *rblk)
 {
+	return 0;
+#if 0
 	struct request_queue *q = pblk->dev->q;
 	struct pblk_rev_addr *rev;
 	struct pblk_rq *rrqd;
 	struct bio *bio;
 	struct page *page;
 	int slot;
-	int nr_pgs_per_blk = pblk->dev->pgs_per_blk;
+	int nr_sec_per_blk = pblk->dev->sec_per_blk;
+	int ret;
 	u64 phys_addr;
 	DECLARE_COMPLETION_ONSTACK(wait);
 
-	if (bitmap_full(rblk->invalid_pages, nr_pgs_per_blk))
+	if (bitmap_full(rblk->invalid_pages, nr_sec_per_blk))
 		return 0;
 
 	bio = bio_alloc(GFP_NOIO, 1);
@@ -421,10 +432,10 @@ static int pblk_move_valid_pages(struct pblk *pblk, struct pblk_block *rblk)
 	}
 
 	while ((slot = find_first_zero_bit(rblk->invalid_pages,
-					nr_pgs_per_blk)) < nr_pgs_per_blk) {
+					nr_sec_per_blk)) < nr_sec_per_blk) {
 
 		/* Lock laddr */
-		phys_addr = (rblk->parent->id * nr_pgs_per_blk) + slot;
+		phys_addr = (rblk->parent->id * nr_sec_per_blk) + slot;
 
 try:
 		spin_lock(&pblk->rev_lock);
@@ -452,7 +463,11 @@ try:
 		bio->bi_end_io = pblk_end_sync_bio;
 
 		/* TODO: may fail when EXP_PG_SIZE > PAGE_SIZE */
-		bio_add_pc_page(q, bio, page, PBLK_EXPOSED_PAGE_SIZE, 0);
+		ret = bio_add_pc_page(q, bio, page, PBLK_EXPOSED_PAGE_SIZE, 0);
+		if (ret != PBLK_EXPOSED_PAGE_SIZE) {
+			pr_err("nvm: pblk: could not add page to bio in GC\n");
+			goto finished;
+		}
 
 		if (pblk_submit_io(pblk, bio, rrqd, NVM_IOTYPE_GC)) {
 			pr_err("pblk: gc read failed.\n");
@@ -489,7 +504,9 @@ try:
 		bio_endio(bio);
 		wait_for_completion_io(&wait);
 
-		/* pblk_inflight_laddr_release(pblk, rrqd); */
+		/* Note that rrqd release happens in the normal path, so there
+		 * is no need to do it here
+		 */
 		if (bio->bi_error)
 			goto finished;
 
@@ -500,12 +517,13 @@ finished:
 	mempool_free(page, pblk->page_pool);
 	bio_put(bio);
 
-	if (!bitmap_full(rblk->invalid_pages, nr_pgs_per_blk)) {
+	if (!bitmap_full(rblk->invalid_pages, nr_sec_per_blk)) {
 		pr_err("nvm: failed to garbage collect block\n");
 		return -EIO;
 	}
 
 	return 0;
+#endif
 }
 
 static void pblk_block_gc(struct work_struct *work)
@@ -517,6 +535,9 @@ static void pblk_block_gc(struct work_struct *work)
 	struct nvm_dev *dev = pblk->dev;
 	struct nvm_lun *lun = rblk->parent->lun;
 	struct pblk_lun *rlun = &pblk->luns[lun->id - pblk->lun_offset];
+
+	// XXX: Prevent GC from running for now
+	return;
 
 	mempool_free(gcb, pblk->gcb_pool);
 	pr_debug("nvm: block '%lu' being reclaimed\n", rblk->parent->id);
@@ -574,7 +595,8 @@ static void pblk_lun_gc(struct work_struct *work)
 	struct pblk_block_gc *gcb;
 	unsigned int nr_blocks_need;
 
-	nr_blocks_need = pblk->dev->blks_per_lun / GC_LIMIT_INVERSE;
+	nr_blocks_need = pblk->nr_luns *
+				(pblk->dev->blks_per_lun / GC_LIMIT_INVERSE);
 
 	if (nr_blocks_need < pblk->nr_luns)
 		nr_blocks_need = pblk->nr_luns;
@@ -625,15 +647,24 @@ static void pblk_gc_queue(struct work_struct *work)
 	list_add_tail(&rblk->prio, &rlun->prio_list);
 	spin_unlock(&rlun->lock);
 
+	// TODO
+/* try: */
+	/* This block's write buffer might be in use */
+	/* if (!kref_put(&rblk->w_buf.refs, pblk_free_w_buffer)) { */
+		/* schedule(); */
+		/* goto try; */
+	/* } */
+
 	spin_lock(&lun->lock);
 	lun->nr_open_blocks--;
 	lun->nr_closed_blocks++;
 	blk->state &= ~NVM_BLK_ST_OPEN;
 	blk->state |= NVM_BLK_ST_CLOSED;
-	list_move_tail(&rblk->list, &rlun->closed_list);
 	spin_unlock(&lun->lock);
 
-	pblk_free_w_buffer(pblk, rblk);
+	spin_lock(&rlun->lock_lists);
+	list_move_tail(&rblk->list, &rlun->closed_list);
+	spin_unlock(&rlun->lock_lists);
 
 	mempool_free(gcb, pblk->gcb_pool);
 	pr_debug("nvm: block '%lu' is full, allow GC (sched)\n",
@@ -669,27 +700,19 @@ static struct pblk_lun *pblk_get_lun_rr(struct pblk *pblk, int is_gc)
 	return max_free;
 }
 
-static struct pblk_addr *pblk_update_map(struct pblk *pblk, sector_t laddr,
-					struct pblk_block *rblk, u64 paddr)
+static void pblk_update_map(struct pblk *pblk, sector_t laddr,
+				struct pblk_block *rblk, struct ppa_addr ppa)
 {
 	struct pblk_addr *gp;
-	struct pblk_rev_addr *rev;
 
 	BUG_ON(laddr >= pblk->nr_sects);
 
 	gp = &pblk->trans_map[laddr];
-	spin_lock(&pblk->rev_lock);
 	if (gp->rblk)
 		pblk_page_invalidate(pblk, gp);
 
-	gp->addr = paddr;
+	gp->ppa = ppa;
 	gp->rblk = rblk;
-
-	rev = &pblk->rev_trans_map[gp->addr - pblk->poffset];
-	rev->addr = laddr;
-	spin_unlock(&pblk->rev_lock);
-
-	return gp;
 }
 
 static u64 pblk_alloc_addr(struct pblk *pblk, struct pblk_block *rblk)
@@ -700,9 +723,8 @@ static u64 pblk_alloc_addr(struct pblk *pblk, struct pblk_block *rblk)
 	if (block_is_full(pblk, rblk))
 		goto out;
 
-	addr = block_to_addr(pblk, rblk) + rblk->next_page;
+	addr = pblk_next_free_pg(pblk, rblk);
 
-	rblk->next_page++;
 out:
 	spin_unlock(&rblk->lock);
 	return addr;
@@ -711,60 +733,89 @@ out:
 /* Simple round-robin Logical to physical address translation.
  *
  * Retrieve the mapping using the active append point. Then update the ap for
- * the next write to the disk.
+ * the next write to the disk. Mapping occurs at a page granurality, i.e., if a
+ * page is 4 sectors, then each map entails 4 lba-ppa mappings - @nr_secs is the
+ * number of sectors in the page, taking number of planes also into
+ * consideration
  *
- * Returns pblk_addr with the physical address and block. Remember to return to
- * pblk->addr_cache when request is finished.
+ * TODO: We are missing GC path
  */
-static struct pblk_addr *pblk_map_page(struct pblk *pblk, sector_t laddr,
-								int is_gc)
+static int pblk_map_page(struct pblk *pblk, struct pblk_w_ctx *ctx_list,
+				struct ppa_addr *ppa_list, int nr_secs)
 {
+	struct nvm_dev *dev = pblk->dev;
 	struct pblk_lun *rlun;
 	struct pblk_block *rblk;
 	struct nvm_lun *lun;
 	u64 paddr;
+	int is_gc = 0; //TODO: Fix for now
+	int i;
+	int ret = 0;
 
 	rlun = pblk_get_lun_rr(pblk, is_gc);
 	lun = rlun->parent;
 
-	if (!is_gc && lun->nr_free_blocks < pblk->nr_luns * 4)
-		return NULL;
-
-	spin_lock(&rlun->lock);
-
-	rblk = rlun->cur;
-retry:
-	paddr = pblk_alloc_addr(pblk, rblk);
-
-	if (paddr == ADDR_EMPTY) {
-		rblk = pblk_get_blk(pblk, rlun, 0);
-		if (rblk) {
-			pblk_set_lun_cur(rlun, rblk);
-			goto retry;
-		}
-
-		if (is_gc) {
-			/* retry from emergency gc block */
-			paddr = pblk_alloc_addr(pblk, rlun->gc_cur);
-			if (paddr == ADDR_EMPTY) {
-				rblk = pblk_get_blk(pblk, rlun, 1);
-				if (!rblk) {
-					pr_err("pblk: no more blocks");
-					goto err;
-				}
-
-				rlun->gc_cur = rblk;
-				paddr = pblk_alloc_addr(pblk, rlun->gc_cur);
-			}
-			rblk = rlun->gc_cur;
-		}
+	/* TODO: This should follow a richer heuristic */
+	if (lun->nr_free_blocks < pblk->nr_luns * 4) {
+		//XXX: Other?
+		ret = -ENOSPC;
+		goto out;
 	}
 
+	/* This lock protects the allocation within a block, so we only need to
+	 * take it when pblk_alloc_addr is being called. No need to protect the
+	 * l2p table update, since it has its own lock for it.
+	 */
+	spin_lock(&rlun->lock);
+	rblk = rlun->cur;
+
+	for (i = 0; i < nr_secs; i++) {
+		paddr = pblk_alloc_addr(pblk, rblk);
+		if (paddr == ADDR_EMPTY) {
+			/* We should always have available sectors for a full
+			 * page write at this point. We get a new block for this
+			 * LUN when the current block is full.
+			 */
+			pr_err("pblk: corrupted l2p mapping\n");
+			ret = -EINVAL;
+			goto out;
+		}
+		spin_unlock(&rlun->lock);
+
+		/* TODO: Implement GC path with emergency blocks */
+
+		/* ppa to be sent to the device */
+		ppa_list[i] =
+			pblk_ppa_to_gaddr(dev, global_addr(pblk, rblk, paddr));
+		pblk_update_map(pblk, ctx_list[i].lba, rblk, ppa_list[i]);
+
+		/* The l2p table has been updated - it is safe to release the
+		 * entry for the current lba
+		 */
+		pblk_unlock_laddr(pblk, &ctx_list[i].upt_ctx);
+
+		/* write context for target bio completion */
+		ctx_list[i].ppa.ppa = addr_to_ppa(paddr);
+		ctx_list[i].ppa.rblk = rblk;
+
+
+		spin_lock(&rlun->lock);
+	}
 	spin_unlock(&rlun->lock);
-	return pblk_update_map(pblk, laddr, rblk, paddr);
-err:
-	spin_unlock(&rlun->lock);
-	return NULL;
+
+	/* Prepare block for next write */
+	if (block_is_full(pblk, rblk)) {
+		rblk = pblk_get_blk(pblk, rlun, 0);
+		if (!rblk) {
+			pr_err("pblk: no more free blocks available\n");
+			ret = -ENOSPC;
+			goto out;
+		}
+		pblk_set_lun_cur(rlun, rblk);
+	}
+
+out:
+	return ret;
 }
 
 static void pblk_run_gc(struct pblk *pblk, struct pblk_block *rblk)
@@ -784,78 +835,82 @@ static void pblk_run_gc(struct pblk *pblk, struct pblk_block *rblk)
 	queue_work(pblk->kgc_wq, &gcb->ws_gc);
 }
 
-static void pblk_sync_buffer(struct pblk *pblk, struct pblk_addr *p)
+static void pblk_sync_buffer(struct pblk *pblk, struct pblk_addr p)
 {
-	struct pblk_block *rblk;
-	struct pblk_w_buf *buf;
+	struct nvm_dev *dev = pblk->dev;
+	struct pblk_block *rblk = p.rblk;
+	u64 block_ppa = ppa_to_addr(p.ppa);
 	struct nvm_lun *lun;
-	unsigned long bppa;
 
-	rblk = p->rblk;
-	buf = &rblk->w_buf;
+	/* TODO: Use lun->id to mark the LUN group bitmap for maitaining the
+	 * pipeline
+	 */
 	lun = rblk->parent->lun;
 
-	bppa = pblk->dev->sec_per_blk * rblk->parent->id;
+	WARN_ON(test_and_set_bit(block_ppa, rblk->sync_bitmap));
 
-	WARN_ON(test_and_set_bit((p->addr - bppa), buf->sync_bitmap));
+	// TODO: Implement flush backpointer
 
 #ifdef CONFIG_NVM_DEBUG
-		atomic_dec(&pblk->inflight_writes);
 		atomic_inc(&pblk->sync_writes);
+		atomic_dec(&pblk->inflight_writes);
 #endif
 
-	if (unlikely(bitmap_full(buf->sync_bitmap, buf->nentries))) {
-		/* Write buffer out-of-bounds */
-		WARN_ON((buf->cur_mem != buf->nentries) &&
-					(buf->cur_mem != buf->cur_subm));
-
+	if (bitmap_full(rblk->sync_bitmap, dev->sec_per_blk))
 		pblk_run_gc(pblk, rblk);
-	}
 }
 
 static void pblk_end_io_write(struct pblk *pblk, struct nvm_rq *rqd,
 							uint8_t nr_pages)
 {
-	struct pblk_buf_rq *brrqd = nvm_rq_to_pdu(rqd);
-	struct pblk_rq *rrqd;
+	struct pblk_w_ctx *w_ctx = nvm_rq_to_pdu(rqd);
+	struct bio *original_bio;
+	struct pblk_addr addr;
 	int i;
 
 	for (i = 0; i < nr_pages; i++) {
-		rrqd = brrqd[i].rrqd;
-		pblk_sync_buffer(pblk, brrqd[i].addr);
-		kref_put(&rrqd->refs, pblk_release_and_free_rrqd);
+		pblk_memcpy_addr(&addr, &w_ctx[i].ppa);
+		original_bio = w_ctx[i].bio;
+
+		pblk_sync_buffer(pblk, addr);
+
+		/* TODO: Complete the original bio bio in case of flush */
+		BUG_ON(original_bio);
 	}
 
-	mempool_free(brrqd, pblk->m_rrq_pool);
 	pblk_writer_kick(pblk);
 }
 
 static void pblk_end_io_read(struct pblk *pblk, struct nvm_rq *rqd,
 							uint8_t nr_pages)
 {
-	struct pblk_rq *rrqd = nvm_rq_to_pdu(rqd);
+	/* struct pblk_rq *rrqd = nvm_rq_to_pdu(rqd); */
 
-	if (rqd->flags & NVM_IOTYPE_GC)
-		return;
-
-	pblk_unlock_rq(pblk, rrqd);
-	mempool_free(rrqd, pblk->rrq_pool);
 #ifdef CONFIG_NVM_DEBUG
+	atomic_add(nr_pages, &pblk->sync_reads);
 	atomic_sub(nr_pages, &pblk->inflight_reads);
 #endif
+
+	/* if (rrqd->flags & (NVM_IOTYPE_GC | NVM_IOTYPE_BUF)) */
+		/* return; */
+
+	/* kref_put(&rrqd->refs, pblk_release_and_free_rrqd); */
 }
 
 static void pblk_end_io(struct nvm_rq *rqd)
 {
 	struct pblk *pblk = container_of(rqd->ins, struct pblk, instance);
 	uint8_t nr_pages = rqd->nr_pages;
+	mempool_t *free_mempool;
 
 	if (bio_data_dir(rqd->bio) == WRITE) {
 		pblk_end_io_write(pblk, rqd, nr_pages);
+		free_mempool = pblk->w_rq_pool;
 	} else {
-		if (rqd->flags & NVM_IOTYPE_SYNC)
-			return;
+		/* if (rrqd->flags & NVM_IOTYPE_SYNC) */
+			/* return; */
 		pblk_end_io_read(pblk, rqd, nr_pages);
+		free_mempool = pblk->r_rq_pool;
 	}
 
 	bio_put(rqd->bio);
@@ -865,238 +920,189 @@ static void pblk_end_io(struct nvm_rq *rqd)
 	if (rqd->metadata)
 		nvm_dev_dma_free(pblk->dev, rqd->metadata, rqd->dma_metadata);
 
-	mempool_free(rqd, pblk->rq_pool);
+	mempool_free(rqd, free_mempool);
 }
 
 /*
- * Copy data from current bio to block write buffer. This if necessary
- * to guarantee durability if a flash block becomes bad before all pages
- * are written. This buffer is also used to write at the right page
- * granurality
+ * Copy data from current bio to write buffer. This if necessary to guarantee
+ * that (i) writes to the media at issued at the right granurality and (ii) that
+ * memory-specific constrains are respected (e.g., TLC memories need to write
+ * upper, medium and lower pages to guarantee that data has been persisted).
+ *
+ * return: 1 if bio has been written to buffer, 0 otherwise.
  */
-static int pblk_write_to_buffer(struct pblk *pblk, struct bio *bio,
-				struct pblk_rq *rrqd, struct pblk_addr *addr,
-				struct pblk_w_buf *w_buf,
-				unsigned long flags)
+static int pblk_write_to_cache(struct pblk *pblk, struct bio *bio,
+				unsigned long flags, unsigned int nentries)
 {
-	struct nvm_dev *dev = pblk->dev;
-	unsigned int bio_len = bio_cur_bytes(bio);
-
-	if (bio_len != PBLK_EXPOSED_PAGE_SIZE)
-		return NVM_IO_ERR;
-
-	spin_lock(&w_buf->w_lock);
-
-	WARN_ON(w_buf->cur_mem == w_buf->nentries);
-
-	w_buf->mem->rrqd = rrqd;
-	w_buf->mem->addr = addr;
-	w_buf->mem->flags = flags;
-
-	memcpy(w_buf->mem->data, bio_data(bio), bio_len);
-
-	w_buf->cur_mem++;
-	if (likely(w_buf->cur_mem < w_buf->nentries)) {
-		w_buf->mem++;
-		w_buf->mem->data =
-				w_buf->data + (w_buf->cur_mem * dev->sec_size);
-	}
-
-	spin_unlock(&w_buf->w_lock);
-
-	return 0;
-}
-
-static int pblk_write_ppalist_rq(struct pblk *pblk, struct bio *bio,
-			struct pblk_rq *rrqd, unsigned long flags, int nr_pages)
-{
-	struct pblk_w_buf *w_buf;
-	struct pblk_addr *p;
-	struct pblk_lun *rlun;
 	sector_t laddr = pblk_get_laddr(bio);
-	int is_gc = flags & NVM_IOTYPE_GC;
-	int err;
-	int i;
+	struct pblk_w_ctx w_ctx;
+	struct pblk_l2p_update_ctx upt_ctx;
+	struct ppa_addr ppa;
+	unsigned long pos;
+	unsigned int i;
+	int commit = 1;
 
-	if (!is_gc && pblk_lock_rq(pblk, bio, rrqd)) {
-		kref_put(&rrqd->refs, pblk_free_rrqd);
-		return NVM_IO_REQUEUE;
-	}
+	if (pblk_lock_rq(pblk, bio, &upt_ctx))
+		return 0;
 
-	for (i = 0; i < nr_pages; i++) {
-		kref_get(&rrqd->refs);
+	pos = pblk_rb_write_init(&pblk->rwb);
 
-		/* We assume that mapping occurs at 4KB granularity */
-		p = pblk_map_page(pblk, laddr + i, is_gc);
-		if (!p) {
-			BUG_ON(is_gc);
-			kref_put(&rrqd->refs, pblk_release_and_free_rrqd);
-			pblk_gc_kick(pblk);
-			return NVM_IO_REQUEUE;
-		}
+	for (i = 0; i < nentries; i++) {
+		w_ctx.bio = NULL; /* TODO: Consider REQ_FUA | REQ_FLUSH case */
+		w_ctx.lba = laddr + i;
+		ppa_set_empty(&w_ctx.ppa.ppa);
+		w_ctx.flags = 0x0; /* TODO: Will mark GC */
 
-		w_buf = &p->rblk->w_buf;
-		rlun = p->rblk->rlun;
-
-		rrqd->addr = p;
-
-#ifdef CONFIG_NVM_DEBUG
-		atomic_inc(&pblk->inflight_writes);
-		atomic_inc(&pblk->req_writes);
-#endif
-
-		err = pblk_write_to_buffer(pblk, bio, rrqd, p, w_buf, flags);
-		if (err) {
-			pr_err("pblk: could not write to write buffer\n");
-			return err;
+		if (pblk_rb_write_entry(&pblk->rwb, bio_data(bio), w_ctx,
+								pos + i)) {
+			pblk_rb_write_rollback(&pblk->rwb);
+			pblk_unlock_rq(pblk, bio, &upt_ctx);
+			commit = 0;
+			goto out;
 		}
 
 		bio_advance(bio, PBLK_EXPOSED_PAGE_SIZE);
-
-		queue_work(pblk->kw_wq, &rlun->ws_writer);
 	}
 
-	if (kref_put(&rrqd->refs, pblk_release_and_free_rrqd)) {
-		pr_err("pblk: request reference counter dailed\n");
-		return NVM_IO_ERR;
+out:
+	/* A bio is atomically committed to the write buffer */
+	if (!commit)
+		return 0;
+
+	pblk_rb_write_commit(&pblk->rwb, nentries);
+
+	/* Update mapping table with the write buffer cachelines */
+	for (i = 0; i < nentries; i++) {
+		ppa = pblk_cacheline_to_ppa(pos + i);
+		pblk_update_map(pblk, laddr + i, NULL, ppa);
 	}
 
+	pblk_unlock_rq(pblk, bio, &upt_ctx);
+
+	return 1;
+}
+
+/*
+ * If current laddr is in memory and it is not synced (or on its way) to
+ * secondary storage, directly modify the buffer
+ *
+ * XXX: Assume that only one entry is being sent
+ *
+ * XXX: This can only be done if we can ensure that no REQ_FUA | REQ_FLUSH has
+ * been issued after the original LBA write into buffer. Leave this for later
+ * on.
+ */
+#if 0
+static int pblk_update_buffer_entry(struct pblk *pblk, struct bio *bio,
+					struct pblk_w_ctx *w_ctx,
+					unsigned int nentries)
+{
+	sector_t laddr = w_ctx->lba;
+	struct pblk_addr *gp;
+	unsigned long pos;
+	unsigned int i;
+
+	BUG_ON(!(laddr >= 0 && laddr + (nentries - 1) < pblk->nr_sects));
+
+	spin_lock(&pblk->l2p_lock);
+	for (i = 0; i < nentries; i++) {
+		gp = &pblk->trans_map[laddr + i];
+
+		/* XXX: Assume that only one entry is being sent. We need to
+		 * implement the case where some laddrs are in cache and others
+		 * not.
+		 */
+		if (!pblk_addr_in_cache(gp->addr))
+			goto out;
+
+		pos = gp->addr;
+		if (!pblk_rb_update(&pblk->rwb, bio_data(bio), w_ctx,
+								nentries, pos))
+			goto out;
+
+		/* Update mapping table with the write buffer cacheline */
+		paddr = pblk_cacheline_to_ppa(pos);
+
+		pblk_update_map(pblk, w_ctx.lba, NULL, paddr);
+	}
+
+	spin_unlock(&pblk->l2p_lock);
+
+	return NVM_IO_DONE;
+
+out:
+	spin_unlock(&pblk->l2p_lock);
+	return NVM_IO_OK;
+}
+#endif
+
+static int pblk_write_ppalist_rq(struct pblk *pblk, struct bio *bio,
+					unsigned long flags, int nr_pages)
+{
+	//TODO: FLUSH
+
+	if (!pblk_write_to_cache(pblk, bio, flags, nr_pages))
+		return NVM_IO_REQUEUE;
+
+#ifdef CONFIG_NVM_DEBUG
+		atomic_add(nr_pages, &pblk->inflight_writes);
+		atomic_add(nr_pages, &pblk->req_writes);
+#endif
+
+	queue_work(pblk->kw_wq, &pblk->ws_writer);
 	return NVM_IO_DONE;
 }
 
 static int pblk_write_rq(struct pblk *pblk, struct bio *bio,
-				struct pblk_rq *rrqd, unsigned long flags)
+							unsigned long flags)
 {
-	struct pblk_w_buf *w_buf;
-	struct pblk_addr *p;
-	struct pblk_lun *rlun;
-	int is_gc = flags & NVM_IOTYPE_GC;
-	int err;
-	sector_t laddr = pblk_get_laddr(bio);
+#if 0
+	// XXX: This will change - probably me moved into write
+	if (bio->bi_rw & (REQ_FLUSH | REQ_FUA)) {
+		DECLARE_COMPLETION_ONSTACK(wait);
 
-	if (!is_gc && pblk_lock_rq(pblk, bio, rrqd)) {
-		mempool_free(rrqd, pblk->rrq_pool);
-		return NVM_IO_REQUEUE;
+		err = pblk_wb_flush(pblk, bio, rrqd, &wait, bio->bi_rw);
+		if (err) {
+			mempool_free(rrqd, pblk->rrq_pool);
+			return NVM_IO_ERR;
+		}
+		wait_for_completion_io(&wait);
+
+		/* REQ_FLUSH & REQ_FUA always come in a write bio */
+		if (!bio_has_data(bio)) {
+			mempool_free(rrqd, pblk->rrq_pool);
+			bio_endio(bio);
+			return BLK_QC_T_NONE;
+		}
 	}
+#endif
 
-	p = pblk_map_page(pblk, laddr, is_gc);
-	if (!p) {
-		BUG_ON(is_gc);
-		kref_put(&rrqd->refs, pblk_release_and_free_rrqd);
-		pblk_gc_kick(pblk);
+	if (!pblk_write_to_cache(pblk, bio, flags, 1))
 		return NVM_IO_REQUEUE;
-	}
-
-	w_buf = &p->rblk->w_buf;
-	rlun = p->rblk->rlun;
-
-	rrqd->addr = p;
 
 #ifdef CONFIG_NVM_DEBUG
 	atomic_inc(&pblk->inflight_writes);
 	atomic_inc(&pblk->req_writes);
 #endif
 
-	err = pblk_write_to_buffer(pblk, bio, rrqd, p, w_buf, flags);
-	if (err) {
-		pr_err("pblk: could not write to write buffer\n");
-		return err;
-	}
-
-	queue_work(pblk->kw_wq, &rlun->ws_writer);
+	queue_work(pblk->kw_wq, &pblk->ws_writer);
 	return NVM_IO_DONE;
 }
 
 static int pblk_buffer_write(struct pblk *pblk, struct bio *bio,
-				struct pblk_rq *rrqd, unsigned long flags)
+							unsigned long flags)
 {
 	uint8_t nr_pages = pblk_get_pages(bio);
 
-	rrqd->nr_pages = nr_pages;
-
 	if (nr_pages > 1)
-		return pblk_write_ppalist_rq(pblk, bio, rrqd, flags, nr_pages);
-	else
-		return pblk_write_rq(pblk, bio, rrqd, flags);
+		return pblk_write_ppalist_rq(pblk, bio, flags, nr_pages);
+
+	return pblk_write_rq(pblk, bio, flags);
 }
 
-static int pblk_read_ppalist_rq(struct pblk *pblk, struct bio *bio,
-			struct nvm_rq *rqd, struct pblk_buf_rq *brrqd,
-			unsigned long flags, int nr_pages)
-{
-	struct pblk_rq *rrqd = nvm_rq_to_pdu(rqd);
-	struct pblk_addr *gp;
-	sector_t laddr = pblk_get_laddr(bio);
-	int is_gc = flags & NVM_IOTYPE_GC;
-	int i;
-
-	if (!is_gc && pblk_lock_rq(pblk, bio, rrqd)) {
-		nvm_dev_dma_free(pblk->dev, rqd->ppa_list, rqd->dma_ppa_list);
-		return NVM_IO_REQUEUE;
-	}
-
-	for (i = 0; i < nr_pages; i++) {
-		/* We assume that mapping occurs at 4KB granularity */
-		BUG_ON(!(laddr + i >= 0 && laddr + i < pblk->nr_sects));
-		gp = &pblk->trans_map[laddr + i];
-
-		if (gp->rblk) {
-			rqd->ppa_list[i] = pblk_ppa_to_gaddr(pblk->dev,
-								gp->addr);
-		} else {
-			BUG_ON(is_gc);
-			pblk_unlock_rq(pblk, rrqd);
-			nvm_dev_dma_free(pblk->dev, rqd->ppa_list,
-							rqd->dma_ppa_list);
-			return NVM_IO_DONE;
-		}
-
-		brrqd[i].addr = gp;
-
-#ifdef CONFIG_NVM_DEBUG
-		atomic_inc(&pblk->inflight_reads);
-#endif
-	}
-
-	rqd->opcode = NVM_OP_HBREAD;
-
-	return NVM_IO_OK;
-}
-
-static int pblk_read_rq(struct pblk *pblk, struct bio *bio, struct nvm_rq *rqd,
-							unsigned long flags)
-{
-	struct pblk_rq *rrqd = nvm_rq_to_pdu(rqd);
-	int is_gc = flags & NVM_IOTYPE_GC;
-	sector_t laddr = pblk_get_laddr(bio);
-	struct pblk_addr *gp;
-
-	if (!is_gc && pblk_lock_rq(pblk, bio, rrqd))
-		return NVM_IO_REQUEUE;
-
-	BUG_ON(!(laddr >= 0 && laddr < pblk->nr_sects));
-	gp = &pblk->trans_map[laddr];
-
-	if (gp->rblk) {
-		rqd->ppa_addr = pblk_ppa_to_gaddr(pblk->dev, gp->addr);
-	} else {
-		BUG_ON(is_gc);
-		pblk_unlock_rq(pblk, rrqd);
-		return NVM_IO_DONE;
-	}
-
-	rqd->opcode = NVM_OP_HBREAD;
-	rrqd->addr = gp;
-
-#ifdef CONFIG_NVM_DEBUG
-		atomic_inc(&pblk->inflight_reads);
-#endif
-
-	return NVM_IO_OK;
-}
-
+#if 0
 static int pblk_read_w_buf_entry(struct bio *bio, struct pblk_block *rblk,
-					struct bvec_iter iter, int entry)
+								int entry)
 {
 	struct buf_entry *read_entry;
 	struct bio_vec bv;
@@ -1104,8 +1110,6 @@ static int pblk_read_w_buf_entry(struct bio *bio, struct pblk_block *rblk,
 	void *kaddr;
 	void *data;
 	int read = 0;
-
-	lockdep_assert_held(&rblk->w_buf.s_lock);
 
 	spin_lock(&rblk->w_buf.w_lock);
 	if (entry >= rblk->w_buf.cur_mem) {
@@ -1117,7 +1121,7 @@ static int pblk_read_w_buf_entry(struct bio *bio, struct pblk_block *rblk,
 	read_entry = &rblk->w_buf.entries[entry];
 	data = read_entry->data;
 
-	bv = bio_iter_iovec(bio, iter);
+	bv = bio_iter_iovec(bio, bio->bi_iter);
 	page = bv.bv_page;
 	kaddr = kmap_atomic(page);
 	memcpy(kaddr + bv.bv_offset, data, PBLK_EXPOSED_PAGE_SIZE);
@@ -1127,96 +1131,252 @@ static int pblk_read_w_buf_entry(struct bio *bio, struct pblk_block *rblk,
 out:
 	return read;
 }
+#endif
 
-static int pblk_read_from_w_buf(struct pblk *pblk, struct nvm_rq *rqd,
-			struct pblk_buf_rq *brrqd, unsigned long *read_bitmap)
+/* Copy the data from memory to bio if it can be found in the write buffer. We
+ * will complete the holes inthe bio  (if any) with a intermediate bio later on.
+ * Return 1 if data in memory, 0 otherwise.
+ */
+#if 0
+static int pblk_read_from_w_buf(struct pblk *pblk, struct bio *bio,
+							struct pblk_addr *addr)
 {
-	struct nvm_dev *dev = pblk->dev;
-	struct pblk_rq *rrqd = nvm_rq_to_pdu(rqd);
-	struct pblk_addr *addr;
-	struct bio *bio = rqd->bio;
-	struct bvec_iter iter = bio->bi_iter;
-	struct pblk_block *rblk;
-	unsigned long blk_id;
-	int nr_pages = rqd->nr_pages;
-	int left = nr_pages;
+	struct pblk_block *rblk = addr->rblk;
 	int read = 0;
 	int entry;
-	int i;
 
-	if (nr_pages != bio->bi_vcnt)
+	/* If the write buffer exists, the block is open in memory */
+	if (!kref_get_unless_zero(&rblk->w_buf.refs))
 		goto out;
 
-	if (nr_pages == 1) {
-		rblk = rrqd->addr->rblk;
-
-		/* If the write buffer exists, the block is open in memory */
-		spin_lock(&rblk->w_buf.s_lock);
-		atomic_inc(&rblk->w_buf.refs);
-		if (rblk->w_buf.entries) {
-			blk_id = rblk->parent->id;
-			entry = rrqd->addr->addr -
-				(blk_id * dev->sec_per_pg * dev->pgs_per_blk);
-
-			read = pblk_read_w_buf_entry(bio, rblk, iter, entry);
-
-			left -= read;
-			WARN_ON(test_and_set_bit(0, read_bitmap));
-		}
-		bio_advance_iter(bio, &iter, PBLK_EXPOSED_PAGE_SIZE);
-
-		atomic_dec(&rblk->w_buf.refs);
-		spin_unlock(&rblk->w_buf.s_lock);
-
-		goto out;
+	if (rblk->w_buf.entries) {
+		entry = addr->addr - block_to_rel_addr(pblk, rblk);
+		read = pblk_read_w_buf_entry(bio, rblk, entry);
 	}
 
-	/* Iterate through all pages and copy those that are found in the write
-	 * buffer. We will complete the holes (if any) with a intermediate bio
-	 * later on
-	 */
-	for (i = 0; i < nr_pages; i++) {
-		addr = brrqd[i].addr;
-		rblk = addr->rblk;
-
-		/* If the write buffer exists, the block is open in memory */
-		spin_lock(&rblk->w_buf.s_lock);
-		atomic_inc(&rblk->w_buf.refs);
-		if (rblk->w_buf.entries) {
-			blk_id = rblk->parent->id;
-			entry = addr->addr - (blk_id * dev->sec_per_pg *
-							dev->pgs_per_blk);
-
-			read = pblk_read_w_buf_entry(bio, rblk, iter, entry);
-
-			left -= read;
-			WARN_ON(test_and_set_bit(i, read_bitmap));
-		}
-		bio_advance_iter(bio, &iter, PBLK_EXPOSED_PAGE_SIZE);
-
-		atomic_dec(&rblk->w_buf.refs);
-		spin_unlock(&rblk->w_buf.s_lock);
-	}
+	WARN_ON(kref_put(&rblk->w_buf.refs, pblk_free_w_buffer));
 
 out:
-	return left;
+	return read;
+}
+#endif
+
+static int pblk_read_from_cache(struct pblk *pblk, struct bio *bio,
+							struct pblk_addr *addr)
+{
+	u64 cacheline;
+	int read = 0;
+
+	/* The write thread commits the changes to the buffer once the l2p table
+	 * has been updated. In this way, if the address read from the l2p table
+	 * points to a cacheline, the lba lock guarantees that the entry is not
+	 * going to be updated by new writes
+	 */
+	if (ppa_empty(addr->ppa) || (!nvm_addr_in_cache(addr->ppa)))
+		goto out;
+
+	cacheline = nvm_addr_to_cacheline(addr->ppa);
+	if (!pblk_rb_read_entry_to_bio(&pblk->rwb, bio, cacheline))
+		goto out;
+
+	read = 1;
+out:
+	return read;
+
+}
+
+static int pblk_read_ppalist_rq(struct pblk *pblk, struct bio *bio,
+			struct nvm_rq *rqd, unsigned long *flags, int nr_pages,
+			unsigned long *read_bitmap)
+{
+	/* int is_gc = *flags & NVM_IOTYPE_GC; */
+	/* int locked = 0; */
+	sector_t laddr = pblk_get_laddr(bio);
+	struct pblk_l2p_update_ctx upt_ctx;
+	struct pblk_addr *gp;
+	int advanced_bio = 0;
+	int i, j = 0;
+
+	if (nr_pages != bio->bi_vcnt)
+		return NVM_IO_ERR;
+
+	if (pblk_lock_rq(pblk, bio, &upt_ctx))
+		return NVM_IO_REQUEUE;
+
+	BUG_ON(!(laddr >= 0 && laddr + nr_pages < pblk->nr_sects));
+
+	for (i = 0; i < nr_pages; i++) {
+		gp = &pblk->trans_map[laddr + i];
+
+		/* Try to read from write buffer. Those addresses that cannot be
+		 * read from the write buffer are sequentially added to the ppa
+		 * list, which will later on be used to submit an I/O to the
+		 * device to retrieve data.
+		 */
+		if (pblk_read_from_cache(pblk, bio, gp)) {
+			WARN_ON(test_and_set_bit(i, read_bitmap));
+			if (unlikely(!advanced_bio)) {
+				/* This is at least a partially filled bio,
+				 * advance it to copy data to the right place.
+				 * We will deal with partial bios later on.
+				 */
+				bio_advance(bio, i * PBLK_EXPOSED_PAGE_SIZE);
+				advanced_bio = 1;
+			}
+		} else {
+			if (!gp->rblk) {
+				pblk_unlock_rq(pblk, bio, &upt_ctx);
+				return NVM_IO_DONE;
+			}
+
+			rqd->ppa_list[j] = gp->ppa;
+			j++;
+		}
+
+		if (advanced_bio)
+			bio_advance(bio, PBLK_EXPOSED_PAGE_SIZE);
+	}
+
+	pblk_unlock_rq(pblk, bio, &upt_ctx);
+
+#ifdef CONFIG_NVM_DEBUG
+		atomic_add(nr_pages, &pblk->inflight_reads);
+#endif
+
+	return NVM_IO_OK;
+#if 0
+	if (nr_pages != bio->bi_vcnt)
+		return NVM_IO_ERR;
+
+	*flags |= NVM_IOTYPE_BUF;
+
+	for (i = 0; i < nr_pages; i++) {
+		/* We assume that mapping occurs at 4KB granularity */
+		BUG_ON(!(laddr + i >= 0 && laddr + i < pblk->nr_sects));
+		gp = &pblk->trans_map[laddr + i];
+
+		if (!gp->rblk) {
+			BUG_ON(is_gc);
+			if (locked)
+				pblk_unlock_rq(pblk, rrqd);
+			return NVM_IO_DONE;
+		}
+
+		/* Try to read from write buffer. Those addresses that cannot be
+		 * read from the write buffer are sequentially added to the ppa
+		 * list, which will later on be used to submit an I/O to the
+		 * device to retrieve data.
+		 */
+		if (pblk_read_from_w_buf(pblk, bio, gp)) {
+			WARN_ON(test_and_set_bit(i, read_bitmap));
+			if (unlikely(!advanced_bio)) {
+				/* This is at least a partially filled bio,
+				 * advance it to copy data to the right place.
+				 * We will deal with partial bios later on.
+				 */
+				bio_advance(bio, i * PBLK_EXPOSED_PAGE_SIZE);
+				advanced_bio = 1;
+			}
+			bio_advance(bio, PBLK_EXPOSED_PAGE_SIZE);
+		} else {
+			/* Lock address if I/O is going to media */
+			if (unlikely(!locked)) {
+				locked = 1;
+				*flags &= ~NVM_IOTYPE_BUF;
+
+				if (!is_gc && pblk_lock_rq(pblk, bio, rrqd))
+					return NVM_IO_REQUEUE;
+			}
+
+			rqd->ppa_list[j] = pblk_ppa_to_gaddr(pblk->dev,
+								gp->addr);
+			j++;
+		}
+
+#ifdef CONFIG_NVM_DEBUG
+		atomic_inc(&pblk->inflight_reads);
+#endif
+	}
+
+	rqd->opcode = NVM_OP_PREAD;
+#endif
+}
+
+static int pblk_read_rq(struct pblk *pblk, struct bio *bio, struct nvm_rq *rqd,
+				unsigned long *flags, unsigned long *read_bitmap)
+{
+	/* int is_gc = *flags & NVM_IOTYPE_GC; */
+	sector_t laddr = pblk_get_laddr(bio);
+	struct pblk_l2p_update_ctx upt_ctx;
+	struct pblk_addr *gp;
+
+	if (pblk_lock_rq(pblk, bio, &upt_ctx))
+		return NVM_IO_REQUEUE;
+
+	BUG_ON(!(laddr >= 0 && laddr < pblk->nr_sects));
+
+	gp = &pblk->trans_map[laddr];
+
+	if (pblk_read_from_cache(pblk, bio, gp)) {
+		pblk_unlock_rq(pblk, bio, &upt_ctx);
+		WARN_ON(test_and_set_bit(0, read_bitmap));
+		return NVM_IO_DONE;
+	}
+
+	if (!gp->rblk) {
+		pblk_unlock_rq(pblk, bio, &upt_ctx);
+		return NVM_IO_DONE;
+	}
+
+	rqd->ppa_addr = gp->ppa;
+	pblk_unlock_rq(pblk, bio, &upt_ctx);
+
+#ifdef CONFIG_NVM_DEBUG
+	atomic_inc(&pblk->inflight_reads);
+#endif
+
+	return NVM_IO_OK;
 }
 
 static int pblk_submit_read_io(struct pblk *pblk, struct bio *bio,
 				struct nvm_rq *rqd, unsigned long flags)
 {
-	struct pblk_rq *rrqd = nvm_rq_to_pdu(rqd);
+	struct nvm_dev *dev = pblk->dev;
 	int err;
+
+	switch(dev->plane_mode) {
+	case NVM_PLANE_QUAD:
+		if (rqd->nr_pages > 2)
+			rqd->flags |= NVM_IO_QUAD_ACCESS;
+		else if (rqd->nr_pages > 1)
+			rqd->flags |= NVM_IO_DUAL_ACCESS;
+		else
+			rqd->flags |= NVM_IO_SNGL_ACCESS;
+		break;
+	case NVM_PLANE_DOUBLE:
+		if (rqd->nr_pages > 1)
+			rqd->flags |= NVM_IO_DUAL_ACCESS;
+		else
+			rqd->flags |= NVM_IO_SNGL_ACCESS;
+		break;
+	case NVM_PLANE_SINGLE:
+		rqd->flags |= NVM_IO_SNGL_ACCESS;
+		break;
+	default:
+		pr_err("pblk: invalid plane configuration\n");
+		return NVM_IO_ERR;
+	}
+
+	rqd->flags |= NVM_IO_SUSPEND;
 
 	err = nvm_submit_io(pblk->dev, rqd);
 	if (err) {
 		pr_err("pblk: I/O submission failed: %d\n", err);
 		bio_put(bio);
 		if (!(flags & NVM_IOTYPE_GC)) {
-			pblk_unlock_rq(pblk, rrqd);
 			if (rqd->nr_pages > 1)
 				nvm_dev_dma_free(pblk->dev,
-			rqd->ppa_list, rqd->dma_ppa_list);
+					rqd->ppa_list, rqd->dma_ppa_list);
 		}
 		return NVM_IO_ERR;
 	}
@@ -1224,10 +1384,14 @@ static int pblk_submit_read_io(struct pblk *pblk, struct bio *bio,
 	return NVM_IO_OK;
 }
 
+//TODO
+#if 0
 static int pblk_fill_partial_read_bio(struct pblk *pblk, struct bio *bio,
 				unsigned long *read_bitmap, struct nvm_rq *rqd,
-				struct pblk_buf_rq *brrqd, uint8_t nr_pages)
+				uint8_t nr_pages)
 {
+	struct pblk_rq *rrqd = nvm_rq_to_pdu(rqd);
+	struct request_queue *q = pblk->dev->q;
 	struct bio *new_bio;
 	struct page *page;
 	struct bio_vec src_bv, dst_bv;
@@ -1244,8 +1408,7 @@ static int pblk_fill_partial_read_bio(struct pblk *pblk, struct bio *bio,
 		return NVM_IO_ERR;
 	}
 
-	hole = find_first_zero_bit(read_bitmap, nr_pages);
-	do {
+	for (i = 0; i < nr_holes; i++) {
 		page = mempool_alloc(pblk->page_pool, GFP_KERNEL);
 		if (!page) {
 			bio_put(new_bio);
@@ -1253,19 +1416,14 @@ static int pblk_fill_partial_read_bio(struct pblk *pblk, struct bio *bio,
 			goto err;
 		}
 
-		ret = bio_add_page(new_bio, page, PBLK_EXPOSED_PAGE_SIZE, 0);
+		ret = bio_add_pc_page(q, new_bio, page,
+						PBLK_EXPOSED_PAGE_SIZE, 0);
 		if (ret != PBLK_EXPOSED_PAGE_SIZE) {
 			pr_err("nvm: pblk: could not add page to bio\n");
 			mempool_free(page, pblk->page_pool);
 			goto err;
 		}
-
-		rqd->ppa_list[i] = pblk_ppa_to_gaddr(pblk->dev,
-							brrqd[hole].addr->addr);
-
-		i++;
-		hole = find_next_zero_bit(read_bitmap, nr_pages, hole + 1);
-	} while (hole != nr_pages);
+	}
 
 	if (nr_holes != new_bio->bi_vcnt) {
 		pr_err("pblk: malformed bio\n");
@@ -1277,14 +1435,14 @@ static int pblk_fill_partial_read_bio(struct pblk *pblk, struct bio *bio,
 	new_bio->bi_private = &wait;
 	new_bio->bi_end_io = pblk_end_sync_bio;
 
-	rqd->flags |= NVM_IOTYPE_SYNC;
+	rrqd->flags |= NVM_IOTYPE_SYNC;
 	rqd->bio = new_bio;
 	rqd->nr_pages = nr_holes;
 
-	pblk_submit_read_io(pblk, new_bio, rqd, rqd->flags);
+	ret = pblk_submit_read_io(pblk, new_bio, rqd, rrqd->flags);
 	wait_for_completion_io(&wait);
 
-	if (new_bio->bi_error)
+	if (ret || new_bio->bi_error)
 		goto err;
 
 	/* Fill the holes in the original bio */
@@ -1313,13 +1471,12 @@ static int pblk_fill_partial_read_bio(struct pblk *pblk, struct bio *bio,
 	bio_put(new_bio);
 
 	/* Complete the original bio and associated request */
-	rqd->flags &= ~NVM_IOTYPE_SYNC;
+	rrqd->flags &= ~NVM_IOTYPE_SYNC;
 	rqd->bio = bio;
 	rqd->nr_pages = nr_pages;
 
 	bio_endio(bio);
 	pblk_end_io(rqd);
-	mempool_free(brrqd, pblk->m_rrq_pool);
 	return NVM_IO_OK;
 
 err:
@@ -1329,99 +1486,84 @@ err:
 		mempool_free(&src_bv.bv_page, pblk->page_pool);
 	}
 	bio_endio(new_bio);
-	mempool_free(brrqd, pblk->m_rrq_pool);
 	return NVM_IO_ERR;
 }
+#endif
 
 static int pblk_submit_read(struct pblk *pblk, struct bio *bio,
-				struct pblk_rq *rrqd, unsigned long flags)
+							unsigned long flags)
 {
 	struct nvm_rq *rqd;
-	struct pblk_buf_rq *brrqd = NULL;
 	unsigned long read_bitmap; /* Max 64 ppas per request */
-	uint8_t left;
 	uint8_t nr_pages = pblk_get_pages(bio);
-	int err;
+	int ret;
 
 	bitmap_zero(&read_bitmap, nr_pages);
 
-	rqd = mempool_alloc(pblk->rq_pool, GFP_KERNEL);
+	rqd = mempool_alloc(pblk->r_rq_pool, GFP_KERNEL);
 	if (!rqd) {
 		pr_err_ratelimited("pblk: not able to queue bio.");
 		bio_io_error(bio);
 		return NVM_IO_ERR;
 	}
 	rqd->metadata = NULL;
-	rqd->priv = rrqd;
 
 	if (nr_pages > 1) {
 		rqd->ppa_list = nvm_dev_dma_alloc(pblk->dev, GFP_KERNEL,
 						&rqd->dma_ppa_list);
 		if (!rqd->ppa_list) {
 			pr_err("pblk: not able to allocate ppa list\n");
-			mempool_free(rqd, pblk->rq_pool);
-			mempool_free(rrqd, pblk->rrq_pool);
+			mempool_free(rqd, pblk->r_rq_pool);
 			return NVM_IO_ERR;
 		}
 
-		brrqd = mempool_alloc(pblk->m_rrq_pool, GFP_KERNEL);
-		if (!brrqd) {
-			pr_err_ratelimited("pblk: not able to queue bio.");
-			bio_io_error(bio);
-			return NVM_IO_ERR;
-		}
-
-		err = pblk_read_ppalist_rq(pblk, bio, rqd, brrqd, flags,
-								nr_pages);
-		if (err) {
-			mempool_free(brrqd, pblk->m_rrq_pool);
-			mempool_free(rqd, pblk->rq_pool);
-			mempool_free(rrqd, pblk->rrq_pool);
-			return err;
+		ret = pblk_read_ppalist_rq(pblk, bio, rqd, &flags, nr_pages,
+								&read_bitmap);
+		if (ret) {
+			nvm_dev_dma_free(pblk->dev, rqd->ppa_list,
+							rqd->dma_ppa_list);
+			mempool_free(rqd, pblk->r_rq_pool);
+			return ret;
 		}
 	} else {
-		err = pblk_read_rq(pblk, bio, rqd, flags);
-		if (err) {
-			mempool_free(rrqd, pblk->rrq_pool);
-			mempool_free(rqd, pblk->rq_pool);
-			return err;
+		ret = pblk_read_rq(pblk, bio, rqd, &flags, &read_bitmap);
+		if (ret) {
+			mempool_free(rqd, pblk->r_rq_pool);
+			return ret;
 		}
 	}
 
 	bio_get(bio);
+	rqd->opcode = NVM_OP_PREAD;
 	rqd->bio = bio;
 	rqd->ins = &pblk->instance;
-	rqd->nr_pages = rrqd->nr_pages = nr_pages;
-	rqd->flags = flags;
+	rqd->nr_pages = nr_pages;
 
-	left = pblk_read_from_w_buf(pblk, rqd, brrqd, &read_bitmap);
-	if (left == 0) {
+	/* TODO: Write flags somewhere... */
+
+	if (bitmap_full(&read_bitmap, nr_pages)) {
 		bio_endio(bio);
 		pblk_end_io(rqd);
-		if (brrqd)
-			mempool_free(brrqd, pblk->m_rrq_pool);
 		return NVM_IO_OK;
-	} else if (left < 0) {
-		if (brrqd)
-			mempool_free(brrqd, pblk->m_rrq_pool);
-		return NVM_IO_ERR;
+	} else if (bitmap_empty(&read_bitmap, nr_pages)) {
+		ret = pblk_submit_read_io(pblk, bio, rqd, flags);
+		if (ret ) {
+			mempool_free(rqd, pblk->r_rq_pool);
+		}
+		return ret;
 	}
 
-	if (bitmap_empty(&read_bitmap, nr_pages)) {
-		if (brrqd)
-			mempool_free(brrqd, pblk->m_rrq_pool);
-		return pblk_submit_read_io(pblk, bio, rqd, flags);
-	}
-
-	/* The read bio could not be completely read from the write buffer. This
-	 * case only occurs when several pages are sent in a single bio
+	/* The read bio request could be partially filled by the write buffer,
+	 * but there are some holes that need to be read from the drive.
 	 */
-	return pblk_fill_partial_read_bio(pblk, bio, &read_bitmap, rqd, brrqd,
-								nr_pages);
+	//TODO
+	/* return pblk_fill_partial_read_bio(pblk, bio, &read_bitmap, rqd, */
+								/* nr_pages); */
+	return NVM_IO_OK;
 }
 
 static int pblk_submit_io(struct pblk *pblk, struct bio *bio,
-				struct pblk_rq *rrqd, unsigned long flags)
+							unsigned long flags)
 {
 	int bio_size = bio_sectors(bio) << 9;
 
@@ -1431,32 +1573,108 @@ static int pblk_submit_io(struct pblk *pblk, struct bio *bio,
 		return NVM_IO_ERR;
 
 	if (bio_rw(bio) == READ)
-		return pblk_submit_read(pblk, bio, rrqd, flags);
+		return pblk_submit_read(pblk, bio, flags);
 
-	return pblk_buffer_write(pblk, bio, rrqd, flags);
+	return pblk_buffer_write(pblk, bio, flags);
 }
+
+/* static void pblk_flush_completion(struct pblk_rq *rrqd, struct completion *wait) */
+/* { */
+	/* if (atomic_dec_and_test(&rrqd->flush_ref)) */
+		/* complete(wait); */
+/* } */
+
+//TODO: Need to implement REQ_FUA
+#if 0
+static int pblk_wb_flush(struct pblk *pblk, struct bio *bio,
+				struct pblk_rq *rrqd, struct completion *wait,
+				unsigned long flush_flags)
+{
+	struct pblk_lun *rlun;
+	struct pblk_block *rblk;
+	unsigned int i;
+	int to_wait = 0;
+
+	/* if (bio->bi_rw & (REQ_FLUSH)){ */
+		/* printk(KERN_CRIT "FLUSH: %lu!!!\n", bio->bi_rw); */
+	/* } */
+	/* if (bio->bi_rw & (REQ_FUA)){ */
+		/* printk(KERN_CRIT "FUA: %lu!!!\n", bio->bi_rw); */
+	/* } */
+	/* if (bio->bi_rw & (REQ_SYNC)){ */
+		/* printk(KERN_CRIT "SYNC: %lu!!!\n", bio->bi_rw); */
+	/* } */
+
+	/* When a REQ_FLUSH arrives, we mark all write buffers to flush, before
+	 * the current I/O is placed into the write buffer for submission
+	 */
+	atomic_set(&rrqd->flush_ref, 0);
+	pblk_for_each_lun(pblk, rlun, i) {
+		spin_lock(&rlun->lock_lists);
+		list_for_each_entry(rblk, &rlun->open_list, list) {
+			struct pblk_w_buf *w_buf = &rblk->w_buf;
+			struct pblk_flush_rq *frq;
+
+			if (!kref_get_unless_zero(&rblk->w_buf.refs))
+				continue;
+
+			if (bitmap_full(w_buf->sync_bitmap, w_buf->cur_mem)) {
+				WARN_ON(kref_put(&rblk->w_buf.refs,
+							pblk_free_w_buffer));
+				continue;
+			}
+
+			frq = mempool_alloc(pblk->flush_pool, GFP_ATOMIC);
+			if (!frq) {
+				complete(wait);
+				WARN_ON(kref_put(&rblk->w_buf.refs,
+							pblk_free_w_buffer));
+				pr_err_ratelimited("pblk: not able to allocate"
+								" frq.");
+				return -ENOMEM;
+			}
+
+			frq->rrqd = rrqd;
+			frq->sync_point = w_buf->cur_mem;
+			frq->wait = wait;
+
+			spin_lock_irq(&w_buf->s_lock);
+			w_buf->sync_point = w_buf->cur_mem;
+			list_add_tail(&frq->list, &w_buf->flush_list);
+			spin_unlock_irq(&w_buf->s_lock);
+
+			atomic_inc(&rrqd->flush_ref);
+			WARN_ON(kref_put(&rblk->w_buf.refs,
+							pblk_free_w_buffer));
+
+			to_wait++;
+		}
+		spin_unlock(&rlun->lock_lists);
+	}
+
+	queue_work(pblk->kw_wq, &pblk->ws_writer);
+
+	/* All buffers meet current sync point */
+	if (!to_wait)
+		complete(wait);
+
+	return 0;
+}
+#endif
 
 static blk_qc_t pblk_make_rq(struct request_queue *q, struct bio *bio)
 {
 	struct pblk *pblk = q->queuedata;
-	struct pblk_rq *rrqd;
 	int err;
 
 	if (bio->bi_rw & REQ_DISCARD) {
-		pblk_discard(pblk, bio);
-		return BLK_QC_T_NONE;
+		//TODO
+		/* pblk_discard(pblk, bio); */
+		if (!(bio->bi_rw & (REQ_FLUSH | REQ_FUA)))
+			return BLK_QC_T_NONE;
 	}
 
-	rrqd = mempool_alloc(pblk->rrq_pool, GFP_KERNEL);
-	if (!rrqd) {
-		pr_err_ratelimited("pblk: not able to allocate rrqd.");
-		bio_io_error(bio);
-		return BLK_QC_T_NONE;
-	}
-	rrqd->pblk = pblk;
-	kref_init(&rrqd->refs);
-
-	err = pblk_submit_io(pblk, bio, rrqd, NVM_IOTYPE_NONE);
+	err = pblk_submit_io(pblk, bio, NVM_IOTYPE_NONE);
 	switch (err) {
 	case NVM_IO_OK:
 		return BLK_QC_T_NONE;
@@ -1477,215 +1695,331 @@ static blk_qc_t pblk_make_rq(struct request_queue *q, struct bio *bio)
 	return BLK_QC_T_NONE;
 }
 
-static int pblk_alloc_page_in_bio(struct pblk *pblk, struct bio *bio,
-								void *data)
+static int pblk_setup_w_rq(struct pblk *pblk, struct nvm_rq *rqd,
+			struct pblk_w_ctx *w_ctx_list, unsigned int nr_secs)
 {
-	struct page *page;
-	int err;
+	struct nvm_dev *dev = pblk->dev;
+	int i;
+	int ret = 0;
 
-	if (PAGE_SIZE != PBLK_EXPOSED_PAGE_SIZE)
-		return -1;
+	/* Setup write request */
+	rqd->metadata = NULL;
+	rqd->opcode = NVM_OP_PWRITE;
+	rqd->ins = &pblk->instance;
+	rqd->nr_pages = nr_secs; //TODO: Do a pass on page naming...
 
-	page = virt_to_page(data);
-	if (!page) {
-		pr_err("nvm: pblk: could not alloc page\n");
-		return -1;
+	/* We work at a page granurality to meet controller constrains, but we
+	 * map at a sector granurality since the l2p entries represent 4KB
+	 */
+	switch(dev->plane_mode) {
+	case NVM_PLANE_QUAD:
+		rqd->flags |= NVM_IO_QUAD_ACCESS;
+		break;
+	case NVM_PLANE_DOUBLE:
+		rqd->flags |= NVM_IO_DUAL_ACCESS;
+		break;
+	case NVM_PLANE_SINGLE:
+		rqd->flags |= NVM_IO_SNGL_ACCESS;
+		break;
+	default:
+		pr_err("pblk: invalid plane configuration\n");
+		ret = -EINVAL;
+		goto out;
 	}
 
-	err = bio_add_page(bio, page, PBLK_EXPOSED_PAGE_SIZE, 0);
-	if (err != PBLK_EXPOSED_PAGE_SIZE) {
-		pr_err("nvm: pblk: could not add page to bio\n");
-		return -1;
+	if (nr_secs == 1) {
+		/*
+		 * Single sector path - this path is highly improbable since
+		 * controllers typically deal with multi-sector and multi-plane
+		 * pages. This path is though useful for testing on QEMU
+		 */
+		BUG_ON(dev->sec_per_pl != 1);
+
+		ret = pblk_map_page(pblk, w_ctx_list, &rqd->ppa_addr, 1);
+		if (ret) {
+			/*
+			 * TODO:  There is no more available pages, we need to
+			 * recover. Probably a requeue of the bio is enough.
+			 */
+			BUG_ON(1);
+		}
+
+		goto out;
 	}
 
-	return 0;
+	/* This bio will contain several ppas */
+	rqd->ppa_list = nvm_dev_dma_alloc(pblk->dev, GFP_KERNEL,
+							&rqd->dma_ppa_list);
+	if (!rqd->ppa_list) {
+		pr_err("pblk: not able to allocate ppa list\n");
+		ret = -ENOMEM;
+		goto out;
+	}
+
+	for (i = 0; i < nr_secs; i += pblk->min_write_pgs) {
+		ret = pblk_map_page(pblk, &w_ctx_list[i], &rqd->ppa_list[i],
+							pblk->min_write_pgs);
+		if (ret) {
+			/*
+			 * TODO:  There is no more available pages, we need to
+			 * recover. Probably a requeue of the bio is enough.
+			 */
+			BUG_ON(1);
+		}
+	}
+
+out:
+	return ret;
 }
 
-static void pblk_submit_write(struct work_struct *work)
+/* Adds the necessary padding depending on the NAND type reported by the device
+ * in the identify command and returns the number of sectors that need to be
+ * flushed to the device.
+ *
+ * TODO: Support MLC and TLC. For now only SLC supported.
+ */
+#if 0
+static int pblk_pad_write(struct pblk *pblk, struct pblk_w_buf *w_buf, int left)
 {
-	struct pblk_lun *rlun = container_of(work, struct pblk_lun, ws_writer);
-	struct pblk *pblk = rlun->pblk;
 	struct nvm_dev *dev = pblk->dev;
+	struct nvm_id *id = &dev->identity;
+	struct nvm_id_group *grp = &id->groups[0];
+	struct pblk_block *rblk = container_of(w_buf, struct pblk_block, w_buf);
+	struct buf_entry *last_entry = w_buf->mem - 1;
 	struct pblk_addr *addr;
-	struct pblk_rq *rrqd;
-	struct pblk_buf_rq *brrqd;
-	void *data;
-	struct nvm_rq *rqd;
-	struct pblk_block *rblk, *trblk;
-	struct bio *bio;
-	int pgs_to_sync, pgs_avail;
-	int sync = NVM_SYNC_HARD;
-	int err;
+	struct pblk_rev_addr *rev;
+	u64 bppa, cppa, ppa;
+	int pgs_to_pad = pblk->min_write_pgs - left;
+	int pgs_padded = 0;
 	int i;
 
-	/* Note that OS pages are typically mapped to flash page sectors, which
-	 * are 4K; a flash page might be formed of several sectors. Also,
-	 * controllers typically program flash pages across multiple planes.
-	 * This is the flash programing granurality, and the reason behind the
-	 * sync strategy performed in this write thread.
+	if (grp->fmtype != NVM_ID_FMTYPE_SLC)
+		WARN_ON("nvm: pblk: NAND memory type not supported\n");
+
+	bppa = block_to_addr(pblk, rblk);
+	ppa = last_entry->addr->addr;
+
+	/* Since the moment we checked on padding was necessary, new sectors in
+	 * this block might have been allocated. Take this into account when
+	 * padding.
 	 */
-try:
-	list_for_each_entry_safe(rblk, trblk, &rlun->open_list, list) {
-		if (!spin_trylock(&rblk->w_buf.w_lock))
-			continue;
+	for (i = 1; i <= pgs_to_pad; i++) {
+		cppa = ppa + i;
 
-		/* If the write thread has already submitted all I/Os in the
-		 * write buffer for this block ignore that the block is in the
-		 * open list; it is on its way to the closed list. This enables
-		 * us to avoid taking a lock on the list.
-		 */
-		if (unlikely(rblk->w_buf.cur_subm == rblk->w_buf.nentries)) {
-			spin_unlock(&rblk->w_buf.w_lock);
-			schedule();
-			goto try;
-		}
-		pgs_avail = rblk->w_buf.cur_mem - rblk->w_buf.cur_subm;
-
-		switch (sync) {
-		case NVM_SYNC_SOFT:
-			pgs_to_sync = (pgs_avail >= pblk->max_write_pgs) ?
-					pblk->max_write_pgs : 0;
-			break;
-		case NVM_SYNC_HARD:
-			if (pgs_avail >= pblk->max_write_pgs)
-				pgs_to_sync = pblk->max_write_pgs;
-			else if (pgs_avail >= pblk->min_write_pgs)
-				pgs_to_sync = pblk->min_write_pgs *
-					(pgs_avail / pblk->min_write_pgs);
-			else
-				pgs_to_sync = pgs_avail; /* TODO: ADD PADDING */
-			break;
-		case NVM_SYNC_OPORT:
-			if (pgs_avail >= pblk->max_write_pgs)
-				pgs_to_sync = pblk->max_write_pgs;
-			else if (pgs_avail >= pblk->min_write_pgs)
-				pgs_to_sync = pblk->min_write_pgs *
-					(pgs_avail / pblk->min_write_pgs);
-			else
-				pgs_to_sync = 0;
-		}
-
-		if (pgs_to_sync == 0) {
-			spin_unlock(&rblk->w_buf.w_lock);
+		spin_lock(&rblk->lock);
+		if (test_and_set_bit(cppa - bppa, rblk->pages)) {
+			spin_unlock(&rblk->lock);
 			continue;
 		}
+		spin_unlock(&rblk->lock);
 
-		bio = bio_alloc(GFP_ATOMIC, pgs_to_sync);
-		if (!bio) {
-			pr_err("nvm: pblk: could not alloc write bio\n");
-			goto out1;
-		}
+		addr = kmalloc(sizeof(struct pblk_addr), GFP_ATOMIC);
+		if (!addr)
+			goto clean;
 
-		rqd = mempool_alloc(pblk->rq_pool, GFP_ATOMIC);
-		if (!rqd) {
-			pr_err_ratelimited("pblk: not able to create w req.");
-			goto out2;
-		}
-		rqd->metadata = NULL;
+		addr->addr = cppa;
+		addr->rblk = rblk;
 
-		brrqd = mempool_alloc(pblk->m_rrq_pool, GFP_ATOMIC);
-		if (!brrqd) {
-			pr_err_ratelimited("pblk: not able to create w rea.");
-			goto out3;
-		}
+		spin_lock(&w_buf->w_lock);
 
-		bio->bi_iter.bi_sector = 0; /* artificial bio */
-		bio->bi_rw = WRITE;
+		WARN_ON(w_buf->cur_mem == w_buf->nr_entries);
 
-		rqd->opcode = NVM_OP_HBWRITE;
-		rqd->bio = bio;
-		rqd->ins = &pblk->instance;
-		rqd->nr_pages = pgs_to_sync;
-		rqd->priv = brrqd;
+		w_buf->mem->rrqd = NULL;
+		w_buf->mem->addr = addr;
 
-		if (pgs_to_sync == 1) {
-			rrqd = rblk->w_buf.subm->rrqd;
-			addr = rblk->w_buf.subm->addr;
-			rqd->flags = rblk->w_buf.subm->flags;
-			data = rblk->w_buf.subm->data;
+		/* This padded entry contains not data - zeroize */
+		memset(w_buf->mem->data, 0, PBLK_EXPOSED_PAGE_SIZE);
+		pblk_advance_w_buf_entry(pblk, w_buf);
 
-			err = pblk_alloc_page_in_bio(pblk, bio, data);
-			if (err) {
-				pr_err("pblk: cannot allocate page in bio\n");
-				goto out4;
-			}
+		spin_unlock(&w_buf->w_lock);
 
-			/* TODO: This address can be skipped */
-			if (addr->addr == ADDR_EMPTY)
-				pr_err_ratelimited("pblk: submitting empty rq");
+		spin_lock(&pblk->rev_lock);
+		rev = &pblk->rev_trans_map[cppa - pblk->poffset];
+		rev->addr = ADDR_PADDED;
+		pblk_page_invalidate(pblk, addr);
+		spin_unlock(&pblk->rev_lock);
 
-			rqd->ppa_addr = pblk_ppa_to_gaddr(dev, addr->addr);
-
-			brrqd[0].rrqd = rrqd;
-			brrqd[0].addr = addr;
-
-			rblk->w_buf.subm++;
-			rblk->w_buf.cur_subm++;
-
-			goto submit_io;
-		}
-
-		/* This bio will contain several pppas */
-		rqd->ppa_list = nvm_dev_dma_alloc(pblk->dev, GFP_ATOMIC,
-							&rqd->dma_ppa_list);
-		if (!rqd->ppa_list) {
-			pr_err("pblk: not able to allocate ppa list\n");
-			goto out4;
-		}
-
-		for (i = 0; i < pgs_to_sync; i++) {
-			rrqd = rblk->w_buf.subm->rrqd;
-			addr = rblk->w_buf.subm->addr;
-			rqd->flags = rblk->w_buf.subm->flags;
-			data = rblk->w_buf.subm->data;
-
-			err = pblk_alloc_page_in_bio(pblk, bio, data);
-			if (err) {
-				pr_err("pblk: cannot allocate page in bio\n");
-				goto out5;
-			}
-
-			/* TODO: This address can be skipped */
-			if (addr->addr == ADDR_EMPTY)
-				pr_err_ratelimited("pblk: submitting empty rq");
-
-			rqd->ppa_list[i] = pblk_ppa_to_gaddr(dev, addr->addr);
-
-			brrqd[i].rrqd = rrqd;
-			brrqd[i].addr = addr;
-
-			rblk->w_buf.subm++;
-			rblk->w_buf.cur_subm++;
-		}
-
-submit_io:
-		WARN_ON(rblk->w_buf.cur_subm > rblk->w_buf.nentries);
-
-		spin_unlock(&rblk->w_buf.w_lock);
-
-		err = nvm_submit_io(dev, rqd);
-		if (err) {
-			pr_err("pblk: I/O submission failed: %d\n", err);
-			mempool_free(rqd, pblk->rq_pool);
-			bio_put(bio);
-		}
+		pgs_padded++;
 #ifdef CONFIG_NVM_DEBUG
-		atomic_add(pgs_to_sync, &pblk->sub_writes);
+	atomic_inc(&pblk->inflight_writes);
+	atomic_inc(&pblk->padded_writes);
 #endif
 	}
 
+	return pblk->min_write_pgs;
+
+clean:
+	spin_unlock(&w_buf->w_lock);
+	while (pgs_padded > 0) {
+		last_entry++;
+		kfree(last_entry->addr);
+
+		pgs_padded--;
+	}
+
+	return -ENOMEM;
+}
+#endif
+
+static int pblk_pad_write(struct pblk *pblk, int left)
+{
+	return 0;
+}
+
+/* TODO: Need to implement the different strategies */
+static int pblk_calc_secs_to_sync(struct pblk *pblk, unsigned long secs_avail,
+						unsigned long secs_to_flush)
+{
+	int max = pblk->max_write_pgs;
+	int min = pblk->min_write_pgs;
+	int sync = NVM_SYNC_HARD; /* TODO: Move to sysfs and put it in pblk */
+	int secs_to_sync = 0;
+
+	switch (sync) {
+	case NVM_SYNC_SOFT:
+		if (secs_avail >= max)
+			secs_to_sync = max;
+		break;
+	case NVM_SYNC_HARD:
+	case NVM_SYNC_OPORT:
+		if ((secs_avail >= max) || (secs_to_flush >= max)) {
+			secs_to_sync = max;
+		} else if (secs_avail >= min) {
+			if (secs_to_flush) {
+				secs_to_sync = min * (secs_to_flush / min);
+				while (1) {
+					int inc = secs_to_sync + min;
+					if (inc <= secs_avail && inc <= max)
+						secs_to_sync += min;
+					else
+						break;
+				}
+
+				if (secs_to_sync < secs_to_flush) {
+					int left = secs_to_flush - secs_to_sync;
+					secs_to_sync +=
+						pblk_pad_write(pblk, left);
+				}
+			} else
+				secs_to_sync = min * (secs_avail / min);
+		} else {
+			if (secs_to_flush && sync != NVM_SYNC_OPORT)
+				secs_to_sync =
+					pblk_pad_write(pblk, secs_avail);
+		}
+	}
+
+	return secs_to_sync;
+}
+
+/*
+ * pblk_submit_write -- thread to submit buffered writes to device
+ *
+ * The writer respects page size constrains defined by the device and will try
+ * to send as many pages in a single I/O as supported by the device.
+ *
+ */
+static void pblk_submit_write(struct work_struct *work)
+{
+	struct pblk *pblk = container_of(work, struct pblk, ws_writer);
+	struct nvm_dev *dev = pblk->dev;
+	struct request_queue *q = dev->q;
+	struct bio *bio;
+	struct nvm_rq *rqd;
+	void *data;
+	struct pblk_w_ctx *w_ctx;
+	unsigned int data_len, pgs_read;
+	unsigned int secs_avail, secs_to_sync, secs_to_flush = 0;
+	int err;
+
+	/* TODO: secs_to_flush must be calculated */
+
+	/* Count available entries on rb, and lock reader */
+	secs_avail = pblk_rb_count_init(&pblk->rwb);
+	if (!secs_avail)
+		return;
+
+	secs_to_sync = pblk_calc_secs_to_sync(pblk, secs_avail, secs_to_flush);
+	if (secs_to_sync < 0) {
+		pr_err("nvm: pblk: bad buffer sync calculation\n");
+		goto end_unlock;
+	}
+
+	if (!secs_to_sync)
+		goto end_unlock;
+
+	/*
+	 * XXX: For now, we copy data into a buffer that we use to form a new
+	 * bio. The idea is to map pages directly on the buffer and move the
+	 * submission pointer as bios are completed. This requires the use of
+	 * flags to mark each entry in the write buffer
+	 */
+	data_len = secs_to_sync * dev->sec_size;
+	data = kmalloc(data_len, GFP_ATOMIC);
+	if (!data) {
+		pr_err("nvm: pblk: could not alloc bio buffer (size:%dKB)\n",
+								secs_to_sync);
+		goto end_unlock;
+	}
+
+	rqd = mempool_alloc(pblk->w_rq_pool, GFP_ATOMIC);
+	if (!rqd) {
+		pr_err_ratelimited("pblk: not able to create write req.");
+		goto fail_data;
+	}
+	memset(rqd, 0, pblk_w_rq_size);
+	w_ctx = nvm_rq_to_pdu(rqd);
+
+	/* Read available entries on rb, and lock entries on the l2p table that
+	 * are on its way to be persisted to the media. This guarantees
+	 * consistency between the write buffer and the l2p table.
+	 */
+	pgs_read = pblk_rb_read(&pblk->rwb, data, w_ctx, secs_to_sync);
+	if (pgs_read != secs_to_sync)
+		goto fail_rqd;
+	pblk_rb_read_commit(&pblk->rwb, secs_to_sync);
+
+	bio = bio_copy_kern(q, data, data_len, GFP_KERNEL, 0);
+	/* bio = bio_map_kern(q, data, data_len, GFP_KERNEL); */
+	/* bio = bio_alloc(GFP_KERNEL, secs_to_sync); */
+	if (IS_ERR_OR_NULL(bio)) {
+		pr_err("nvm: pblk: could not map write bio\n");
+		goto fail_rqd;
+	}
+	kfree(data);
+
+	bio_get(bio);
+	bio->bi_iter.bi_sector = 0; /* artificial bio */
+	bio->bi_rw = WRITE;
+	rqd->bio = bio;
+
+	/* Assign lbas to ppas and populate request structure */
+	err = pblk_setup_w_rq(pblk, rqd, w_ctx, secs_to_sync);
+	if (err)
+		goto fail_sync;
+
+	err = nvm_submit_io(dev, rqd);
+	if (err) {
+		pr_err("pblk: I/O submission failed: %d\n", err);
+		mempool_free(rqd, pblk->w_rq_pool);
+		bio_put(bio);
+		goto fail_sync;
+	}
+
+#ifdef CONFIG_NVM_DEBUG
+	atomic_add(secs_to_sync, &pblk->sub_writes);
+#endif
+
 	return;
 
-out5:
-	nvm_dev_dma_free(pblk->dev, rqd->ppa_list, rqd->dma_ppa_list);
-out4:
-	mempool_free(brrqd, pblk->m_rrq_pool);
-out3:
-	mempool_free(rqd, pblk->rq_pool);
-out2:
+fail_sync:
 	bio_put(bio);
-out1:
-	spin_unlock(&rblk->w_buf.w_lock);
+fail_rqd:
+	mempool_free(rqd, pblk->w_rq_pool);
+fail_data:
+	kfree(data);
+end_unlock:
+	pblk_rb_read_rollback(&pblk->rwb);
 }
 
 static void pblk_requeue(struct work_struct *work)
@@ -1732,7 +2066,6 @@ static int pblk_gc_init(struct pblk *pblk)
 
 static void pblk_map_free(struct pblk *pblk)
 {
-	vfree(pblk->rev_trans_map);
 	vfree(pblk->trans_map);
 }
 
@@ -1748,20 +2081,60 @@ static int pblk_map_init(struct pblk *pblk)
 	if (!pblk->trans_map)
 		return -ENOMEM;
 
-	pblk->rev_trans_map = vmalloc(sizeof(struct pblk_rev_addr)
-							* pblk->nr_sects);
-	if (!pblk->rev_trans_map)
-		return -ENOMEM;
-
 	for (i = 0; i < pblk->nr_sects; i++) {
 		struct pblk_addr *p = &pblk->trans_map[i];
-		struct pblk_rev_addr *r = &pblk->rev_trans_map[i];
-
-		p->addr = ADDR_EMPTY;
-		r->addr = ADDR_EMPTY;
+		p->rblk = NULL;
+		ppa_set_empty(&p->ppa);
 	}
 
 	return 0;
+}
+
+static int pblk_rwb_init(struct pblk *pblk)
+{
+	struct nvm_dev *dev = pblk->dev;
+	struct pblk_rb_entry *entries;
+	void *data_buffer;
+	unsigned long nentries, data_size;
+	unsigned power_size, power_seg_sz, grace_area_sz;
+
+	/*
+	 * pblk write buffer characteristics:
+	 *  - It must be able to hold one entire flash block from each device
+	 *  LUN configured in the target.
+	 *  - It must respect a grace area corresponding to the actual memory
+	 *  constrains so that the memory is correctly programmed. For example,
+	 *  in TLC NAND memories there should be space enough so that each block
+	 *  present in the buffer can hold the upper, middle, and lower page so
+	 *  that the NAND can be correctly programmed.
+	 *  - It is not necessary that a whole flash block is maintained in
+	 *  memory before the last sector of the block is persisted in the NAND.
+	 *  If a block becomes bad while it is being programmed, already written
+	 *  pages can be read, as long as the write constrains are being met,
+	 *  e.g., programming the three mentioned pages in TLC memories.
+	 *  - Each entry of the buffer holds a pointer to the actual data on
+	 *  that entry and a pointer to metadata associated to the entry.
+	 */
+	nentries = pblk->nr_luns * dev->sec_per_blk;
+	data_size = nentries * dev->sec_size;
+
+	data_buffer = vmalloc(data_size);
+	if (!data_buffer)
+		return -ENOMEM;
+
+	entries = vmalloc(nentries * sizeof(struct pblk_rb_entry));
+	if (!entries) {
+		vfree(pblk->rwb.data);
+		return -ENOMEM;
+	}
+
+	/* Assume no grace area for now */
+	grace_area_sz = 0;
+	power_size = get_count_order(nentries);
+	power_seg_sz = get_count_order(dev->sec_size);
+
+	return pblk_rb_init(&pblk->rwb, entries, data_buffer, grace_area_sz,
+						power_size, power_seg_sz);
 }
 
 /* Minimum pages needed within a lun */
@@ -1770,8 +2143,6 @@ static int pblk_map_init(struct pblk *pblk)
 
 static int pblk_core_init(struct pblk *pblk)
 {
-	struct nvm_dev *dev = pblk->dev;
-
 	down_write(&pblk_lock);
 	if (!pblk_gcb_cache) {
 		pblk_gcb_cache = kmem_cache_create("pblk_gcb",
@@ -1781,70 +2152,22 @@ static int pblk_core_init(struct pblk *pblk)
 			return -ENOMEM;
 		}
 
-		pblk_r_rq_cache = kmem_cache_create("pblk_r_rq",
-					sizeof(struct nvm_rq), 0, 0, NULL);
-		if (!pblk_rq_cache) {
+		pblk_r_rq_size = sizeof(struct nvm_rq);
+		pblk_r_rq_cache = kmem_cache_create("pblk_r_rq", pblk_r_rq_size,
+				0, 0, NULL);
+		if (!pblk_r_rq_cache) {
 			kmem_cache_destroy(pblk_gcb_cache);
 			up_write(&pblk_lock);
 			return -ENOMEM;
 		}
 
-		pblk_w_rq_cache = kmem_cache_create("pblk_w_rq",
-			sizeof(struct nvm_rq) +
-			(pblk->max_write_pgs * sizeof(struct pblk_buf_rq)),
-			0, 0, NULL);
+		pblk_w_rq_size = sizeof(struct nvm_rq) +
+			(pblk->max_write_pgs * sizeof(struct pblk_w_ctx));
+		pblk_w_rq_cache = kmem_cache_create("pblk_w_rq", pblk_w_rq_size,
+				0, 0, NULL);
 		if (!pblk_w_rq_cache) {
+			kmem_cache_destroy(pblk_gcb_cache);
 			kmem_cache_destroy(pblk_r_rq_cache);
-			kmem_cache_destroy(pblk_gcb_cache);
-			kmem_cache_destroy(pblk_rq_cache);
-			up_write(&pblk_lock);
-			return -ENOMEM;
-		}
-
-		pblk_buf_rrq_cache = kmem_cache_create("pblk_m_rrq",
-			pblk->max_write_pgs * sizeof(struct pblk_buf_rq),
-			0, 0, NULL);
-		if (!pblk_buf_rrq_cache) {
-			kmem_cache_destroy(pblk_gcb_cache);
-			kmem_cache_destroy(pblk_rq_cache);
-			kmem_cache_destroy(pblk_rrq_cache);
-			up_write(&pblk_lock);
-			return -ENOMEM;
-		}
-	}
-
-	/* we assume that sec->sec_size is the same as the page size exposed by
-	 * pblk (4KB). We need extra logic otherwise
-	 */
-	if (!pblk_block_cache) {
-		/* Write buffer: Allocate all buffer (for all block) at once. We
-		 * avoid having to allocate a memory from the pool for each IO
-		 * at the cost pre-allocating memory for the whole block when a
-		 * new block is allocated from the media manager.
-		 */
-		pblk_wb_cache = kmem_cache_create("nvm_wb",
-			dev->pgs_per_blk * dev->sec_per_pg * dev->sec_size,
-			0, 0, NULL);
-		if (!pblk_wb_cache) {
-			kmem_cache_destroy(pblk_gcb_cache);
-			kmem_cache_destroy(pblk_rq_cache);
-			kmem_cache_destroy(pblk_rrq_cache);
-			kmem_cache_destroy(pblk_buf_rrq_cache);
-			up_write(&pblk_lock);
-			return -ENOMEM;
-		}
-
-		/* Write buffer entries */
-		pblk_block_cache = kmem_cache_create("nvm_entry",
-			dev->pgs_per_blk * dev->sec_per_pg *
-			sizeof(struct buf_entry),
-			0, 0, NULL);
-		if (!pblk_block_cache) {
-			kmem_cache_destroy(pblk_gcb_cache);
-			kmem_cache_destroy(pblk_rq_cache);
-			kmem_cache_destroy(pblk_rrq_cache);
-			kmem_cache_destroy(pblk_buf_rrq_cache);
-			kmem_cache_destroy(pblk_wb_cache);
 			up_write(&pblk_lock);
 			return -ENOMEM;
 		}
@@ -1857,36 +2180,42 @@ static int pblk_core_init(struct pblk *pblk)
 
 	pblk->gcb_pool = mempool_create_slab_pool(pblk->dev->nr_luns,
 								pblk_gcb_cache);
-	if (!pblk->gcb_pool)
+	if (!pblk->gcb_pool) {
+		mempool_destroy(pblk->page_pool);
 		return -ENOMEM;
+	}
 
-	pblk->rq_pool = mempool_create_slab_pool(64, pblk_rq_cache);
-	if (!pblk->rq_pool)
+	pblk->r_rq_pool = mempool_create_slab_pool(64, pblk_r_rq_cache);
+	if (!pblk->r_rq_pool) {
+		mempool_destroy(pblk->page_pool);
+		mempool_destroy(pblk->gcb_pool);
 		return -ENOMEM;
+	}
 
-	pblk->rrq_pool = mempool_create_slab_pool(64, pblk_rrq_cache);
-	if (!pblk->rrq_pool)
+	pblk->w_rq_pool = mempool_create_slab_pool(16, pblk_w_rq_cache);
+	if (!pblk->w_rq_pool) {
+		mempool_destroy(pblk->page_pool);
+		mempool_destroy(pblk->gcb_pool);
+		mempool_destroy(pblk->r_rq_pool);
 		return -ENOMEM;
-
-	pblk->m_rrq_pool = mempool_create_slab_pool(64, pblk_buf_rrq_cache);
-	if (!pblk->m_rrq_pool)
-		return -ENOMEM;
-
-	pblk->block_pool = mempool_create_slab_pool(8, pblk_block_cache);
-	if (!pblk->block_pool)
-		return -ENOMEM;
-
-	pblk->write_buf_pool = mempool_create_slab_pool(8, pblk_wb_cache);
-	if (!pblk->write_buf_pool)
-		return -ENOMEM;
-
-	spin_lock_init(&pblk->inflights.lock);
-	INIT_LIST_HEAD(&pblk->inflights.reqs);
+	}
 
 	pblk->kw_wq = alloc_workqueue("pblk-writer",
 				WQ_MEM_RECLAIM | WQ_UNBOUND, pblk->nr_luns);
 	if (!pblk->kw_wq)
 		return -ENOMEM;
+
+	/* Init write buffer */
+	if (pblk_rwb_init(pblk)) {
+		mempool_destroy(pblk->page_pool);
+		mempool_destroy(pblk->gcb_pool);
+		mempool_destroy(pblk->r_rq_pool);
+		destroy_workqueue(pblk->kw_wq);
+		return -ENOMEM;
+	}
+
+	spin_lock_init(&pblk->l2p_locks.lock);
+	INIT_LIST_HEAD(&pblk->l2p_locks.lock_list);
 
 	return 0;
 }
@@ -1898,11 +2227,7 @@ static void pblk_core_free(struct pblk *pblk)
 
 	mempool_destroy(pblk->page_pool);
 	mempool_destroy(pblk->gcb_pool);
-	mempool_destroy(pblk->m_rrq_pool);
-	mempool_destroy(pblk->rrq_pool);
-	mempool_destroy(pblk->rq_pool);
-	mempool_destroy(pblk->block_pool);
-	mempool_destroy(pblk->write_buf_pool);
+	mempool_destroy(pblk->r_rq_pool);
 }
 
 static void pblk_luns_free(struct pblk *pblk)
@@ -1931,23 +2256,27 @@ static int pblk_luns_init(struct pblk *pblk, int lun_begin, int lun_end)
 {
 	struct nvm_dev *dev = pblk->dev;
 	struct pblk_lun *rlun;
-	int i, j, ret = -EINVAL;
+	int i, j, mod, ret = -EINVAL;
 
-	if (dev->pgs_per_blk > MAX_INVALID_PAGES_STORAGE * BITS_PER_LONG) {
+	if (dev->sec_per_blk > MAX_INVALID_PAGES_STORAGE * BITS_PER_LONG) {
 		pr_err("pblk: number of pages per block too high.");
 		return -EINVAL;
 	}
 
-	spin_lock_init(&pblk->rev_lock);
+	pblk->min_write_pgs = dev->sec_per_pl * (dev->sec_size / PAGE_SIZE);
+	/* assume max_phys_sect % dev->min_write_pgs == 0 */
+	pblk->max_write_pgs = dev->ops->max_phys_sect;
+
+	div_u64_rem(dev->sec_per_blk, pblk->min_write_pgs, &mod);
+	if (mod) {
+		pr_err("pblk: bad configuration of sectors/pages\n");
+		return -EINVAL;
+	}
 
 	pblk->luns = kcalloc(pblk->nr_luns, sizeof(struct pblk_lun),
 								GFP_KERNEL);
 	if (!pblk->luns)
 		return -ENOMEM;
-
-	pblk->min_write_pgs = dev->sec_per_pl * (dev->sec_size / PAGE_SIZE);
-	/* assume max_phys_sect % dev->min_write_pgs == 0 */
-	pblk->max_write_pgs = dev->ops->max_phys_sect;
 
 	/* 1:1 mapping */
 	for (i = 0; i < pblk->nr_luns; i++) {
@@ -1987,9 +2316,9 @@ static int pblk_luns_init(struct pblk *pblk, int lun_begin, int lun_end)
 		INIT_LIST_HEAD(&rlun->open_list);
 		INIT_LIST_HEAD(&rlun->closed_list);
 
-		INIT_WORK(&rlun->ws_writer, pblk_submit_write);
 		INIT_WORK(&rlun->ws_gc, pblk_lun_gc);
 		spin_lock_init(&rlun->lock);
+		spin_lock_init(&rlun->lock_lists);
 
 		pblk->total_blocks += dev->blks_per_lun;
 		pblk->nr_sects += dev->sec_per_lun;
@@ -2069,15 +2398,17 @@ static sector_t pblk_capacity(void *private)
  * comparing the logical to physical address with the physical address.
  * Returns 0 on free, otherwise 1 if in use
  */
+#if 0
 static void pblk_block_map_update(struct pblk *pblk, struct pblk_block *rblk)
 {
 	struct nvm_dev *dev = pblk->dev;
 	int offset;
 	struct pblk_addr *laddr;
-	u64 paddr, pladdr;
+	u64 bpaddr, paddr, pladdr;
 
-	for (offset = 0; offset < dev->pgs_per_blk; offset++) {
-		paddr = block_to_addr(pblk, rblk) + offset;
+	bpaddr = block_to_rel_addr(pblk, rblk);
+	for (offset = 0; offset < dev->sec_per_blk; offset++) {
+		paddr = bpaddr + offset;
 
 		pladdr = pblk->rev_trans_map[paddr].addr;
 		if (pladdr == ADDR_EMPTY)
@@ -2093,6 +2424,7 @@ static void pblk_block_map_update(struct pblk *pblk, struct pblk_block *rblk)
 		}
 	}
 }
+#endif
 
 static int pblk_blocks_init(struct pblk *pblk)
 {
@@ -2106,7 +2438,8 @@ static int pblk_blocks_init(struct pblk *pblk)
 		for (blk_iter = 0; blk_iter < pblk->dev->blks_per_lun;
 								blk_iter++) {
 			rblk = &rlun->blocks[blk_iter];
-			pblk_block_map_update(pblk, rblk);
+			//XXX: Not necessary anymore
+			/* pblk_block_map_update(pblk, rblk); */
 		}
 	}
 
@@ -2169,6 +2502,7 @@ static void *pblk_init(struct nvm_dev *dev, struct gendisk *tdisk,
 	bio_list_init(&pblk->requeue_bios);
 	spin_lock_init(&pblk->bio_lock);
 	INIT_WORK(&pblk->ws_requeue, pblk_requeue);
+	INIT_WORK(&pblk->ws_writer, pblk_submit_write);
 
 	pblk->nr_luns = lun_end - lun_begin + 1;
 
@@ -2177,10 +2511,12 @@ static void *pblk_init(struct nvm_dev *dev, struct gendisk *tdisk,
 
 #ifdef CONFIG_NVM_DEBUG
 	atomic_set(&pblk->inflight_writes, 0);
+	atomic_set(&pblk->padded_writes, 0);
 	atomic_set(&pblk->req_writes, 0);
 	atomic_set(&pblk->sub_writes, 0);
 	atomic_set(&pblk->sync_writes, 0);
 	atomic_set(&pblk->inflight_reads, 0);
+	atomic_set(&pblk->sync_reads, 0);
 #endif
 
 	ret = pblk_area_init(pblk, &soffset);
@@ -2233,6 +2569,9 @@ static void *pblk_init(struct nvm_dev *dev, struct gendisk *tdisk,
 	blk_queue_logical_block_size(tqueue, queue_physical_block_size(bqueue));
 	blk_queue_max_hw_sectors(tqueue, queue_max_hw_sectors(bqueue));
 
+	/* Signal the block layer that flush is supported */
+	blk_queue_flush(tqueue, REQ_FLUSH | REQ_FUA);
+
 	pr_info("nvm: pblk initialized with %u luns and %llu pages.\n",
 			pblk->nr_luns, (unsigned long long)pblk->nr_sects);
 
@@ -2243,6 +2582,26 @@ err:
 	pblk_free(pblk);
 	return ERR_PTR(ret);
 }
+
+#ifdef CONFIG_NVM_DEBUG
+static void pblk_print_debug(void *private)
+{
+	struct pblk *pblk = private;
+
+	pr_info("pblk: %u\t%u\t%u\t%u\t%u\t%u\t%u\n",
+				atomic_read(&pblk->inflight_writes),
+				atomic_read(&pblk->inflight_reads),
+				atomic_read(&pblk->req_writes),
+				atomic_read(&pblk->padded_writes),
+				atomic_read(&pblk->sub_writes),
+				atomic_read(&pblk->sync_writes),
+				atomic_read(&pblk->sync_reads));
+}
+#else
+static void pblk_print_debug(void *private)
+{
+}
+#endif
 
 /* physical block device target */
 static struct nvm_tgt_type tt_pblk = {
@@ -2255,6 +2614,8 @@ static struct nvm_tgt_type tt_pblk = {
 
 	.init		= pblk_init,
 	.exit		= pblk_exit,
+
+	.print_debug	= pblk_print_debug,
 };
 
 static int __init pblk_module_init(void)
