@@ -195,14 +195,11 @@ struct pblk {
 
 	struct pblk_inflight inflights;
 
-	mempool_t *addr_pool;
 	mempool_t *page_pool;
 	mempool_t *gcb_pool;
 	mempool_t *rq_pool;
 	mempool_t *rrq_pool;
-	mempool_t *m_rrq_pool;
-	mempool_t *block_pool;
-	mempool_t *write_buf_pool;
+	mempool_t *flush_pool;
 
 	struct timer_list gc_timer;
 	struct workqueue_struct *krqd_wq;

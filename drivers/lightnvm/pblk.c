@@ -1736,50 +1736,11 @@ static void pblk_map_free(struct pblk *pblk)
 	vfree(pblk->trans_map);
 }
 
-static int pblk_l2p_update(u64 slba, u32 nlb, __le64 *entries, void *private)
-{
-	struct pblk *pblk = (struct pblk *)private;
-	struct nvm_dev *dev = pblk->dev;
-	struct pblk_addr *addr = pblk->trans_map + slba;
-	struct pblk_rev_addr *raddr = pblk->rev_trans_map;
-	u64 elba = slba + nlb;
-	u64 i;
-
-	if (unlikely(elba > dev->total_secs)) {
-		pr_err("nvm: L2P data from device is out of bounds!\n");
-		return -EINVAL;
-	}
-
-	for (i = 0; i < nlb; i++) {
-		u64 pba = le64_to_cpu(entries[i]);
-		/* LNVM treats address-spaces as silos, LBA and PBA are
-		 * equally large and zero-indexed.
-		 */
-		if (unlikely(pba >= dev->total_secs && pba != U64_MAX)) {
-			pr_err("nvm: L2P data entry is out of bounds!\n");
-			return -EINVAL;
-		}
-
-		/* Address zero is a special one. The first page on a disk is
-		 * protected. As it often holds internal device boot
-		 * information.
-		 */
-		if (!pba)
-			continue;
-
-		addr[i].addr = pba;
-		raddr[pba].addr = slba + i;
-	}
-
-	return 0;
-}
-
 static int pblk_map_init(struct pblk *pblk)
 {
 	struct nvm_dev *dev = pblk->dev;
 	sector_t i;
 	u64 slba;
-	int ret;
 
 	slba = pblk->soffset >> (ilog2(dev->sec_size) - 9);
 
@@ -1798,17 +1759,6 @@ static int pblk_map_init(struct pblk *pblk)
 
 		p->addr = ADDR_EMPTY;
 		r->addr = ADDR_EMPTY;
-	}
-
-	if (!dev->ops->get_l2p_tbl)
-		return 0;
-
-	/* Bring up the mapping table from device */
-	ret = dev->ops->get_l2p_tbl(dev, slba, pblk->nr_sects, pblk_l2p_update,
-									pblk);
-	if (ret) {
-		pr_err("nvm: pblk: could not read L2P table.\n");
-		return -EINVAL;
 	}
 
 	return 0;
@@ -1831,7 +1781,7 @@ static int pblk_core_init(struct pblk *pblk)
 			return -ENOMEM;
 		}
 
-		pblk_rq_cache = kmem_cache_create("nvm_rq",
+		pblk_r_rq_cache = kmem_cache_create("pblk_r_rq",
 					sizeof(struct nvm_rq), 0, 0, NULL);
 		if (!pblk_rq_cache) {
 			kmem_cache_destroy(pblk_gcb_cache);
@@ -1839,9 +1789,12 @@ static int pblk_core_init(struct pblk *pblk)
 			return -ENOMEM;
 		}
 
-		pblk_rrq_cache = kmem_cache_create("pblk_rrq",
-					sizeof(struct pblk_rq), 0, 0, NULL);
-		if (!pblk_rrq_cache) {
+		pblk_w_rq_cache = kmem_cache_create("pblk_w_rq",
+			sizeof(struct nvm_rq) +
+			(pblk->max_write_pgs * sizeof(struct pblk_buf_rq)),
+			0, 0, NULL);
+		if (!pblk_w_rq_cache) {
+			kmem_cache_destroy(pblk_r_rq_cache);
 			kmem_cache_destroy(pblk_gcb_cache);
 			kmem_cache_destroy(pblk_rq_cache);
 			up_write(&pblk_lock);
@@ -2199,8 +2152,8 @@ static void *pblk_init(struct nvm_dev *dev, struct gendisk *tdisk,
 	sector_t soffset;
 	int ret;
 
-	if (!(dev->identity.dom & NVM_RSP_L2P)) {
-		pr_err("nvm: pblk: device does not support l2p (%x)\n",
+	if (dev->identity.dom & NVM_RSP_L2P) {
+		pr_err("nvm: pblk: device has device-side translation table. Target not supported. (%x)\n",
 							dev->identity.dom);
 		return ERR_PTR(-EINVAL);
 	}
