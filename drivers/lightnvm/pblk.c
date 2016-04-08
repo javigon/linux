@@ -940,12 +940,14 @@ static int pblk_write_to_cache(struct pblk *pblk, struct bio *bio,
 	struct ppa_addr ppa;
 	unsigned long pos;
 	unsigned int i;
-	int commit = 1;
 
 	if (pblk_lock_rq(pblk, bio, &upt_ctx))
 		return 0;
 
 	pos = pblk_rb_write_init(&pblk->rwb);
+
+	if (pblk_rb_space(&pblk->rwb) < nentries)
+		goto rollback;
 
 	for (i = 0; i < nentries; i++) {
 		w_ctx.bio = NULL; /* TODO: Consider REQ_FUA | REQ_FLUSH case */
@@ -953,21 +955,12 @@ static int pblk_write_to_cache(struct pblk *pblk, struct bio *bio,
 		ppa_set_empty(&w_ctx.ppa.ppa);
 		w_ctx.flags = 0x0; /* TODO: Will mark GC */
 
-		if (pblk_rb_write_entry(&pblk->rwb, bio_data(bio), w_ctx,
-								pos + i)) {
-			pblk_rb_write_rollback(&pblk->rwb);
-			pblk_unlock_rq(pblk, bio, &upt_ctx);
-			commit = 0;
-			goto out;
-		}
+		if (pblk_rb_write_entry(&pblk->rwb, bio_data(bio),
+								w_ctx, pos + i))
+			goto rollback;
 
 		bio_advance(bio, PBLK_EXPOSED_PAGE_SIZE);
 	}
-
-out:
-	/* A bio is atomically committed to the write buffer */
-	if (!commit)
-		return 0;
 
 	pblk_rb_write_commit(&pblk->rwb, nentries);
 
@@ -980,6 +973,11 @@ out:
 	pblk_unlock_rq(pblk, bio, &upt_ctx);
 
 	return 1;
+
+rollback:
+	pblk_rb_write_rollback(&pblk->rwb);
+	pblk_unlock_rq(pblk, bio, &upt_ctx);
+	return 0;
 }
 
 /*

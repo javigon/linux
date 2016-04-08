@@ -199,7 +199,6 @@ int pblk_rb_write_entry(struct pblk_rb *rb, void *data, struct pblk_w_ctx w_ctx,
 
 	if (pblk_rb_ring_space(rb, ring_pos, subm, rb->nentries) < 1) {
 		ret = -ENOMEM;
-		spin_unlock(&rb->w_lock);
 		goto out;
 	}
 
