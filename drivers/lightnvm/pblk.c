@@ -962,13 +962,13 @@ static int pblk_write_to_cache(struct pblk *pblk, struct bio *bio,
 		bio_advance(bio, PBLK_EXPOSED_PAGE_SIZE);
 	}
 
-	pblk_rb_write_commit(&pblk->rwb, nentries);
-
 	/* Update mapping table with the write buffer cachelines */
 	for (i = 0; i < nentries; i++) {
 		ppa = pblk_cacheline_to_ppa(pos + i);
 		pblk_update_map(pblk, laddr + i, NULL, ppa);
 	}
+
+	pblk_rb_write_commit(&pblk->rwb, nentries);
 
 	pblk_unlock_rq(pblk, bio, &upt_ctx);
 
@@ -2018,6 +2018,10 @@ fail_data:
 	kfree(data);
 end_unlock:
 	pblk_rb_read_rollback(&pblk->rwb);
+
+	/* Kick the queue if the buffer is filled up */
+	if (unlikely(!(pblk_rb_space(&pblk->rwb))))
+		queue_work(pblk->kw_wq, &pblk->ws_writer);
 }
 
 static void pblk_requeue(struct work_struct *work)
