@@ -46,7 +46,7 @@ int pblk_rb_init(struct pblk_rb *rb, struct pblk_rb_entry *rb_entry_base,
 	rb->seg_size = (1 << power_seg_sz);
 	rb->nentries = (1 << power_size);
 	rb->grace_area = grace_area_sz;
-	rb->mem = rb->subm = 0;
+	rb->mem = rb->subm = rb->sync = 0;
 
 	rb->data_size = rb->nentries * rb->seg_size;
 	if (rb->data_size & (rb->data_size - 1)) {
@@ -56,6 +56,7 @@ int pblk_rb_init(struct pblk_rb *rb, struct pblk_rb_entry *rb_entry_base,
 
 	spin_lock_init(&rb->w_lock);
 	spin_lock_init(&rb->s_lock);
+	spin_lock_init(&rb->sy_lock);
 
 	for (i = 0; i < rb->nentries; i++) {
 		entry = &rb->entries[i];
@@ -110,12 +111,15 @@ static void memcpy_wctx(struct pblk_w_ctx *to, struct pblk_w_ctx *from)
 #define pblk_rb_ring_space(rb, head, tail, size) \
 	(CIRC_SPACE(head, tail, size) - rb->grace_area)
 
+/* Available space is calculated with respect to the back pointer signaling
+ * synchronized entries to the media.
+ */
 unsigned long pblk_rb_space(struct pblk_rb *rb)
 {
 	unsigned long mem = READ_ONCE(rb->mem);
-	unsigned long subm = READ_ONCE(rb->subm);
+	unsigned long sync = READ_ONCE(rb->sync);
 
-	return pblk_rb_ring_space(rb, mem, subm, rb->nentries);
+	return pblk_rb_ring_space(rb, mem, sync, rb->nentries);
 }
 
 unsigned long pblk_rb_count(struct pblk_rb *rb)
@@ -191,13 +195,13 @@ int pblk_rb_write_entry(struct pblk_rb *rb, void *data, struct pblk_w_ctx w_ctx,
 {
 	struct pblk_rb_entry *entry;
 	unsigned long size = rb->seg_size;
-	unsigned long subm;
+	unsigned long sync;
 	unsigned int ring_pos = (pos & (rb->nentries - 1));
 	int ret = 0;
 
-	subm = ACCESS_ONCE(rb->subm);
+	sync = ACCESS_ONCE(rb->sync);
 
-	if (pblk_rb_ring_space(rb, ring_pos, subm, rb->nentries) < 1) {
+	if (pblk_rb_ring_space(rb, ring_pos, sync, rb->nentries) < 1) {
 		ret = -ENOMEM;
 		goto out;
 	}
@@ -263,11 +267,13 @@ void pblk_rb_write_rollback(struct pblk_rb *rb)
  * in a per entry basis
  */
 unsigned int pblk_rb_read(struct pblk_rb *rb, void *buf,
-					struct pblk_w_ctx *w_ctx_list,
+					struct pblk_ctx *ctx,
 					unsigned int nentries)
 {
 	struct pblk *pblk = container_of(rb, struct pblk, rwb);
 	struct pblk_rb_entry *entry;
+	struct pblk_compl_ctx *c_ctx = ctx->c_ctx;
+	struct pblk_w_ctx *w_ctx_list = ctx->w_ctx;
 	struct pblk_l2p_upd_ctx *upt_ctx;
 	/* unsigned long size = nentries * rb->seg_size; */
 	unsigned long mem, subm;
@@ -284,6 +290,9 @@ unsigned int pblk_rb_read(struct pblk_rb *rb, void *buf,
 
 	/* entry = &rb->entries[subm]; */
 	/* memcpy_fromrb(rb, buf, entry->data, size); */
+
+	c_ctx->sentry = subm;
+	c_ctx->nentries = nentries;
 
 	/* XXX: Read one entry at a time for now */
 	for (i = 0; i < nentries; i++) {
@@ -325,6 +334,31 @@ unsigned int pblk_rb_read_entry_to_bio(struct pblk_rb *rb, struct bio *bio,
 	kunmap_atomic(kaddr);
 
 	return 1;
+}
+
+unsigned long pblk_rb_sync_init(struct pblk_rb *rb)
+{
+	spin_lock(&rb->sy_lock);
+
+	return READ_ONCE(rb->sync);
+}
+
+unsigned long pblk_rb_sync_advance(struct pblk_rb *rb, unsigned int nentries)
+{
+	unsigned long sync = ACCESS_ONCE(rb->sync);
+
+	lockdep_assert_held(&rb->sy_lock);
+	sync += nentries;
+	smp_store_release(&rb->sync, (sync & (rb->nentries - 1)));
+
+	return sync;
+}
+
+void pblk_rb_sync_end(struct pblk_rb *rb)
+{
+	lockdep_assert_held(&rb->sy_lock);
+
+	spin_unlock(&rb->sy_lock);
 }
 
 /*

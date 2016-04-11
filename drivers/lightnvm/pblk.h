@@ -61,6 +61,11 @@ struct pblk_l2p_lock {
 	spinlock_t lock;
 };
 
+struct pblk_compl_list {
+	struct list_head list;
+	spinlock_t lock;
+};
+
 struct pblk_l2p_upd_ctx {
 	struct list_head list;
 	sector_t l_start;
@@ -73,6 +78,12 @@ struct pblk_addr {
 	struct pblk_block *rblk;	/* reference to pblk block for lookup */
 };
 
+/* Completion context */
+struct pblk_compl_ctx {
+	unsigned int sentry;
+	unsigned int nentries;
+};
+
 /* Write context */
 struct pblk_w_ctx {
 	struct bio *bio;		/* Original bio - used for completing in
@@ -82,6 +93,14 @@ struct pblk_w_ctx {
 	sector_t lba;			/* Logic addr. associated with entry */
 	struct pblk_addr ppa;		/* Physic addr. associated with entry */
 	int flags;			/* Write context flags */
+};
+
+struct pblk_ctx {
+	struct work_struct ws_compl;
+	struct list_head list;
+	struct pblk *pblk;
+	struct pblk_compl_ctx *c_ctx;
+	struct pblk_w_ctx *w_ctx;
 };
 
 struct pblk_rb_entry {
@@ -97,6 +116,10 @@ struct pblk_rb {
 	unsigned long subm;		/* Read offset - points to last entry
 					 * that has been submitted to the media
 					 * to be persisted
+					 */
+	unsigned long sync;		/* Sync point - backpointer that signals
+					 * the last submitted entry that has
+					 * been successfully persisted to media
 					 */
 	unsigned long nentries;		/* Number of entries in write buffer -
 					   must be a power of two */
@@ -115,6 +138,7 @@ struct pblk_rb {
 
 	spinlock_t w_lock;		/* Write lock */
 	spinlock_t s_lock;		/* Submit lock */
+	spinlock_t sy_lock;		/* Sync lock */
 };
 
 struct pblk_block {
@@ -212,6 +236,8 @@ struct pblk {
 	struct pblk_addr *trans_map;
 	struct pblk_l2p_lock l2p_locks;
 
+	struct pblk_compl_list compl_list;
+
 	mempool_t *page_pool;
 	mempool_t *gcb_pool;
 	mempool_t *r_rq_pool;
@@ -240,18 +266,35 @@ void pblk_rb_write_commit(struct pblk_rb *rb, unsigned int nentries);
 void pblk_rb_write_rollback(struct pblk_rb *rb);
 unsigned long pblk_rb_count_init(struct pblk_rb *rb);
 unsigned int pblk_rb_read(struct pblk_rb *rb, void *buf,
-					struct pblk_w_ctx *w_ctx_list,
+					struct pblk_ctx *ctx,
 					unsigned int nentries);
 void pblk_rb_read_commit(struct pblk_rb *rb, unsigned int entries);
 void pblk_rb_read_rollback(struct pblk_rb *rb);
 unsigned int pblk_rb_read_entry_to_bio(struct pblk_rb *rb, struct bio *bio,
 								u64 pos);
+unsigned long pblk_rb_sync_init(struct pblk_rb *rb);
+unsigned long pblk_rb_sync_advance(struct pblk_rb *rb, unsigned int nentries);
+void pblk_rb_sync_end(struct pblk_rb *rb);
+
 // unsigned pblk_rb_get_ref(struct pblk_rb *rb, void *ptr, unsigned nentries);
 // unsigned pblk_rb_get_ref_lock(struct pblk_rb *rb, void *ptr, unsigned nentries);
 // void pblk_rb_commit(struct pblk_rb *rb, int rw);
 
 unsigned long pblk_rb_space(struct pblk_rb *rb);
 unsigned long pblk_rb_count(struct pblk_rb *rb);
+
+static inline struct pblk_ctx *pblk_set_ctx(struct pblk *pblk,
+							struct nvm_rq *rqd)
+{
+	struct pblk_ctx *c;
+
+	c = nvm_rq_to_pdu(rqd);
+	c->pblk = pblk;
+	c->c_ctx = (struct pblk_compl_ctx*)(c + 1);
+	c->w_ctx = (struct pblk_w_ctx*)(c->c_ctx + 1);
+
+	return c;
+}
 
 static inline void pblk_memcpy_addr(struct pblk_addr *to,
 							struct pblk_addr *from)

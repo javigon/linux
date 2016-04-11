@@ -835,6 +835,58 @@ static void pblk_run_gc(struct pblk *pblk, struct pblk_block *rblk)
 	queue_work(pblk->kgc_wq, &gcb->ws_gc);
 }
 
+static unsigned long pblk_complete_w_bio(struct pblk *pblk, struct bio *bio,
+					struct pblk_ctx *ctx, int nentries)
+{
+	struct pblk_compl_ctx *c_ctx = ctx->c_ctx;
+	struct pblk_w_ctx *w_ctx_list = ctx->w_ctx;
+	struct bio *original_bio;
+	int i;
+
+	bio_put(bio);
+	list_del(&ctx->list);
+
+	/* Complete original bios */
+	for (i = 0; i < nentries; i++) {
+		original_bio = w_ctx_list[i].bio;
+		if (original_bio) {
+			BUG_ON(!(bio->bi_rw & (REQ_FLUSH | REQ_FUA)));
+			bio_endio(original_bio);
+		}
+	}
+
+	return pblk_rb_sync_advance(&pblk->rwb, c_ctx->nentries);
+}
+
+static void pblk_compl_queue(struct work_struct *work)
+{
+	struct pblk_ctx *ctx = container_of(work, struct pblk_ctx,
+								ws_compl);
+	struct nvm_rq *rqd = nvm_rq_from_pdu(ctx);
+	struct pblk *pblk = ctx->pblk;
+	struct pblk_compl_ctx *c_ctx = ctx->c_ctx;
+	struct pblk_ctx *c, *r;
+	unsigned long pos;
+
+	pos = pblk_rb_sync_init(&pblk->rwb);
+
+	if (c_ctx->sentry == pos) {
+		spin_lock(&pblk->compl_list.lock);
+		pos = pblk_complete_w_bio(pblk, rqd->bio, ctx, rqd->nr_pages);
+		mempool_free(rqd, pblk->w_rq_pool);
+
+		list_for_each_entry_safe(c, r, &pblk->compl_list.list, list) {
+			rqd = nvm_rq_from_pdu(c);
+			if (c->c_ctx->sentry == pos)
+				pos = pblk_complete_w_bio(pblk, rqd->bio, c,
+								rqd->nr_pages);
+		}
+		spin_unlock(&pblk->compl_list.lock);
+	}
+
+	pblk_rb_sync_end(&pblk->rwb);
+}
+
 static void pblk_sync_buffer(struct pblk *pblk, struct pblk_addr p)
 {
 	struct nvm_dev *dev = pblk->dev;
@@ -863,10 +915,14 @@ static void pblk_sync_buffer(struct pblk *pblk, struct pblk_addr p)
 static void pblk_end_io_write(struct pblk *pblk, struct nvm_rq *rqd,
 							uint8_t nr_pages)
 {
-	struct pblk_w_ctx *w_ctx = nvm_rq_to_pdu(rqd);
+	struct pblk_ctx *ctx;
+	struct pblk_w_ctx *w_ctx;
 	struct bio *original_bio;
 	struct pblk_addr addr;
 	int i;
+
+	ctx = pblk_set_ctx(pblk, rqd);
+	w_ctx = ctx->w_ctx;
 
 	for (i = 0; i < nr_pages; i++) {
 		pblk_memcpy_addr(&addr, &w_ctx[i].ppa);
@@ -877,6 +933,9 @@ static void pblk_end_io_write(struct pblk *pblk, struct nvm_rq *rqd,
 		/* TODO: Complete the original bio bio in case of flush */
 		BUG_ON(original_bio);
 	}
+
+	INIT_WORK(&ctx->ws_compl, pblk_compl_queue);
+	queue_work(pblk->kgc_wq, &ctx->ws_compl);
 
 	pblk_writer_kick(pblk);
 }
@@ -901,26 +960,24 @@ static void pblk_end_io(struct nvm_rq *rqd)
 {
 	struct pblk *pblk = container_of(rqd->ins, struct pblk, instance);
 	uint8_t nr_pages = rqd->nr_pages;
-	mempool_t *free_mempool;
-
-	if (bio_data_dir(rqd->bio) == WRITE) {
-		pblk_end_io_write(pblk, rqd, nr_pages);
-		free_mempool = pblk->w_rq_pool;
-	} else {
-		/* if (rrqd->flags & NVM_IOTYPE_SYNC) */
-			/* return; */
-		pblk_end_io_read(pblk, rqd, nr_pages);
-		free_mempool = pblk->r_rq_pool;
-	}
-
-	bio_put(rqd->bio);
 
 	if (nr_pages > 1)
 		nvm_dev_dma_free(pblk->dev, rqd->ppa_list, rqd->dma_ppa_list);
 	if (rqd->metadata)
 		nvm_dev_dma_free(pblk->dev, rqd->metadata, rqd->dma_metadata);
 
-	mempool_free(rqd, free_mempool);
+	if (bio_data_dir(rqd->bio) == READ) {
+		/* if (rrqd->flags & NVM_IOTYPE_SYNC) */
+			/* return; */
+		pblk_end_io_read(pblk, rqd, nr_pages);
+		bio_put(rqd->bio);
+		mempool_free(rqd, pblk->r_rq_pool);
+
+		return;
+	}
+
+	pblk_end_io_write(pblk, rqd, nr_pages);
+
 }
 
 /*
@@ -1694,9 +1751,10 @@ static blk_qc_t pblk_make_rq(struct request_queue *q, struct bio *bio)
 }
 
 static int pblk_setup_w_rq(struct pblk *pblk, struct nvm_rq *rqd,
-			struct pblk_w_ctx *w_ctx_list, unsigned int nr_secs)
+			struct pblk_ctx *ctx, unsigned int nr_secs)
 {
 	struct nvm_dev *dev = pblk->dev;
+	struct pblk_w_ctx *w_ctx_list = ctx->w_ctx;
 	int i;
 	int ret = 0;
 
@@ -1925,7 +1983,7 @@ static void pblk_submit_write(struct work_struct *work)
 	struct bio *bio;
 	struct nvm_rq *rqd;
 	void *data;
-	struct pblk_w_ctx *w_ctx;
+	struct pblk_ctx *ctx;
 	unsigned int data_len, pgs_read;
 	unsigned int secs_avail, secs_to_sync, secs_to_flush = 0;
 	int err;
@@ -1966,13 +2024,13 @@ static void pblk_submit_write(struct work_struct *work)
 		goto fail_data;
 	}
 	memset(rqd, 0, pblk_w_rq_size);
-	w_ctx = nvm_rq_to_pdu(rqd);
+	ctx = pblk_set_ctx(pblk, rqd);
 
 	/* Read available entries on rb, and lock entries on the l2p table that
 	 * are on its way to be persisted to the media. This guarantees
 	 * consistency between the write buffer and the l2p table.
 	 */
-	pgs_read = pblk_rb_read(&pblk->rwb, data, w_ctx, secs_to_sync);
+	pgs_read = pblk_rb_read(&pblk->rwb, data, ctx, secs_to_sync);
 	if (pgs_read != secs_to_sync)
 		goto fail_rqd;
 	pblk_rb_read_commit(&pblk->rwb, secs_to_sync);
@@ -1992,9 +2050,13 @@ static void pblk_submit_write(struct work_struct *work)
 	rqd->bio = bio;
 
 	/* Assign lbas to ppas and populate request structure */
-	err = pblk_setup_w_rq(pblk, rqd, w_ctx, secs_to_sync);
+	err = pblk_setup_w_rq(pblk, rqd, ctx, secs_to_sync);
 	if (err)
 		goto fail_sync;
+
+	spin_lock(&pblk->compl_list.lock);
+	list_add_tail(&ctx->list, &pblk->compl_list.list);
+	spin_unlock(&pblk->compl_list.lock);
 
 	err = nvm_submit_io(dev, rqd);
 	if (err) {
@@ -2164,6 +2226,8 @@ static int pblk_core_init(struct pblk *pblk)
 		}
 
 		pblk_w_rq_size = sizeof(struct nvm_rq) +
+			sizeof(struct pblk_ctx) +
+			sizeof(struct pblk_compl_ctx) +
 			(pblk->max_write_pgs * sizeof(struct pblk_w_ctx));
 		pblk_w_rq_cache = kmem_cache_create("pblk_w_rq", pblk_w_rq_size,
 				0, 0, NULL);
@@ -2218,6 +2282,9 @@ static int pblk_core_init(struct pblk *pblk)
 
 	spin_lock_init(&pblk->l2p_locks.lock);
 	INIT_LIST_HEAD(&pblk->l2p_locks.lock_list);
+
+	spin_lock_init(&pblk->compl_list.lock);
+	INIT_LIST_HEAD(&pblk->compl_list.list);
 
 	return 0;
 }
