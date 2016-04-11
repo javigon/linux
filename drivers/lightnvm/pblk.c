@@ -2014,14 +2014,14 @@ fail_sync:
 	bio_put(bio);
 fail_rqd:
 	mempool_free(rqd, pblk->w_rq_pool);
+	/* Fail is probably caused by a locked lba - kick the queue to avoid a
+	 * deadlock in the case that no new I/Os are coming in.
+	 */
+	queue_work(pblk->kw_wq, &pblk->ws_writer);
 fail_data:
 	kfree(data);
 end_unlock:
 	pblk_rb_read_rollback(&pblk->rwb);
-
-	/* Kick the queue if the buffer is filled up */
-	if (unlikely(!(pblk_rb_space(&pblk->rwb))))
-		queue_work(pblk->kw_wq, &pblk->ws_writer);
 }
 
 static void pblk_requeue(struct work_struct *work)
