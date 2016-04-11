@@ -459,12 +459,12 @@ static int nvme_nvm_get_bb_tbl(struct nvm_dev *nvmdev, struct ppa_addr ppa,
 		goto out;
 	}
 
-	/* if (le32_to_cpu(bb_tbl->tblks) != nr_src_blks) { */
-		/* ret = -EINVAL; */
-		/* dev_err(ctrl->dev, "bbt unsuspected blocks returned (%u!=%u)", */
-				/* le32_to_cpu(bb_tbl->tblks), nr_src_blks); */
-		/* goto out; */
-	/* } */
+	if (le32_to_cpu(bb_tbl->tblks) != nr_src_blks) {
+		ret = -EINVAL;
+		dev_err(ctrl->dev, "bbt unsuspected blocks returned (%u!=%u)",
+				le32_to_cpu(bb_tbl->tblks), nr_src_blks);
+		goto out;
+	}
 
 	nvme_nvm_bb_tbl_fold(nvmdev, nr_dst_blks, dst_blks,
 						nr_src_blks, bb_tbl->blk);
