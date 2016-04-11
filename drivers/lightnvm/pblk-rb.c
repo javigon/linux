@@ -268,7 +268,7 @@ unsigned int pblk_rb_read(struct pblk_rb *rb, void *buf,
 {
 	struct pblk *pblk = container_of(rb, struct pblk, rwb);
 	struct pblk_rb_entry *entry;
-	struct pblk_l2p_update_ctx *upt_ctx;
+	struct pblk_l2p_upd_ctx *upt_ctx;
 	/* unsigned long size = nentries * rb->seg_size; */
 	unsigned long mem, subm;
 	unsigned int read = 0;

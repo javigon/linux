@@ -61,7 +61,7 @@ struct pblk_l2p_lock {
 	spinlock_t lock;
 };
 
-struct pblk_l2p_update_ctx {
+struct pblk_l2p_upd_ctx {
 	struct list_head list;
 	sector_t l_start;
 	sector_t l_end;
@@ -78,7 +78,7 @@ struct pblk_w_ctx {
 	struct bio *bio;		/* Original bio - used for completing in
 					 * REQ_FUA, REQ_FLUSH case
 					 */
-	struct pblk_l2p_update_ctx upt_ctx;
+	struct pblk_l2p_upd_ctx upt_ctx;/* Update context for l2p table */
 	sector_t lba;			/* Logic addr. associated with entry */
 	struct pblk_addr ppa;		/* Physic addr. associated with entry */
 	int flags;			/* Write context flags */
@@ -306,17 +306,17 @@ static inline sector_t pblk_get_sector(sector_t laddr)
 	return laddr * NR_PHY_IN_LOG;
 }
 
-static inline int request_intersects(struct pblk_l2p_update_ctx *r,
+static inline int request_intersects(struct pblk_l2p_upd_ctx *r,
 				sector_t laddr_start, sector_t laddr_end)
 {
 	return (laddr_end >= r->l_start) && (laddr_start <= r->l_end);
 }
 
 static int __pblk_lock_laddr(struct pblk *pblk, sector_t laddr,
-				unsigned pages, struct pblk_l2p_update_ctx *r)
+				unsigned pages, struct pblk_l2p_upd_ctx *r)
 {
 	sector_t laddr_end = laddr + pages - 1;
-	struct pblk_l2p_update_ctx *rtmp;
+	struct pblk_l2p_upd_ctx *rtmp;
 
 	spin_lock(&pblk->l2p_locks.lock);
 	list_for_each_entry(rtmp, &pblk->l2p_locks.lock_list, list) {
@@ -337,7 +337,7 @@ static int __pblk_lock_laddr(struct pblk *pblk, sector_t laddr,
 
 static inline int pblk_lock_laddr(struct pblk *pblk, sector_t laddr,
 				unsigned pages,
-				struct pblk_l2p_update_ctx *r)
+				struct pblk_l2p_upd_ctx *r)
 {
 	BUG_ON((laddr + pages) > pblk->nr_sects);
 
@@ -345,7 +345,7 @@ static inline int pblk_lock_laddr(struct pblk *pblk, sector_t laddr,
 }
 
 static inline int pblk_lock_rq(struct pblk *pblk, struct bio *bio,
-					struct pblk_l2p_update_ctx *l2p_ctx)
+					struct pblk_l2p_upd_ctx *l2p_ctx)
 {
 	sector_t laddr = pblk_get_laddr(bio);
 	unsigned int pages = pblk_get_pages(bio);
@@ -354,7 +354,7 @@ static inline int pblk_lock_rq(struct pblk *pblk, struct bio *bio,
 }
 
 static inline void pblk_unlock_laddr(struct pblk *pblk,
-						struct pblk_l2p_update_ctx *r)
+						struct pblk_l2p_upd_ctx *r)
 {
 	spin_lock(&pblk->l2p_locks.lock);
 	list_del_init(&r->list);
@@ -362,7 +362,7 @@ static inline void pblk_unlock_laddr(struct pblk *pblk,
 }
 
 static inline void pblk_unlock_rq(struct pblk *pblk, struct bio *bio,
-					struct pblk_l2p_update_ctx *l2p_ctx)
+					struct pblk_l2p_upd_ctx *l2p_ctx)
 {
 	unsigned int nr_pages = pblk_get_pages(bio);
 

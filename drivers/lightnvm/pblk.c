@@ -936,7 +936,7 @@ static int pblk_write_to_cache(struct pblk *pblk, struct bio *bio,
 {
 	sector_t laddr = pblk_get_laddr(bio);
 	struct pblk_w_ctx w_ctx;
-	struct pblk_l2p_update_ctx upt_ctx;
+	struct pblk_l2p_upd_ctx upt_ctx;
 	struct ppa_addr ppa;
 	unsigned long pos;
 	unsigned int i;
@@ -1190,7 +1190,7 @@ static int pblk_read_ppalist_rq(struct pblk *pblk, struct bio *bio,
 	/* int is_gc = *flags & NVM_IOTYPE_GC; */
 	/* int locked = 0; */
 	sector_t laddr = pblk_get_laddr(bio);
-	struct pblk_l2p_update_ctx upt_ctx;
+	struct pblk_l2p_upd_ctx upt_ctx;
 	struct pblk_addr *gp;
 	int advanced_bio = 0;
 	int i, j = 0;
@@ -1305,7 +1305,7 @@ static int pblk_read_rq(struct pblk *pblk, struct bio *bio, struct nvm_rq *rqd,
 {
 	/* int is_gc = *flags & NVM_IOTYPE_GC; */
 	sector_t laddr = pblk_get_laddr(bio);
-	struct pblk_l2p_update_ctx upt_ctx;
+	struct pblk_l2p_upd_ctx upt_ctx;
 	struct pblk_addr *gp;
 
 	if (pblk_lock_rq(pblk, bio, &upt_ctx))
