@@ -405,7 +405,6 @@ unsigned int pblk_rb_copy_entry_to_bio(struct pblk_rb *rb, struct bio *bio,
 
 unsigned long pblk_rb_sync_init(struct pblk_rb *rb, unsigned long *flags)
 {
-
 	spin_lock_irqsave(&rb->sy_lock, *flags);
 
 	return READ_ONCE(rb->sync);
