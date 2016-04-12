@@ -1119,7 +1119,10 @@ static int pblk_write_ppalist_rq(struct pblk *pblk, struct bio *bio,
 		atomic_add(nr_pages, &pblk->req_writes);
 #endif
 
-	queue_work(pblk->kw_wq, &pblk->ws_writer);
+	/* Use count as a heuristic for setting up a job in workqueue */
+	if (pblk_rb_count(&pblk->rwb) > pblk->min_write_pgs)
+		queue_work(pblk->kw_wq, &pblk->ws_writer);
+
 	return NVM_IO_DONE;
 }
 
@@ -1155,7 +1158,10 @@ static int pblk_write_rq(struct pblk *pblk, struct bio *bio,
 	atomic_inc(&pblk->req_writes);
 #endif
 
-	queue_work(pblk->kw_wq, &pblk->ws_writer);
+	/* Use count as a heuristic for setting up a job in workqueue */
+	if (pblk_rb_count(&pblk->rwb) > pblk->min_write_pgs)
+		queue_work(pblk->kw_wq, &pblk->ws_writer);
+
 	return NVM_IO_DONE;
 }
 
