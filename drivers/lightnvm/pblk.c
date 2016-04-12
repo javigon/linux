@@ -1998,10 +1998,24 @@ static void pblk_submit_write(struct work_struct *work)
 
 	/* TODO: secs_to_flush must be calculated */
 
+	rqd = mempool_alloc(pblk->w_rq_pool, GFP_KERNEL);
+	if (!rqd) {
+		pr_err("pblk: not able to create write req.\n");
+		return;
+	}
+	memset(rqd, 0, pblk_w_rq_size);
+	ctx = pblk_set_ctx(pblk, rqd);
+
+	bio = bio_alloc(GFP_KERNEL, pblk->max_write_pgs);
+	if (!bio) {
+		pr_err("pblk: not able to create write bio\n");
+		goto fail_rqd;
+	}
+
 	/* Count available entries on rb, and lock reader */
 	secs_avail = pblk_rb_count_init(&pblk->rwb);
 	if (!secs_avail)
-		return;
+		goto fail_bio;
 
 	secs_to_sync = pblk_calc_secs_to_sync(pblk, secs_avail, secs_to_flush);
 	if (secs_to_sync < 0) {
@@ -2012,27 +2026,13 @@ static void pblk_submit_write(struct work_struct *work)
 	if (!secs_to_sync)
 		goto end_unlock;
 
-	rqd = mempool_alloc(pblk->w_rq_pool, GFP_ATOMIC);
-	if (!rqd) {
-		pr_err("pblk: not able to create write req.\n");
-		goto end_unlock;
-	}
-	memset(rqd, 0, pblk_w_rq_size);
-	ctx = pblk_set_ctx(pblk, rqd);
-
-	bio = bio_alloc(GFP_ATOMIC, secs_to_sync);
-	if (!bio) {
-		pr_err("pblk: not able to create write bio\n");
-		goto fail_rqd;
-	}
-
 	/* Read available entries on rb, and lock entries on the l2p table that
 	 * are on its way to be persisted to the media. This guarantees
 	 * consistency between the write buffer and the l2p table.
 	 */
 	pgs_read = pblk_rb_read_to_bio(&pblk->rwb, bio, ctx, secs_to_sync);
 	if (pgs_read != secs_to_sync)
-		goto fail_bio;
+		goto fail_sync;
 	pblk_rb_read_commit(&pblk->rwb, secs_to_sync);
 
 	bio_get(bio);
@@ -2043,14 +2043,14 @@ static void pblk_submit_write(struct work_struct *work)
 	/* Assign lbas to ppas and populate request structure */
 	err = pblk_setup_w_rq(pblk, rqd, ctx, secs_to_sync);
 	if (err)
-		goto fail_bio;
+		goto fail_sync;
 
 	err = nvm_submit_io(dev, rqd);
 	if (err) {
 		pr_err("pblk: I/O submission failed: %d\n", err);
 		mempool_free(rqd, pblk->w_rq_pool);
 		bio_put(bio);
-		goto fail_bio;
+		goto fail_sync;
 	}
 
 #ifdef CONFIG_NVM_DEBUG
@@ -2059,16 +2059,17 @@ static void pblk_submit_write(struct work_struct *work)
 
 	return;
 
-fail_bio:
-	bio_put(bio);
+fail_sync:
 	/* Fail is probably caused by a locked lba - kick the queue to avoid a
 	 * deadlock in the case that no new I/Os are coming in.
 	 */
 	queue_work(pblk->kw_wq, &pblk->ws_writer);
-fail_rqd:
-	mempool_free(rqd, pblk->w_rq_pool);
 end_unlock:
 	pblk_rb_read_rollback(&pblk->rwb);
+fail_bio:
+	bio_endio(bio);
+fail_rqd:
+	mempool_free(rqd, pblk->w_rq_pool);
 }
 
 static void pblk_requeue(struct work_struct *work)
