@@ -1409,9 +1409,9 @@ static int pblk_read_rq(struct pblk *pblk, struct bio *bio, struct nvm_rq *rqd,
 static int pblk_submit_read_io(struct pblk *pblk, struct bio *bio,
 				struct nvm_rq *rqd, unsigned long flags)
 {
-	struct nvm_dev *dev = pblk->dev;
 	int err;
 
+/*
 	switch(dev->plane_mode) {
 	case NVM_PLANE_QUAD:
 		if (rqd->nr_pages > 2)
@@ -1434,7 +1434,7 @@ static int pblk_submit_read_io(struct pblk *pblk, struct bio *bio,
 		pr_err("pblk: invalid plane configuration\n");
 		return NVM_IO_ERR;
 	}
-
+*/
 	rqd->flags |= NVM_IO_SUSPEND;
 
 	err = nvm_submit_io(pblk->dev, rqd);
