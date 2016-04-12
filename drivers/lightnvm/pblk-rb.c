@@ -199,6 +199,8 @@ int pblk_rb_write_entry(struct pblk_rb *rb, void *data, struct pblk_w_ctx w_ctx,
 	unsigned int ring_pos = (pos & (rb->nentries - 1));
 	int ret = 0;
 
+	lockdep_assert_held(&rb->w_lock);
+
 	sync = ACCESS_ONCE(rb->sync);
 
 	if (pblk_rb_ring_space(rb, ring_pos, sync, rb->nentries) < 1) {
