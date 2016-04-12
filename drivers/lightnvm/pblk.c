@@ -855,6 +855,10 @@ static unsigned long pblk_complete_w_bio(struct pblk *pblk, struct bio *bio,
 		}
 	}
 
+#ifdef CONFIG_NVM_DEBUG
+	atomic_add(nentries, &pblk->compl_writes);
+#endif
+
 	return pblk_rb_sync_advance(&pblk->rwb, c_ctx->nentries);
 }
 
@@ -2584,6 +2588,7 @@ static void *pblk_init(struct nvm_dev *dev, struct gendisk *tdisk,
 	atomic_set(&pblk->req_writes, 0);
 	atomic_set(&pblk->sub_writes, 0);
 	atomic_set(&pblk->sync_writes, 0);
+	atomic_set(&pblk->compl_writes, 0);
 	atomic_set(&pblk->inflight_reads, 0);
 	atomic_set(&pblk->sync_reads, 0);
 #endif
@@ -2657,13 +2662,14 @@ static void pblk_print_debug(void *private)
 {
 	struct pblk *pblk = private;
 
-	pr_info("pblk: %u\t%u\t%u\t%u\t%u\t%u\t%u\n",
+	pr_info("pblk: %u\t%u\t%u\t%u\t%u\t%u\t%u\t%u\n",
 				atomic_read(&pblk->inflight_writes),
 				atomic_read(&pblk->inflight_reads),
 				atomic_read(&pblk->req_writes),
 				atomic_read(&pblk->padded_writes),
 				atomic_read(&pblk->sub_writes),
 				atomic_read(&pblk->sync_writes),
+				atomic_read(&pblk->compl_writes),
 				atomic_read(&pblk->sync_reads));
 }
 #else

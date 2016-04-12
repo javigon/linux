@@ -215,13 +215,15 @@ struct pblk {
 			    */
 
 #ifdef CONFIG_NVM_DEBUG
-	atomic_t inflight_writes;
-	atomic_t padded_writes;
-	atomic_t req_writes;
-	atomic_t sub_writes;
-	atomic_t sync_writes;
-	atomic_t inflight_reads;
-	atomic_t sync_reads;
+	/* All debug counters apply to 4kb sector I/Os */
+	atomic_t inflight_writes;	/* Sectors not synced to media */
+	atomic_t padded_writes;		/* Sectors padded due to flush/fua */
+	atomic_t req_writes;		/* Sectors stored on write buffer */
+	atomic_t sub_writes;		/* Sectors submitted from buffer */
+	atomic_t sync_writes;		/* Sectors synced to media */
+	atomic_t compl_writes;		/* Sectors completed in write bio */
+	atomic_t inflight_reads;	/* Inflight sector read requests */
+	atomic_t sync_reads;		/* Completed sector read requests */
 #endif
 
 	spinlock_t bio_lock;
