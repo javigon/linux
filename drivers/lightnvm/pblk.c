@@ -2651,6 +2651,8 @@ static void pblk_print_debug(void *private)
 				atomic_read(&pblk->sync_writes),
 				atomic_read(&pblk->compl_writes),
 				atomic_read(&pblk->sync_reads));
+
+	pblk_rb_print_debug(&pblk->rwb);
 }
 #else
 static void pblk_print_debug(void *private)

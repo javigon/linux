@@ -282,6 +282,10 @@ void pblk_rb_sync_end(struct pblk_rb *rb, unsigned long flags);
 unsigned long pblk_rb_space(struct pblk_rb *rb);
 unsigned long pblk_rb_count(struct pblk_rb *rb);
 
+#ifdef CONFIG_NVM_DEBUG
+void pblk_rb_print_debug(struct pblk_rb *rb);
+#endif
+
 static inline struct pblk_ctx *pblk_set_ctx(struct pblk *pblk,
 							struct nvm_rq *rqd)
 {

@@ -431,6 +431,14 @@ void pblk_rb_sync_end(struct pblk_rb *rb, unsigned long flags)
 	spin_unlock_irqrestore(&rb->sy_lock, flags);
 }
 
+#ifdef CONFIG_NVM_DEBUG
+void pblk_rb_print_debug(struct pblk_rb *rb)
+{
+	pr_info("pblk_rb: %lu\t%lu\t%lu\n",
+			rb->mem, rb->subm, rb->sync);
+}
+#endif
+
 /*
  * TODO: Implement this part when we do not do a copy from buffer when sending
  * an internal bio to the device
