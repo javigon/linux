@@ -835,7 +835,7 @@ static void pblk_run_gc(struct pblk *pblk, struct pblk_block *rblk)
 	queue_work(pblk->kgc_wq, &gcb->ws_gc);
 }
 
-static unsigned long pblk_complete_w_bio(struct pblk *pblk, struct bio *bio,
+static unsigned long pblk_end_w_bio(struct pblk *pblk, struct bio *bio,
 					struct pblk_ctx *ctx, int nentries)
 {
 	struct pblk_compl_ctx *c_ctx = ctx->c_ctx;
@@ -844,7 +844,6 @@ static unsigned long pblk_complete_w_bio(struct pblk *pblk, struct bio *bio,
 	int i;
 
 	bio_put(bio);
-	list_del(&ctx->list);
 
 	/* Complete original bios */
 	for (i = 0; i < nentries; i++) {
@@ -862,6 +861,14 @@ static unsigned long pblk_complete_w_bio(struct pblk *pblk, struct bio *bio,
 	return pblk_rb_sync_advance(&pblk->rwb, c_ctx->nentries);
 }
 
+static unsigned long pblk_end_queued_w_bio(struct pblk *pblk, struct bio *bio,
+					struct pblk_ctx *ctx, int nentries)
+{
+	list_del(&ctx->list);
+
+	return pblk_end_w_bio(pblk, bio, ctx, nentries);
+}
+
 static void pblk_compl_queue(struct work_struct *work)
 {
 	struct pblk_ctx *ctx = container_of(work, struct pblk_ctx,
@@ -876,15 +883,19 @@ static void pblk_compl_queue(struct work_struct *work)
 
 	if (c_ctx->sentry == pos) {
 		spin_lock(&pblk->compl_list.lock);
-		pos = pblk_complete_w_bio(pblk, rqd->bio, ctx, rqd->nr_pages);
+		pos = pblk_end_w_bio(pblk, rqd->bio, ctx, rqd->nr_pages);
 		mempool_free(rqd, pblk->w_rq_pool);
 
 		list_for_each_entry_safe(c, r, &pblk->compl_list.list, list) {
 			rqd = nvm_rq_from_pdu(c);
 			if (c->c_ctx->sentry == pos)
-				pos = pblk_complete_w_bio(pblk, rqd->bio, c,
+				pos = pblk_end_queued_w_bio(pblk, rqd->bio, c,
 								rqd->nr_pages);
 		}
+		spin_unlock(&pblk->compl_list.lock);
+	} else {
+		spin_lock(&pblk->compl_list.lock);
+		list_add_tail(&ctx->list, &pblk->compl_list.list);
 		spin_unlock(&pblk->compl_list.lock);
 	}
 
@@ -2057,10 +2068,6 @@ static void pblk_submit_write(struct work_struct *work)
 	err = pblk_setup_w_rq(pblk, rqd, ctx, secs_to_sync);
 	if (err)
 		goto fail_sync;
-
-	spin_lock(&pblk->compl_list.lock);
-	list_add_tail(&ctx->list, &pblk->compl_list.list);
-	spin_unlock(&pblk->compl_list.lock);
 
 	err = nvm_submit_io(dev, rqd);
 	if (err) {
