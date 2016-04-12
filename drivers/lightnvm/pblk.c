@@ -844,8 +844,6 @@ static unsigned long pblk_end_w_bio(struct pblk *pblk, struct bio *bio,
 	int nentries = c_ctx->nentries;
 	int i;
 
-	bio_put(bio);
-
 	/* Complete original bios */
 	for (i = 0; i < nentries; i++) {
 		original_bio = w_ctx_list[i].bio;
@@ -870,36 +868,30 @@ static unsigned long pblk_end_queued_w_bio(struct pblk *pblk, struct bio *bio,
 	return pblk_end_w_bio(pblk, bio, ctx);
 }
 
-static void pblk_compl_queue(struct work_struct *work)
+static void pblk_compl_queue(struct pblk *pblk, struct nvm_rq *rqd,
+							struct pblk_ctx *ctx)
 {
-	struct pblk_ctx *ctx = container_of(work, struct pblk_ctx,
-								ws_compl);
-	struct nvm_rq *rqd = nvm_rq_from_pdu(ctx);
-	struct pblk *pblk = ctx->pblk;
 	struct pblk_compl_ctx *c_ctx = ctx->c_ctx;
 	struct pblk_ctx *c, *r;
+	unsigned long flags;
 	unsigned long pos;
 
-	pos = pblk_rb_sync_init(&pblk->rwb);
+	pos = pblk_rb_sync_init(&pblk->rwb, &flags);
 
 	if (c_ctx->sentry == pos) {
-		spin_lock(&pblk->compl_list.lock);
 		pos = pblk_end_w_bio(pblk, rqd->bio, ctx);
 		mempool_free(rqd, pblk->w_rq_pool);
 
-		list_for_each_entry_safe(c, r, &pblk->compl_list.list, list) {
+		list_for_each_entry_safe(c, r, &pblk->compl_list, list) {
 			rqd = nvm_rq_from_pdu(c);
 			if (c->c_ctx->sentry == pos)
 				pos = pblk_end_queued_w_bio(pblk, rqd->bio, c);
 		}
-		spin_unlock(&pblk->compl_list.lock);
 	} else {
-		spin_lock(&pblk->compl_list.lock);
-		list_add_tail(&ctx->list, &pblk->compl_list.list);
-		spin_unlock(&pblk->compl_list.lock);
+		list_add_tail(&ctx->list, &pblk->compl_list);
 	}
 
-	pblk_rb_sync_end(&pblk->rwb);
+	pblk_rb_sync_end(&pblk->rwb, flags);
 }
 
 static void pblk_sync_buffer(struct pblk *pblk, struct pblk_addr p)
@@ -949,8 +941,7 @@ static void pblk_end_io_write(struct pblk *pblk, struct nvm_rq *rqd,
 		BUG_ON(original_bio);
 	}
 
-	INIT_WORK(&ctx->ws_compl, pblk_compl_queue);
-	queue_work(pblk->kgc_wq, &ctx->ws_compl);
+	pblk_compl_queue(pblk, rqd, ctx);
 
 	pblk_writer_kick(pblk);
 }
@@ -976,23 +967,21 @@ static void pblk_end_io(struct nvm_rq *rqd)
 	struct pblk *pblk = container_of(rqd->ins, struct pblk, instance);
 	uint8_t nr_pages = rqd->nr_pages;
 
-	if (nr_pages > 1)
-		nvm_dev_dma_free(pblk->dev, rqd->ppa_list, rqd->dma_ppa_list);
-	if (rqd->metadata)
-		nvm_dev_dma_free(pblk->dev, rqd->metadata, rqd->dma_metadata);
-
 	if (bio_data_dir(rqd->bio) == READ) {
 		/* if (rrqd->flags & NVM_IOTYPE_SYNC) */
 			/* return; */
 		pblk_end_io_read(pblk, rqd, nr_pages);
-		bio_put(rqd->bio);
 		mempool_free(rqd, pblk->r_rq_pool);
-
-		return;
+	} else {
+		pblk_end_io_write(pblk, rqd, nr_pages);
 	}
 
-	pblk_end_io_write(pblk, rqd, nr_pages);
+	bio_put(rqd->bio);
 
+	if (nr_pages > 1)
+		nvm_dev_dma_free(pblk->dev, rqd->ppa_list, rqd->dma_ppa_list);
+	if (rqd->metadata)
+		nvm_dev_dma_free(pblk->dev, rqd->metadata, rqd->dma_metadata);
 }
 
 /*
@@ -2279,8 +2268,7 @@ static int pblk_core_init(struct pblk *pblk)
 	spin_lock_init(&pblk->l2p_locks.lock);
 	INIT_LIST_HEAD(&pblk->l2p_locks.lock_list);
 
-	spin_lock_init(&pblk->compl_list.lock);
-	INIT_LIST_HEAD(&pblk->compl_list.list);
+	INIT_LIST_HEAD(&pblk->compl_list);
 
 	return 0;
 }

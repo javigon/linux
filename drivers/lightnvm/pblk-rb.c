@@ -403,9 +403,10 @@ unsigned int pblk_rb_copy_entry_to_bio(struct pblk_rb *rb, struct bio *bio,
 	return 1;
 }
 
-unsigned long pblk_rb_sync_init(struct pblk_rb *rb)
+unsigned long pblk_rb_sync_init(struct pblk_rb *rb, unsigned long *flags)
 {
-	spin_lock(&rb->sy_lock);
+
+	spin_lock_irqsave(&rb->sy_lock, *flags);
 
 	return READ_ONCE(rb->sync);
 }
@@ -423,11 +424,11 @@ unsigned long pblk_rb_sync_advance(struct pblk_rb *rb, unsigned int nentries)
 	return sync;
 }
 
-void pblk_rb_sync_end(struct pblk_rb *rb)
+void pblk_rb_sync_end(struct pblk_rb *rb, unsigned long flags)
 {
 	lockdep_assert_held(&rb->sy_lock);
 
-	spin_unlock(&rb->sy_lock);
+	spin_unlock_irqrestore(&rb->sy_lock, flags);
 }
 
 /*

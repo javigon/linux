@@ -61,11 +61,6 @@ struct pblk_l2p_lock {
 	spinlock_t lock;
 };
 
-struct pblk_compl_list {
-	struct list_head list;
-	spinlock_t lock;
-};
-
 struct pblk_l2p_upd_ctx {
 	struct list_head list;
 	sector_t l_start;
@@ -96,7 +91,6 @@ struct pblk_w_ctx {
 };
 
 struct pblk_ctx {
-	struct work_struct ws_compl;
 	struct list_head list;
 	struct pblk *pblk;
 	struct pblk_compl_ctx *c_ctx;
@@ -238,7 +232,7 @@ struct pblk {
 	struct pblk_addr *trans_map;
 	struct pblk_l2p_lock l2p_locks;
 
-	struct pblk_compl_list compl_list;
+	struct list_head compl_list;
 
 	mempool_t *page_pool;
 	mempool_t *gcb_pool;
@@ -277,9 +271,9 @@ void pblk_rb_read_commit(struct pblk_rb *rb, unsigned int entries);
 void pblk_rb_read_rollback(struct pblk_rb *rb);
 unsigned int pblk_rb_copy_entry_to_bio(struct pblk_rb *rb, struct bio *bio,
 								u64 pos);
-unsigned long pblk_rb_sync_init(struct pblk_rb *rb);
+unsigned long pblk_rb_sync_init(struct pblk_rb *rb, unsigned long *flags);
 unsigned long pblk_rb_sync_advance(struct pblk_rb *rb, unsigned int nentries);
-void pblk_rb_sync_end(struct pblk_rb *rb);
+void pblk_rb_sync_end(struct pblk_rb *rb, unsigned long flags);
 
 // unsigned pblk_rb_get_ref(struct pblk_rb *rb, void *ptr, unsigned nentries);
 // unsigned pblk_rb_get_ref_lock(struct pblk_rb *rb, void *ptr, unsigned nentries);
