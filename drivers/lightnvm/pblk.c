@@ -1246,7 +1246,7 @@ static int pblk_read_from_cache(struct pblk *pblk, struct bio *bio,
 		goto out;
 
 	cacheline = nvm_addr_to_cacheline(addr->ppa);
-	if (!pblk_rb_read_entry_to_bio(&pblk->rwb, bio, cacheline))
+	if (!pblk_rb_copy_entry_to_bio(&pblk->rwb, bio, cacheline))
 		goto out;
 
 	read = 1;
@@ -1994,12 +1994,10 @@ static void pblk_submit_write(struct work_struct *work)
 {
 	struct pblk *pblk = container_of(work, struct pblk, ws_writer);
 	struct nvm_dev *dev = pblk->dev;
-	struct request_queue *q = dev->q;
 	struct bio *bio;
 	struct nvm_rq *rqd;
-	void *data;
 	struct pblk_ctx *ctx;
-	unsigned int data_len, pgs_read;
+	unsigned int pgs_read;
 	unsigned int secs_avail, secs_to_sync, secs_to_flush = 0;
 	int err;
 
@@ -2019,45 +2017,28 @@ static void pblk_submit_write(struct work_struct *work)
 	if (!secs_to_sync)
 		goto end_unlock;
 
-	/*
-	 * XXX: For now, we copy data into a buffer that we use to form a new
-	 * bio. The idea is to map pages directly on the buffer and move the
-	 * submission pointer as bios are completed. This requires the use of
-	 * flags to mark each entry in the write buffer
-	 */
-	data_len = secs_to_sync * dev->sec_size;
-	data = kmalloc(data_len, GFP_ATOMIC);
-	if (!data) {
-		pr_err("nvm: pblk: could not alloc bio buffer (size:%dKB)\n",
-								secs_to_sync);
-		goto end_unlock;
-	}
-
 	rqd = mempool_alloc(pblk->w_rq_pool, GFP_ATOMIC);
 	if (!rqd) {
-		pr_err_ratelimited("pblk: not able to create write req.");
-		goto fail_data;
+		pr_err("pblk: not able to create write req.\n");
+		goto end_unlock;
 	}
 	memset(rqd, 0, pblk_w_rq_size);
 	ctx = pblk_set_ctx(pblk, rqd);
+
+	bio = bio_alloc(GFP_ATOMIC, secs_to_sync);
+	if (!bio) {
+		pr_err("pblk: not able to create write bio\n");
+		goto fail_rqd;
+	}
 
 	/* Read available entries on rb, and lock entries on the l2p table that
 	 * are on its way to be persisted to the media. This guarantees
 	 * consistency between the write buffer and the l2p table.
 	 */
-	pgs_read = pblk_rb_read(&pblk->rwb, data, ctx, secs_to_sync);
+	pgs_read = pblk_rb_read_to_bio(&pblk->rwb, bio, ctx, secs_to_sync);
 	if (pgs_read != secs_to_sync)
-		goto fail_rqd;
+		goto fail_bio;
 	pblk_rb_read_commit(&pblk->rwb, secs_to_sync);
-
-	bio = bio_copy_kern(q, data, data_len, GFP_KERNEL, 0);
-	/* bio = bio_map_kern(q, data, data_len, GFP_KERNEL); */
-	/* bio = bio_alloc(GFP_KERNEL, secs_to_sync); */
-	if (IS_ERR_OR_NULL(bio)) {
-		pr_err("nvm: pblk: could not map write bio\n");
-		goto fail_rqd;
-	}
-	kfree(data);
 
 	bio_get(bio);
 	bio->bi_iter.bi_sector = 0; /* artificial bio */
@@ -2067,14 +2048,14 @@ static void pblk_submit_write(struct work_struct *work)
 	/* Assign lbas to ppas and populate request structure */
 	err = pblk_setup_w_rq(pblk, rqd, ctx, secs_to_sync);
 	if (err)
-		goto fail_sync;
+		goto fail_bio;
 
 	err = nvm_submit_io(dev, rqd);
 	if (err) {
 		pr_err("pblk: I/O submission failed: %d\n", err);
 		mempool_free(rqd, pblk->w_rq_pool);
 		bio_put(bio);
-		goto fail_sync;
+		goto fail_bio;
 	}
 
 #ifdef CONFIG_NVM_DEBUG
@@ -2083,16 +2064,14 @@ static void pblk_submit_write(struct work_struct *work)
 
 	return;
 
-fail_sync:
+fail_bio:
 	bio_put(bio);
-fail_rqd:
-	mempool_free(rqd, pblk->w_rq_pool);
 	/* Fail is probably caused by a locked lba - kick the queue to avoid a
 	 * deadlock in the case that no new I/Os are coming in.
 	 */
 	queue_work(pblk->kw_wq, &pblk->ws_writer);
-fail_data:
-	kfree(data);
+fail_rqd:
+	mempool_free(rqd, pblk->w_rq_pool);
 end_unlock:
 	pblk_rb_read_rollback(&pblk->rwb);
 }

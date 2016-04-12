@@ -319,7 +319,72 @@ out:
 	return read;
 }
 
-unsigned int pblk_rb_read_entry_to_bio(struct pblk_rb *rb, struct bio *bio,
+unsigned int pblk_rb_read_to_bio(struct pblk_rb *rb, struct bio *bio,
+					struct pblk_ctx *ctx,
+					unsigned int nentries)
+{
+	struct pblk *pblk = container_of(rb, struct pblk, rwb);
+	struct request_queue *q = pblk->dev->q;
+	struct pblk_rb_entry *entry;
+	struct pblk_compl_ctx *c_ctx = ctx->c_ctx;
+	struct pblk_w_ctx *w_ctx_list = ctx->w_ctx;
+	struct pblk_l2p_upd_ctx *upt_ctx;
+	struct page *page;
+	/* unsigned long size = nentries * rb->seg_size; */
+	unsigned long mem, subm;
+	unsigned int read = 0;
+	unsigned int i;
+	int ret;
+
+	lockdep_assert_held(&rb->s_lock);
+
+	mem = smp_load_acquire(&rb->mem);
+	subm = READ_ONCE(rb->subm);
+
+	if (pblk_rb_ring_count(mem, subm, rb->nentries) < nentries)
+		goto out;
+
+	/* entry = &rb->entries[subm]; */
+	/* memcpy_fromrb(rb, buf, entry->data, size); */
+
+	c_ctx->sentry = subm;
+	c_ctx->nentries = nentries;
+
+	/* XXX: Read one entry at a time for now */
+	for (i = 0; i < nentries; i++) {
+		entry = &rb->entries[subm];
+
+		page = vmalloc_to_page(entry->data);
+		if (!page) {
+			pr_err("pblk: could not allocate write bio page\n");
+			goto out;
+		}
+
+		ret = bio_add_pc_page(q, bio, page, rb->seg_size, 0);
+		if (ret != rb->seg_size) {
+			pr_err("pblk: could not ad page to write bio\n");
+			goto out;
+		}
+
+		upt_ctx = &w_ctx_list[i].upt_ctx;
+		subm = (subm + 1) & (rb->nentries - 1);
+
+		/* If the address cannot be locked on the l2p table, return a no
+		 * read. The caller is responsible for rolling back the read
+		 * requests
+		 */
+		if (pblk_lock_laddr(pblk, entry->w_ctx.lba, 1, upt_ctx))
+			goto out;
+	}
+
+	read = nentries;
+
+out:
+	return read;
+
+}
+
+unsigned int pblk_rb_copy_entry_to_bio(struct pblk_rb *rb, struct bio *bio,
 								u64 pos)
 {
 	struct pblk_rb_entry *entry;

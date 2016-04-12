@@ -270,9 +270,12 @@ unsigned long pblk_rb_count_init(struct pblk_rb *rb);
 unsigned int pblk_rb_read(struct pblk_rb *rb, void *buf,
 					struct pblk_ctx *ctx,
 					unsigned int nentries);
+unsigned int pblk_rb_read_to_bio(struct pblk_rb *rb, struct bio *bio,
+					struct pblk_ctx *ctx,
+					unsigned int nentries);
 void pblk_rb_read_commit(struct pblk_rb *rb, unsigned int entries);
 void pblk_rb_read_rollback(struct pblk_rb *rb);
-unsigned int pblk_rb_read_entry_to_bio(struct pblk_rb *rb, struct bio *bio,
+unsigned int pblk_rb_copy_entry_to_bio(struct pblk_rb *rb, struct bio *bio,
 								u64 pos);
 unsigned long pblk_rb_sync_init(struct pblk_rb *rb);
 unsigned long pblk_rb_sync_advance(struct pblk_rb *rb, unsigned int nentries);
