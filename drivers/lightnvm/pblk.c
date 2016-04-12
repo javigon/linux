@@ -836,11 +836,12 @@ static void pblk_run_gc(struct pblk *pblk, struct pblk_block *rblk)
 }
 
 static unsigned long pblk_end_w_bio(struct pblk *pblk, struct bio *bio,
-					struct pblk_ctx *ctx, int nentries)
+							struct pblk_ctx *ctx)
 {
 	struct pblk_compl_ctx *c_ctx = ctx->c_ctx;
 	struct pblk_w_ctx *w_ctx_list = ctx->w_ctx;
 	struct bio *original_bio;
+	int nentries = c_ctx->nentries;
 	int i;
 
 	bio_put(bio);
@@ -858,15 +859,15 @@ static unsigned long pblk_end_w_bio(struct pblk *pblk, struct bio *bio,
 	atomic_add(nentries, &pblk->compl_writes);
 #endif
 
-	return pblk_rb_sync_advance(&pblk->rwb, c_ctx->nentries);
+	return pblk_rb_sync_advance(&pblk->rwb, nentries);
 }
 
 static unsigned long pblk_end_queued_w_bio(struct pblk *pblk, struct bio *bio,
-					struct pblk_ctx *ctx, int nentries)
+							struct pblk_ctx *ctx)
 {
 	list_del(&ctx->list);
 
-	return pblk_end_w_bio(pblk, bio, ctx, nentries);
+	return pblk_end_w_bio(pblk, bio, ctx);
 }
 
 static void pblk_compl_queue(struct work_struct *work)
@@ -883,14 +884,13 @@ static void pblk_compl_queue(struct work_struct *work)
 
 	if (c_ctx->sentry == pos) {
 		spin_lock(&pblk->compl_list.lock);
-		pos = pblk_end_w_bio(pblk, rqd->bio, ctx, rqd->nr_pages);
+		pos = pblk_end_w_bio(pblk, rqd->bio, ctx);
 		mempool_free(rqd, pblk->w_rq_pool);
 
 		list_for_each_entry_safe(c, r, &pblk->compl_list.list, list) {
 			rqd = nvm_rq_from_pdu(c);
 			if (c->c_ctx->sentry == pos)
-				pos = pblk_end_queued_w_bio(pblk, rqd->bio, c,
-								rqd->nr_pages);
+				pos = pblk_end_queued_w_bio(pblk, rqd->bio, c);
 		}
 		spin_unlock(&pblk->compl_list.lock);
 	} else {
