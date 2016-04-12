@@ -835,7 +835,7 @@ static void pblk_run_gc(struct pblk *pblk, struct pblk_block *rblk)
 	queue_work(pblk->kgc_wq, &gcb->ws_gc);
 }
 
-static unsigned long pblk_end_w_bio(struct pblk *pblk, struct bio *bio,
+static unsigned long pblk_end_w_bio(struct pblk *pblk, struct nvm_rq *rqd,
 							struct pblk_ctx *ctx)
 {
 	struct pblk_compl_ctx *c_ctx = ctx->c_ctx;
@@ -848,12 +848,13 @@ static unsigned long pblk_end_w_bio(struct pblk *pblk, struct bio *bio,
 	for (i = 0; i < nentries; i++) {
 		original_bio = w_ctx_list[i].bio;
 		if (original_bio) {
-			BUG_ON(!(bio->bi_rw & (REQ_FLUSH | REQ_FUA)));
+			BUG_ON(!(rqd->bio->bi_rw & (REQ_FLUSH | REQ_FUA)));
 			bio_endio(original_bio);
 		}
 	}
 
-	bio_put(bio);
+	bio_put(rqd->bio);
+	mempool_free(rqd, pblk->w_rq_pool);
 
 #ifdef CONFIG_NVM_DEBUG
 	atomic_add(nentries, &pblk->compl_writes);
@@ -862,12 +863,12 @@ static unsigned long pblk_end_w_bio(struct pblk *pblk, struct bio *bio,
 	return pblk_rb_sync_advance(&pblk->rwb, nentries);
 }
 
-static unsigned long pblk_end_queued_w_bio(struct pblk *pblk, struct bio *bio,
-							struct pblk_ctx *ctx)
+static unsigned long pblk_end_queued_w_bio(struct pblk *pblk,
+				struct nvm_rq *rqd, struct pblk_ctx *ctx)
 {
 	list_del(&ctx->list);
 
-	return pblk_end_w_bio(pblk, bio, ctx);
+	return pblk_end_w_bio(pblk, rqd, ctx);
 }
 
 static void pblk_compl_queue(struct pblk *pblk, struct nvm_rq *rqd,
@@ -881,17 +882,18 @@ static void pblk_compl_queue(struct pblk *pblk, struct nvm_rq *rqd,
 	pos = pblk_rb_sync_init(&pblk->rwb, &flags);
 
 	if (c_ctx->sentry == pos) {
-		pos = pblk_end_w_bio(pblk, rqd->bio, ctx);
-		mempool_free(rqd, pblk->w_rq_pool);
+		pos = pblk_end_w_bio(pblk, rqd, ctx);
 
+try:
 		list_for_each_entry_safe(c, r, &pblk->compl_list, list) {
 			rqd = nvm_rq_from_pdu(c);
-			if (c->c_ctx->sentry == pos)
-				pos = pblk_end_queued_w_bio(pblk, rqd->bio, c);
+			if (c->c_ctx->sentry == pos) {
+				pos = pblk_end_queued_w_bio(pblk, rqd, c);
+				goto try;
+			}
 		}
-	} else {
+	} else
 		list_add_tail(&ctx->list, &pblk->compl_list);
-	}
 
 	pblk_rb_sync_end(&pblk->rwb, flags);
 }
