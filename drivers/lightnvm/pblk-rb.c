@@ -407,7 +407,7 @@ unsigned long pblk_rb_sync_init(struct pblk_rb *rb, unsigned long *flags)
 {
 	spin_lock_irqsave(&rb->sy_lock, *flags);
 
-	return READ_ONCE(rb->sync);
+	return rb->sync;
 }
 
 unsigned long pblk_rb_sync_advance(struct pblk_rb *rb, unsigned int nentries)
@@ -416,8 +416,7 @@ unsigned long pblk_rb_sync_advance(struct pblk_rb *rb, unsigned int nentries)
 
 	lockdep_assert_held(&rb->sy_lock);
 
-	sync = READ_ONCE(rb->sync);
-	sync = (sync + nentries) & (rb->nentries -1 );
+	sync = (rb->sync + nentries) & (rb->nentries -1 );
 	smp_store_release(&rb->sync, sync);
 
 	return sync;
