@@ -853,6 +853,8 @@ static unsigned long pblk_end_w_bio(struct pblk *pblk, struct bio *bio,
 		}
 	}
 
+	bio_put(bio);
+
 #ifdef CONFIG_NVM_DEBUG
 	atomic_add(nentries, &pblk->compl_writes);
 #endif
@@ -967,21 +969,20 @@ static void pblk_end_io(struct nvm_rq *rqd)
 	struct pblk *pblk = container_of(rqd->ins, struct pblk, instance);
 	uint8_t nr_pages = rqd->nr_pages;
 
-	if (bio_data_dir(rqd->bio) == READ) {
-		/* if (rrqd->flags & NVM_IOTYPE_SYNC) */
-			/* return; */
-		pblk_end_io_read(pblk, rqd, nr_pages);
-		mempool_free(rqd, pblk->r_rq_pool);
-	} else {
-		pblk_end_io_write(pblk, rqd, nr_pages);
-	}
-
-	bio_put(rqd->bio);
-
 	if (nr_pages > 1)
 		nvm_dev_dma_free(pblk->dev, rqd->ppa_list, rqd->dma_ppa_list);
 	if (rqd->metadata)
 		nvm_dev_dma_free(pblk->dev, rqd->metadata, rqd->dma_metadata);
+
+	if (bio_data_dir(rqd->bio) == READ) {
+		/* if (rrqd->flags & NVM_IOTYPE_SYNC) */
+			/* return; */
+		pblk_end_io_read(pblk, rqd, nr_pages);
+		bio_put(rqd->bio);
+		mempool_free(rqd, pblk->r_rq_pool);
+	} else {
+		pblk_end_io_write(pblk, rqd, nr_pages);
+	}
 }
 
 /*
