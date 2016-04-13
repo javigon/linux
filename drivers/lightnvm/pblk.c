@@ -848,7 +848,6 @@ static unsigned long pblk_end_w_bio(struct pblk *pblk, struct nvm_rq *rqd,
 	for (i = 0; i < nentries; i++) {
 		original_bio = w_ctx_list[i].bio;
 		if (original_bio) {
-			BUG_ON(!(rqd->bio->bi_rw & (REQ_FLUSH | REQ_FUA)));
 			bio_endio(original_bio);
 		}
 	}
@@ -912,8 +911,6 @@ static void pblk_sync_buffer(struct pblk *pblk, struct pblk_addr p)
 
 	WARN_ON(test_and_set_bit(block_ppa, rblk->sync_bitmap));
 
-	// TODO: Implement flush backpointer
-
 #ifdef CONFIG_NVM_DEBUG
 		atomic_inc(&pblk->sync_writes);
 		atomic_dec(&pblk->inflight_writes);
@@ -928,7 +925,6 @@ static void pblk_end_io_write(struct pblk *pblk, struct nvm_rq *rqd,
 {
 	struct pblk_ctx *ctx;
 	struct pblk_w_ctx *w_ctx;
-	struct bio *original_bio;
 	struct pblk_addr addr;
 	int i;
 
@@ -937,12 +933,7 @@ static void pblk_end_io_write(struct pblk *pblk, struct nvm_rq *rqd,
 
 	for (i = 0; i < nr_pages; i++) {
 		pblk_memcpy_addr(&addr, &w_ctx[i].ppa);
-		original_bio = w_ctx[i].bio;
-
 		pblk_sync_buffer(pblk, addr);
-
-		/* TODO: Complete the original bio bio in case of flush */
-		BUG_ON(original_bio);
 	}
 
 	pblk_compl_queue(pblk, rqd, ctx);
@@ -1002,8 +993,12 @@ static int pblk_write_to_cache(struct pblk *pblk, struct bio *bio,
 	struct pblk_w_ctx w_ctx;
 	struct pblk_l2p_upd_ctx upt_ctx;
 	struct ppa_addr ppa;
+	struct bio *b;
+	void *data;
 	unsigned long pos;
 	unsigned int i;
+
+	BUG_ON(!bio_has_data(bio));
 
 	if (pblk_lock_rq(pblk, bio, &upt_ctx))
 		return 0;
@@ -1013,14 +1008,16 @@ static int pblk_write_to_cache(struct pblk *pblk, struct bio *bio,
 	if (pblk_rb_space(&pblk->rwb) < nentries)
 		goto rollback;
 
+	b = (bio->bi_rw & (REQ_FLUSH | REQ_FUA)) ? bio : NULL;
+
 	for (i = 0; i < nentries; i++) {
-		w_ctx.bio = NULL; /* TODO: Consider REQ_FUA | REQ_FLUSH case */
+		w_ctx.bio = b;
 		w_ctx.lba = laddr + i;
 		ppa_set_empty(&w_ctx.ppa.ppa);
 		w_ctx.flags = 0x0; /* TODO: Will mark GC */
 
-		if (pblk_rb_write_entry(&pblk->rwb, bio_data(bio),
-								w_ctx, pos + i))
+		data = bio_data(bio);
+		if (pblk_rb_write_entry(&pblk->rwb, data, w_ctx, pos + i))
 			goto rollback;
 
 		bio_advance(bio, PBLK_EXPOSED_PAGE_SIZE);
@@ -1041,6 +1038,7 @@ static int pblk_write_to_cache(struct pblk *pblk, struct bio *bio,
 rollback:
 	pblk_rb_write_rollback(&pblk->rwb);
 	pblk_unlock_rq(pblk, bio, &upt_ctx);
+
 	return 0;
 }
 
@@ -1121,26 +1119,16 @@ static int pblk_write_ppalist_rq(struct pblk *pblk, struct bio *bio,
 static int pblk_write_rq(struct pblk *pblk, struct bio *bio,
 							unsigned long flags)
 {
-#if 0
-	// XXX: This will change - probably me moved into write
+	int ret = NVM_IO_DONE;
+
 	if (bio->bi_rw & (REQ_FLUSH | REQ_FUA)) {
-		DECLARE_COMPLETION_ONSTACK(wait);
-
-		err = pblk_wb_flush(pblk, bio, rrqd, &wait, bio->bi_rw);
-		if (err) {
-			mempool_free(rrqd, pblk->rrq_pool);
-			return NVM_IO_ERR;
-		}
-		wait_for_completion_io(&wait);
-
-		/* REQ_FLUSH & REQ_FUA always come in a write bio */
 		if (!bio_has_data(bio)) {
-			mempool_free(rrqd, pblk->rrq_pool);
-			bio_endio(bio);
-			return BLK_QC_T_NONE;
+			ret = pblk_rb_set_sync_point(&pblk->rwb, bio);
+			goto out;
 		}
+
+		ret = NVM_IO_OK;
 	}
-#endif
 
 	if (!pblk_write_to_cache(pblk, bio, flags, 1))
 		return NVM_IO_REQUEUE;
@@ -1151,10 +1139,11 @@ static int pblk_write_rq(struct pblk *pblk, struct bio *bio,
 #endif
 
 	/* Use count as a heuristic for setting up a job in workqueue */
-	if (pblk_rb_count(&pblk->rwb) > pblk->min_write_pgs)
+	if (pblk_rb_count(&pblk->rwb) >= pblk->min_write_pgs)
 		queue_work(pblk->kw_wq, &pblk->ws_writer);
 
-	return NVM_IO_DONE;
+out:
+	return ret;
 }
 
 static int pblk_buffer_write(struct pblk *pblk, struct bio *bio,
@@ -1634,8 +1623,9 @@ static int pblk_submit_io(struct pblk *pblk, struct bio *bio,
 							unsigned long flags)
 {
 	int bio_size = bio_sectors(bio) << 9;
+	int is_flush = (bio->bi_rw & (REQ_FLUSH | REQ_FUA));
 
-	if (bio_size < pblk->dev->sec_size)
+	if ((bio_size < pblk->dev->sec_size) && (!is_flush))
 		return NVM_IO_ERR;
 	else if (bio_size > pblk->dev->max_rq_size)
 		return NVM_IO_ERR;
@@ -2029,10 +2019,6 @@ static void pblk_submit_write(struct work_struct *work)
 	if (!secs_to_sync)
 		goto end_unlock;
 
-	/* Read available entries on rb, and lock entries on the l2p table that
-	 * are on its way to be persisted to the media. This guarantees
-	 * consistency between the write buffer and the l2p table.
-	 */
 	pgs_read = pblk_rb_read_to_bio(&pblk->rwb, bio, ctx, secs_to_sync);
 	if (pgs_read != secs_to_sync)
 		goto fail_sync;

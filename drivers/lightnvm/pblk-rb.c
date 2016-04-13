@@ -319,6 +319,10 @@ out:
 	return read;
 }
 
+/* Read available entries on rb, and lock entries on the l2p table that
+ * are on its way to be persisted to the media. This guarantees
+ * consistency between the write buffer and the l2p table.
+ */
 unsigned int pblk_rb_read_to_bio(struct pblk_rb *rb, struct bio *bio,
 					struct pblk_ctx *ctx,
 					unsigned int nentries)
@@ -366,6 +370,7 @@ unsigned int pblk_rb_read_to_bio(struct pblk_rb *rb, struct bio *bio,
 			goto out;
 		}
 
+		memcpy_wctx(&w_ctx_list[i], &entry->w_ctx);
 		upt_ctx = &w_ctx_list[i].upt_ctx;
 		subm = (subm + 1) & (rb->nentries - 1);
 
@@ -381,7 +386,6 @@ unsigned int pblk_rb_read_to_bio(struct pblk_rb *rb, struct bio *bio,
 
 out:
 	return read;
-
 }
 
 unsigned int pblk_rb_copy_entry_to_bio(struct pblk_rb *rb, struct bio *bio,
@@ -427,6 +431,37 @@ void pblk_rb_sync_end(struct pblk_rb *rb, unsigned long flags)
 	lockdep_assert_held(&rb->sy_lock);
 
 	spin_unlock_irqrestore(&rb->sy_lock, flags);
+}
+
+int pblk_rb_set_sync_point(struct pblk_rb *rb, struct bio *bio)
+{
+	struct pblk_rb_entry *entry;
+	unsigned long mem, subm;
+	int ret = NVM_IO_OK;
+
+	spin_lock(&rb->s_lock);
+
+	mem = smp_load_acquire(&rb->mem);
+	subm = READ_ONCE(rb->subm);
+
+	entry = &rb->entries[mem - 1];
+
+	if (entry->w_ctx.bio) {
+		pr_err("pblk: Duplicated sync point\n");
+		BUG_ON(1);
+		//TODO: Deal with this case
+	}
+
+	if (mem == subm) {
+		ret = NVM_IO_DONE;
+		goto out;
+	}
+
+	entry->w_ctx.bio = bio;
+
+out:
+	spin_unlock(&rb->s_lock);
+	return ret;
 }
 
 #ifdef CONFIG_NVM_DEBUG

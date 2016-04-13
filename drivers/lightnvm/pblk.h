@@ -274,6 +274,7 @@ unsigned int pblk_rb_copy_entry_to_bio(struct pblk_rb *rb, struct bio *bio,
 unsigned long pblk_rb_sync_init(struct pblk_rb *rb, unsigned long *flags);
 unsigned long pblk_rb_sync_advance(struct pblk_rb *rb, unsigned int nentries);
 void pblk_rb_sync_end(struct pblk_rb *rb, unsigned long flags);
+int pblk_rb_set_sync_point(struct pblk_rb *rb, struct bio *bio);
 
 // unsigned pblk_rb_get_ref(struct pblk_rb *rb, void *ptr, unsigned nentries);
 // unsigned pblk_rb_get_ref_lock(struct pblk_rb *rb, void *ptr, unsigned nentries);
