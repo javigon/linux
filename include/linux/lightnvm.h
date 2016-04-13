@@ -426,6 +426,16 @@ static inline void ppa_set_empty(struct ppa_addr *ppa_addr)
 	ppa_addr->ppa = ADDR_EMPTY;
 }
 
+static inline int ppa_padded(struct ppa_addr ppa_addr)
+{
+	return (ppa_addr.ppa == ADDR_PADDED);
+}
+
+static inline void ppa_set_padded(struct ppa_addr *ppa_addr)
+{
+	ppa_addr->ppa = ADDR_PADDED;
+}
+
 static inline struct ppa_addr block_to_ppa(struct nvm_dev *dev,
 							struct nvm_block *blk)
 {
