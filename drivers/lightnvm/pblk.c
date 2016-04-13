@@ -49,9 +49,19 @@ static void pblk_page_invalidate(struct pblk *pblk, struct pblk_addr *a)
 	pg_offset = pblk_gaddr_to_pg_offset(pblk->dev, a->ppa);
 	WARN_ON(test_and_set_bit(pg_offset, rblk->invalid_pages));
 	rblk->nr_invalid_pages++;
+}
 
-	ppa_set_empty(&a->ppa);
+/* The ppa in pblk_addr comes with an offset format, not a global format */
+static void pblk_page_pad_invalidate(struct pblk *pblk, struct pblk_addr *a)
+{
+	struct pblk_block *rblk = a->rblk;
+
+	WARN_ON(test_and_set_bit(a->ppa.ppa, rblk->sync_bitmap));
+	WARN_ON(test_and_set_bit(a->ppa.ppa, rblk->invalid_pages));
+	rblk->nr_invalid_pages++;
+
 	a->rblk = NULL;
+	ppa_set_padded(&a->ppa);
 }
 
 //TODO
@@ -66,6 +76,7 @@ static void pblk_invalidate_range(struct pblk *pblk, sector_t slba,
 		struct pblk_addr *gp = &pblk->trans_map[i];
 
 		pblk_page_invalidate(pblk, gp);
+		gp->rblk = NULL;
 	}
 	spin_unlock(&pblk->l2p_lock);
 }
@@ -739,6 +750,7 @@ out:
  * consideration
  *
  * TODO: We are missing GC path
+ * TODO: Add support for MLC and TLC padding. For now only supporting SLC
  */
 static int pblk_map_page(struct pblk *pblk, struct pblk_w_ctx *ctx_list,
 				struct ppa_addr *ppa_list, int nr_secs)
@@ -787,17 +799,25 @@ static int pblk_map_page(struct pblk *pblk, struct pblk_w_ctx *ctx_list,
 		/* ppa to be sent to the device */
 		ppa_list[i] =
 			pblk_ppa_to_gaddr(dev, global_addr(pblk, rblk, paddr));
-		pblk_update_map(pblk, ctx_list[i].lba, rblk, ppa_list[i]);
 
-		/* The l2p table has been updated - it is safe to release the
-		 * entry for the current lba
-		 */
-		pblk_unlock_laddr(pblk, &ctx_list[i].upt_ctx);
+		if (ctx_list[i].lba != ADDR_PADDED) {
+			pblk_update_map(pblk, ctx_list[i].lba, rblk, ppa_list[i]);
 
-		/* write context for target bio completion */
-		ctx_list[i].ppa.ppa = addr_to_ppa(paddr);
-		ctx_list[i].ppa.rblk = rblk;
+			/* The l2p table has been updated - it is safe to
+			 * release the entry for the current lba
+			 */
+			pblk_unlock_laddr(pblk, &ctx_list[i].upt_ctx);
 
+			/* write context for target bio completion */
+			ctx_list[i].ppa.ppa = addr_to_ppa(paddr);
+			ctx_list[i].ppa.rblk = rblk;
+		} else {
+			/* write context for target bio completion */
+			ctx_list[i].ppa.ppa = addr_to_ppa(paddr);
+			ctx_list[i].ppa.rblk = rblk;
+
+			pblk_page_pad_invalidate(pblk, &ctx_list[i].ppa);
+		}
 
 		spin_lock(&rlun->lock);
 	}
@@ -901,14 +921,15 @@ static void pblk_sync_buffer(struct pblk *pblk, struct pblk_addr p)
 {
 	struct nvm_dev *dev = pblk->dev;
 	struct pblk_block *rblk = p.rblk;
-	u64 block_ppa = ppa_to_addr(p.ppa);
+	u64 block_ppa;
 	struct nvm_lun *lun;
 
-	/* TODO: Use lun->id to mark the LUN group bitmap for maitaining the
-	 * pipeline
-	 */
+	if (ppa_padded(p.ppa))
+		return;
+
 	lun = rblk->parent->lun;
 
+	block_ppa = ppa_to_addr(p.ppa);
 	WARN_ON(test_and_set_bit(block_ppa, rblk->sync_bitmap));
 
 #ifdef CONFIG_NVM_DEBUG
@@ -1124,6 +1145,7 @@ static int pblk_write_rq(struct pblk *pblk, struct bio *bio,
 	if (bio->bi_rw & (REQ_FLUSH | REQ_FUA)) {
 		if (!bio_has_data(bio)) {
 			ret = pblk_rb_set_sync_point(&pblk->rwb, bio);
+			queue_work(pblk->kw_wq, &pblk->ws_writer);
 			goto out;
 		}
 
@@ -1367,10 +1389,10 @@ static int pblk_read_rq(struct pblk *pblk, struct bio *bio, struct nvm_rq *rqd,
 	struct pblk_l2p_upd_ctx upt_ctx;
 	struct pblk_addr *gp;
 
+	BUG_ON(!(laddr >= 0 && laddr < pblk->nr_sects));
+
 	if (pblk_lock_rq(pblk, bio, &upt_ctx))
 		return NVM_IO_REQUEUE;
-
-	BUG_ON(!(laddr >= 0 && laddr < pblk->nr_sects));
 
 	gp = &pblk->trans_map[laddr];
 
@@ -1831,100 +1853,6 @@ out:
 	return ret;
 }
 
-/* Adds the necessary padding depending on the NAND type reported by the device
- * in the identify command and returns the number of sectors that need to be
- * flushed to the device.
- *
- * TODO: Support MLC and TLC. For now only SLC supported.
- */
-#if 0
-static int pblk_pad_write(struct pblk *pblk, struct pblk_w_buf *w_buf, int left)
-{
-	struct nvm_dev *dev = pblk->dev;
-	struct nvm_id *id = &dev->identity;
-	struct nvm_id_group *grp = &id->groups[0];
-	struct pblk_block *rblk = container_of(w_buf, struct pblk_block, w_buf);
-	struct buf_entry *last_entry = w_buf->mem - 1;
-	struct pblk_addr *addr;
-	struct pblk_rev_addr *rev;
-	u64 bppa, cppa, ppa;
-	int pgs_to_pad = pblk->min_write_pgs - left;
-	int pgs_padded = 0;
-	int i;
-
-	if (grp->fmtype != NVM_ID_FMTYPE_SLC)
-		WARN_ON("nvm: pblk: NAND memory type not supported\n");
-
-	bppa = block_to_addr(pblk, rblk);
-	ppa = last_entry->addr->addr;
-
-	/* Since the moment we checked on padding was necessary, new sectors in
-	 * this block might have been allocated. Take this into account when
-	 * padding.
-	 */
-	for (i = 1; i <= pgs_to_pad; i++) {
-		cppa = ppa + i;
-
-		spin_lock(&rblk->lock);
-		if (test_and_set_bit(cppa - bppa, rblk->pages)) {
-			spin_unlock(&rblk->lock);
-			continue;
-		}
-		spin_unlock(&rblk->lock);
-
-		addr = kmalloc(sizeof(struct pblk_addr), GFP_ATOMIC);
-		if (!addr)
-			goto clean;
-
-		addr->addr = cppa;
-		addr->rblk = rblk;
-
-		spin_lock(&w_buf->w_lock);
-
-		WARN_ON(w_buf->cur_mem == w_buf->nr_entries);
-
-		w_buf->mem->rrqd = NULL;
-		w_buf->mem->addr = addr;
-
-		/* This padded entry contains not data - zeroize */
-		memset(w_buf->mem->data, 0, PBLK_EXPOSED_PAGE_SIZE);
-		pblk_advance_w_buf_entry(pblk, w_buf);
-
-		spin_unlock(&w_buf->w_lock);
-
-		spin_lock(&pblk->rev_lock);
-		rev = &pblk->rev_trans_map[cppa - pblk->poffset];
-		rev->addr = ADDR_PADDED;
-		pblk_page_invalidate(pblk, addr);
-		spin_unlock(&pblk->rev_lock);
-
-		pgs_padded++;
-#ifdef CONFIG_NVM_DEBUG
-	atomic_inc(&pblk->inflight_writes);
-	atomic_inc(&pblk->padded_writes);
-#endif
-	}
-
-	return pblk->min_write_pgs;
-
-clean:
-	spin_unlock(&w_buf->w_lock);
-	while (pgs_padded > 0) {
-		last_entry++;
-		kfree(last_entry->addr);
-
-		pgs_padded--;
-	}
-
-	return -ENOMEM;
-}
-#endif
-
-static int pblk_pad_write(struct pblk *pblk, int left)
-{
-	return 0;
-}
-
 /* TODO: Need to implement the different strategies */
 static int pblk_calc_secs_to_sync(struct pblk *pblk, unsigned long secs_avail,
 						unsigned long secs_to_flush)
@@ -1954,17 +1882,13 @@ static int pblk_calc_secs_to_sync(struct pblk *pblk, unsigned long secs_avail,
 						break;
 				}
 
-				if (secs_to_sync < secs_to_flush) {
-					int left = secs_to_flush - secs_to_sync;
-					secs_to_sync +=
-						pblk_pad_write(pblk, left);
-				}
+				if (secs_to_sync < secs_to_flush)
+					secs_to_sync = min;
 			} else
 				secs_to_sync = min * (secs_avail / min);
 		} else {
 			if (secs_to_flush && sync != NVM_SYNC_OPORT)
-				secs_to_sync =
-					pblk_pad_write(pblk, secs_avail);
+				secs_to_sync = min;
 		}
 	}
 
@@ -1989,8 +1913,6 @@ static void pblk_submit_write(struct work_struct *work)
 	unsigned int secs_avail, secs_to_sync, secs_to_flush = 0;
 	int err;
 
-	/* TODO: secs_to_flush must be calculated */
-
 	rqd = mempool_alloc(pblk->w_rq_pool, GFP_KERNEL);
 	if (!rqd) {
 		pr_err("pblk: not able to create write req.\n");
@@ -2010,6 +1932,7 @@ static void pblk_submit_write(struct work_struct *work)
 	if (!secs_avail)
 		goto fail_bio;
 
+	secs_to_flush = pblk_rb_sync_point_count(&pblk->rwb);
 	secs_to_sync = pblk_calc_secs_to_sync(pblk, secs_avail, secs_to_flush);
 	if (secs_to_sync < 0) {
 		pr_err("nvm: pblk: bad buffer sync calculation\n");
@@ -2020,9 +1943,9 @@ static void pblk_submit_write(struct work_struct *work)
 		goto end_unlock;
 
 	pgs_read = pblk_rb_read_to_bio(&pblk->rwb, bio, ctx, secs_to_sync);
-	if (pgs_read != secs_to_sync)
+	if (pgs_read > secs_to_sync)
 		goto fail_sync;
-	pblk_rb_read_commit(&pblk->rwb, secs_to_sync);
+	pblk_rb_read_commit(&pblk->rwb, pgs_read);
 
 	bio_get(bio);
 	bio->bi_iter.bi_sector = 0; /* artificial bio */

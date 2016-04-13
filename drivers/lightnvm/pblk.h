@@ -102,6 +102,8 @@ struct pblk_rb_entry {
 	struct pblk_w_ctx w_ctx;	/* Context for this entry */
 };
 
+#define RB_EMPTY_ENTRY (~0ULL)
+
 struct pblk_rb {
 	struct pblk_rb_entry *entries;	/* Ring buffer entries */
 	unsigned long mem;		/* Write offset - points to next
@@ -111,9 +113,13 @@ struct pblk_rb {
 					 * that has been submitted to the media
 					 * to be persisted
 					 */
-	unsigned long sync;		/* Sync point - backpointer that signals
+	unsigned long sync;		/* Synced - backpointer that signals
 					 * the last submitted entry that has
 					 * been successfully persisted to media
+					 */
+	unsigned long sync_point;	/* Sync point - last entry that must be
+					 * flushed to the media. Used with
+					 * REQ_FLUSH and REQ_FUA
 					 */
 	unsigned long nentries;		/* Number of entries in write buffer -
 					   must be a power of two */
@@ -275,6 +281,7 @@ unsigned long pblk_rb_sync_init(struct pblk_rb *rb, unsigned long *flags);
 unsigned long pblk_rb_sync_advance(struct pblk_rb *rb, unsigned int nentries);
 void pblk_rb_sync_end(struct pblk_rb *rb, unsigned long flags);
 int pblk_rb_set_sync_point(struct pblk_rb *rb, struct bio *bio);
+unsigned long pblk_rb_sync_point_count(struct pblk_rb *rb);
 
 // unsigned pblk_rb_get_ref(struct pblk_rb *rb, void *ptr, unsigned nentries);
 // unsigned pblk_rb_get_ref_lock(struct pblk_rb *rb, void *ptr, unsigned nentries);

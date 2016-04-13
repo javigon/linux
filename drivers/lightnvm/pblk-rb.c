@@ -47,6 +47,7 @@ int pblk_rb_init(struct pblk_rb *rb, struct pblk_rb_entry *rb_entry_base,
 	rb->nentries = (1 << power_size);
 	rb->grace_area = grace_area_sz;
 	rb->mem = rb->subm = rb->sync = 0;
+	rb->sync_point = RB_EMPTY_ENTRY;
 
 	rb->data_size = rb->nentries * rb->seg_size;
 	if (rb->data_size & (rb->data_size - 1)) {
@@ -336,7 +337,8 @@ unsigned int pblk_rb_read_to_bio(struct pblk_rb *rb, struct bio *bio,
 	struct page *page;
 	/* unsigned long size = nentries * rb->seg_size; */
 	unsigned long mem, subm;
-	unsigned int read = 0;
+	unsigned long count;
+	unsigned int pad = 0, read = 0, to_read = nentries;
 	unsigned int i;
 	int ret;
 
@@ -345,17 +347,19 @@ unsigned int pblk_rb_read_to_bio(struct pblk_rb *rb, struct bio *bio,
 	mem = smp_load_acquire(&rb->mem);
 	subm = READ_ONCE(rb->subm);
 
-	if (pblk_rb_ring_count(mem, subm, rb->nentries) < nentries)
-		goto out;
+	if ((count = pblk_rb_ring_count(mem, subm, rb->nentries)) < nentries) {
+		pad = nentries - count;
+		to_read = count;
+	}
 
 	/* entry = &rb->entries[subm]; */
 	/* memcpy_fromrb(rb, buf, entry->data, size); */
 
 	c_ctx->sentry = subm;
-	c_ctx->nentries = nentries;
+	c_ctx->nentries = to_read;
 
 	/* XXX: Read one entry at a time for now */
-	for (i = 0; i < nentries; i++) {
+	for (i = 0; i < to_read; i++) {
 		entry = &rb->entries[subm];
 
 		page = vmalloc_to_page(entry->data);
@@ -382,7 +386,14 @@ unsigned int pblk_rb_read_to_bio(struct pblk_rb *rb, struct bio *bio,
 			goto out;
 	}
 
-	read = nentries;
+	for (i = to_read; i < to_read + pad; i++)
+		w_ctx_list[i].lba = ADDR_PADDED;
+
+	read = to_read;
+
+#ifdef CONFIG_NVM_DEBUG
+	atomic_add(pad, &pblk->padded_writes);
+#endif
 
 out:
 	return read;
@@ -436,15 +447,22 @@ void pblk_rb_sync_end(struct pblk_rb *rb, unsigned long flags)
 int pblk_rb_set_sync_point(struct pblk_rb *rb, struct bio *bio)
 {
 	struct pblk_rb_entry *entry;
-	unsigned long mem, subm;
+	unsigned long mem, subm, sync_point;
 	int ret = NVM_IO_OK;
 
 	spin_lock(&rb->s_lock);
 
 	mem = smp_load_acquire(&rb->mem);
+	sync_point = smp_load_acquire(&rb->sync_point);
 	subm = READ_ONCE(rb->subm);
 
-	entry = &rb->entries[mem - 1];
+	if (mem == subm) {
+		ret = NVM_IO_DONE;
+		goto out;
+	}
+
+	sync_point = mem - 1;
+	entry = &rb->entries[sync_point];
 
 	if (entry->w_ctx.bio) {
 		pr_err("pblk: Duplicated sync point\n");
@@ -452,22 +470,38 @@ int pblk_rb_set_sync_point(struct pblk_rb *rb, struct bio *bio)
 		//TODO: Deal with this case
 	}
 
-	if (mem == subm) {
-		ret = NVM_IO_DONE;
-		goto out;
-	}
-
 	entry->w_ctx.bio = bio;
+	smp_store_release(&rb->sync_point, sync_point);
 
 out:
 	spin_unlock(&rb->s_lock);
 	return ret;
 }
 
+unsigned long pblk_rb_sync_point_count(struct pblk_rb *rb)
+{
+	unsigned long mem, sync_point, count;
+
+	sync_point = smp_load_acquire(&rb->sync_point);
+	if (sync_point == ADDR_EMPTY)
+		return 0;
+
+	mem = READ_ONCE(rb->mem);
+
+	count = mem - sync_point;
+	smp_store_release(&rb->sync_point, ADDR_EMPTY);
+
+	return count;
+}
+
 #ifdef CONFIG_NVM_DEBUG
 void pblk_rb_print_debug(struct pblk_rb *rb)
 {
-	pr_info("pblk_rb: %lu\t%lu\t%lu\n",
+	if (rb->sync_point != ADDR_EMPTY)
+		pr_info("pblk_rb: %lu\t%lu\t%lu\tsync:y(%lu)\n",
+			rb->mem, rb->subm, rb->sync, rb->sync_point);
+	else
+		pr_info("pblk_rb: %lu\t%lu\t%lu\tsync:n\n",
 			rb->mem, rb->subm, rb->sync);
 }
 #endif
