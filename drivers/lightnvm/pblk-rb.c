@@ -461,11 +461,11 @@ int pblk_rb_set_sync_point(struct pblk_rb *rb, struct bio *bio)
 		goto out;
 	}
 
-	sync_point = mem - 1;
+	sync_point = (mem == 0) ? (rb->nentries - 1) : (mem - 1);
 	entry = &rb->entries[sync_point];
 
 	if (entry->w_ctx.bio) {
-		pr_err("pblk: Duplicated sync point\n");
+		pr_err("pblk: Duplicated sync point:%lu\n", sync_point);
 		BUG_ON(1);
 		//TODO: Deal with this case
 	}
