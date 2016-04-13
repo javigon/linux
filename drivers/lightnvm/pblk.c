@@ -60,7 +60,6 @@ static void pblk_page_pad_invalidate(struct pblk *pblk, struct pblk_addr *a)
 	WARN_ON(test_and_set_bit(a->ppa.ppa, rblk->invalid_pages));
 	rblk->nr_invalid_pages++;
 
-	a->rblk = NULL;
 	ppa_set_padded(&a->ppa);
 }
 
@@ -925,7 +924,7 @@ static void pblk_sync_buffer(struct pblk *pblk, struct pblk_addr p)
 	struct nvm_lun *lun;
 
 	if (ppa_padded(p.ppa))
-		return;
+		goto out;
 
 	lun = rblk->parent->lun;
 
@@ -937,6 +936,7 @@ static void pblk_sync_buffer(struct pblk *pblk, struct pblk_addr p)
 		atomic_dec(&pblk->inflight_writes);
 #endif
 
+out:
 	if (bitmap_full(rblk->sync_bitmap, dev->sec_per_blk))
 		pblk_run_gc(pblk, rblk);
 }
