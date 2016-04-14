@@ -1246,6 +1246,7 @@ static int pblk_submit_read_io(struct pblk *pblk, struct bio *bio,
 		return NVM_IO_ERR;
 	}
 */
+	rqd->flags |= NVM_IO_SNGL_ACCESS;
 	rqd->flags |= NVM_IO_SUSPEND;
 
 	err = nvm_submit_io(pblk->dev, rqd);
