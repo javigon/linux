@@ -910,8 +910,9 @@ try:
 				goto try;
 			}
 		}
-	} else
+	} else {
 		list_add_tail(&ctx->list, &pblk->compl_list);
+	}
 
 	pblk_rb_sync_end(&pblk->rwb, flags);
 }
