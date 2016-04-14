@@ -1948,7 +1948,6 @@ static void pblk_submit_write(struct work_struct *work)
 		goto fail_sync;
 	pblk_rb_read_commit(&pblk->rwb, pgs_read);
 
-	bio_get(bio);
 	bio->bi_iter.bi_sector = 0; /* artificial bio */
 	bio->bi_rw = WRITE;
 	rqd->bio = bio;
@@ -1980,7 +1979,7 @@ fail_sync:
 end_unlock:
 	pblk_rb_read_rollback(&pblk->rwb);
 fail_bio:
-	bio_endio(bio);
+	bio_put(bio);
 fail_rqd:
 	mempool_free(rqd, pblk->w_rq_pool);
 }
