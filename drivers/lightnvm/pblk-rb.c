@@ -386,8 +386,11 @@ unsigned int pblk_rb_read_to_bio(struct pblk_rb *rb, struct bio *bio,
 			goto out;
 	}
 
-	for (i = to_read; i < to_read + pad; i++)
+	for (i = to_read; i < nentries; i++) {
 		w_ctx_list[i].lba = ADDR_PADDED;
+		w_ctx_list[i].flags = 0;
+		w_ctx_list[i].bio = NULL;
+	}
 
 	read = to_read;
 
@@ -444,7 +447,7 @@ void pblk_rb_sync_end(struct pblk_rb *rb, unsigned long flags)
 	spin_unlock_irqrestore(&rb->sy_lock, flags);
 }
 
-int pblk_rb_set_sync_point(struct pblk_rb *rb, struct bio *bio)
+int pblk_rb_sync_point_set(struct pblk_rb *rb, struct bio *bio)
 {
 	struct pblk_rb_entry *entry;
 	unsigned long mem, subm, sync_point;
@@ -478,18 +481,23 @@ out:
 	return ret;
 }
 
+void pblk_rb_sync_point_reset(struct pblk_rb *rb)
+{
+	smp_store_release(&rb->sync_point, ADDR_EMPTY);
+}
+
 unsigned long pblk_rb_sync_point_count(struct pblk_rb *rb)
 {
-	unsigned long mem, sync_point, count;
+	unsigned long subm, sync_point, count;
 
 	sync_point = smp_load_acquire(&rb->sync_point);
 	if (sync_point == ADDR_EMPTY)
 		return 0;
 
-	mem = READ_ONCE(rb->mem);
+	subm = READ_ONCE(rb->subm);
 
-	count = mem - sync_point;
-	smp_store_release(&rb->sync_point, ADDR_EMPTY);
+	/* The sync point itself counts as a sector to sync */
+	count = pblk_rb_ring_count(sync_point, subm, rb->nentries) + 1;
 
 	return count;
 }

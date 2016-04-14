@@ -1072,7 +1072,7 @@ static int pblk_buffer_write(struct pblk *pblk, struct bio *bio,
 
 	if (bio->bi_rw & (REQ_FLUSH | REQ_FUA)) {
 		if (!bio_has_data(bio)) {
-			ret = pblk_rb_set_sync_point(&pblk->rwb, bio);
+			ret = pblk_rb_sync_point_set(&pblk->rwb, bio);
 			queue_work(pblk->kw_wq, &pblk->ws_writer);
 			goto out;
 		}
@@ -1605,9 +1605,6 @@ static int pblk_calc_secs_to_sync(struct pblk *pblk, unsigned long secs_avail,
 					else
 						break;
 				}
-
-				if (secs_to_sync < secs_to_flush)
-					secs_to_sync = min;
 			} else
 				secs_to_sync = min * (secs_avail / min);
 		} else {
@@ -1662,6 +1659,9 @@ static void pblk_submit_write(struct work_struct *work)
 		pr_err("nvm: pblk: bad buffer sync calculation\n");
 		goto end_unlock;
 	}
+
+	if (secs_to_flush <= secs_to_sync)
+		pblk_rb_sync_point_reset(&pblk->rwb);
 
 	if (!secs_to_sync)
 		goto end_unlock;
