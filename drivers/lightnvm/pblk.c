@@ -1064,60 +1064,6 @@ rollback:
 	return 0;
 }
 
-/*
- * If current laddr is in memory and it is not synced (or on its way) to
- * secondary storage, directly modify the buffer
- *
- * XXX: Assume that only one entry is being sent
- *
- * XXX: This can only be done if we can ensure that no REQ_FUA | REQ_FLUSH has
- * been issued after the original LBA write into buffer. Leave this for later
- * on.
- */
-#if 0
-static int pblk_update_buffer_entry(struct pblk *pblk, struct bio *bio,
-					struct pblk_w_ctx *w_ctx,
-					unsigned int nentries)
-{
-	sector_t laddr = w_ctx->lba;
-	struct pblk_addr *gp;
-	unsigned long pos;
-	unsigned int i;
-
-	BUG_ON(!(laddr >= 0 && laddr + (nentries - 1) < pblk->nr_sects));
-
-	spin_lock(&pblk->l2p_lock);
-	for (i = 0; i < nentries; i++) {
-		gp = &pblk->trans_map[laddr + i];
-
-		/* XXX: Assume that only one entry is being sent. We need to
-		 * implement the case where some laddrs are in cache and others
-		 * not.
-		 */
-		if (!pblk_addr_in_cache(gp->addr))
-			goto out;
-
-		pos = gp->addr;
-		if (!pblk_rb_update(&pblk->rwb, bio_data(bio), w_ctx,
-								nentries, pos))
-			goto out;
-
-		/* Update mapping table with the write buffer cacheline */
-		paddr = pblk_cacheline_to_ppa(pos);
-
-		pblk_update_map(pblk, w_ctx.lba, NULL, paddr);
-	}
-
-	spin_unlock(&pblk->l2p_lock);
-
-	return NVM_IO_DONE;
-
-out:
-	spin_unlock(&pblk->l2p_lock);
-	return NVM_IO_OK;
-}
-#endif
-
 static int pblk_buffer_write(struct pblk *pblk, struct bio *bio,
 							unsigned long flags)
 {
@@ -1149,67 +1095,6 @@ static int pblk_buffer_write(struct pblk *pblk, struct bio *bio,
 out:
 	return ret;
 }
-
-#if 0
-static int pblk_read_w_buf_entry(struct bio *bio, struct pblk_block *rblk,
-								int entry)
-{
-	struct buf_entry *read_entry;
-	struct bio_vec bv;
-	struct page *page;
-	void *kaddr;
-	void *data;
-	int read = 0;
-
-	spin_lock(&rblk->w_buf.w_lock);
-	if (entry >= rblk->w_buf.cur_mem) {
-		spin_unlock(&rblk->w_buf.w_lock);
-		goto out;
-	}
-	spin_unlock(&rblk->w_buf.w_lock);
-
-	read_entry = &rblk->w_buf.entries[entry];
-	data = read_entry->data;
-
-	bv = bio_iter_iovec(bio, bio->bi_iter);
-	page = bv.bv_page;
-	kaddr = kmap_atomic(page);
-	memcpy(kaddr + bv.bv_offset, data, PBLK_EXPOSED_PAGE_SIZE);
-	kunmap_atomic(kaddr);
-	read++;
-
-out:
-	return read;
-}
-#endif
-
-/* Copy the data from memory to bio if it can be found in the write buffer. We
- * will complete the holes inthe bio  (if any) with a intermediate bio later on.
- * Return 1 if data in memory, 0 otherwise.
- */
-#if 0
-static int pblk_read_from_w_buf(struct pblk *pblk, struct bio *bio,
-							struct pblk_addr *addr)
-{
-	struct pblk_block *rblk = addr->rblk;
-	int read = 0;
-	int entry;
-
-	/* If the write buffer exists, the block is open in memory */
-	if (!kref_get_unless_zero(&rblk->w_buf.refs))
-		goto out;
-
-	if (rblk->w_buf.entries) {
-		entry = addr->addr - block_to_rel_addr(pblk, rblk);
-		read = pblk_read_w_buf_entry(bio, rblk, entry);
-	}
-
-	WARN_ON(kref_put(&rblk->w_buf.refs, pblk_free_w_buffer));
-
-out:
-	return read;
-}
-#endif
 
 static int pblk_read_from_cache(struct pblk *pblk, struct bio *bio,
 							struct pblk_addr *addr)
@@ -1294,62 +1179,6 @@ static int pblk_read_ppalist_rq(struct pblk *pblk, struct bio *bio,
 #endif
 
 	return NVM_IO_OK;
-#if 0
-	if (nr_pages != bio->bi_vcnt)
-		return NVM_IO_ERR;
-
-	*flags |= NVM_IOTYPE_BUF;
-
-	for (i = 0; i < nr_pages; i++) {
-		/* We assume that mapping occurs at 4KB granularity */
-		BUG_ON(!(laddr + i >= 0 && laddr + i < pblk->nr_sects));
-		gp = &pblk->trans_map[laddr + i];
-
-		if (!gp->rblk) {
-			BUG_ON(is_gc);
-			if (locked)
-				pblk_unlock_rq(pblk, rrqd);
-			return NVM_IO_DONE;
-		}
-
-		/* Try to read from write buffer. Those addresses that cannot be
-		 * read from the write buffer are sequentially added to the ppa
-		 * list, which will later on be used to submit an I/O to the
-		 * device to retrieve data.
-		 */
-		if (pblk_read_from_w_buf(pblk, bio, gp)) {
-			WARN_ON(test_and_set_bit(i, read_bitmap));
-			if (unlikely(!advanced_bio)) {
-				/* This is at least a partially filled bio,
-				 * advance it to copy data to the right place.
-				 * We will deal with partial bios later on.
-				 */
-				bio_advance(bio, i * PBLK_EXPOSED_PAGE_SIZE);
-				advanced_bio = 1;
-			}
-			bio_advance(bio, PBLK_EXPOSED_PAGE_SIZE);
-		} else {
-			/* Lock address if I/O is going to media */
-			if (unlikely(!locked)) {
-				locked = 1;
-				*flags &= ~NVM_IOTYPE_BUF;
-
-				if (!is_gc && pblk_lock_rq(pblk, bio, rrqd))
-					return NVM_IO_REQUEUE;
-			}
-
-			rqd->ppa_list[j] = pblk_ppa_to_gaddr(pblk->dev,
-								gp->addr);
-			j++;
-		}
-
-#ifdef CONFIG_NVM_DEBUG
-		atomic_inc(&pblk->inflight_reads);
-#endif
-	}
-
-	rqd->opcode = NVM_OP_PREAD;
-#endif
 }
 
 static int pblk_read_rq(struct pblk *pblk, struct bio *bio, struct nvm_rq *rqd,
@@ -1634,84 +1463,6 @@ static int pblk_submit_io(struct pblk *pblk, struct bio *bio,
 	/* if (atomic_dec_and_test(&rrqd->flush_ref)) */
 		/* complete(wait); */
 /* } */
-
-//TODO: Need to implement REQ_FUA
-#if 0
-static int pblk_wb_flush(struct pblk *pblk, struct bio *bio,
-				struct pblk_rq *rrqd, struct completion *wait,
-				unsigned long flush_flags)
-{
-	struct pblk_lun *rlun;
-	struct pblk_block *rblk;
-	unsigned int i;
-	int to_wait = 0;
-
-	/* if (bio->bi_rw & (REQ_FLUSH)){ */
-		/* printk(KERN_CRIT "FLUSH: %lu!!!\n", bio->bi_rw); */
-	/* } */
-	/* if (bio->bi_rw & (REQ_FUA)){ */
-		/* printk(KERN_CRIT "FUA: %lu!!!\n", bio->bi_rw); */
-	/* } */
-	/* if (bio->bi_rw & (REQ_SYNC)){ */
-		/* printk(KERN_CRIT "SYNC: %lu!!!\n", bio->bi_rw); */
-	/* } */
-
-	/* When a REQ_FLUSH arrives, we mark all write buffers to flush, before
-	 * the current I/O is placed into the write buffer for submission
-	 */
-	atomic_set(&rrqd->flush_ref, 0);
-	pblk_for_each_lun(pblk, rlun, i) {
-		spin_lock(&rlun->lock_lists);
-		list_for_each_entry(rblk, &rlun->open_list, list) {
-			struct pblk_w_buf *w_buf = &rblk->w_buf;
-			struct pblk_flush_rq *frq;
-
-			if (!kref_get_unless_zero(&rblk->w_buf.refs))
-				continue;
-
-			if (bitmap_full(w_buf->sync_bitmap, w_buf->cur_mem)) {
-				WARN_ON(kref_put(&rblk->w_buf.refs,
-							pblk_free_w_buffer));
-				continue;
-			}
-
-			frq = mempool_alloc(pblk->flush_pool, GFP_ATOMIC);
-			if (!frq) {
-				complete(wait);
-				WARN_ON(kref_put(&rblk->w_buf.refs,
-							pblk_free_w_buffer));
-				pr_err_ratelimited("pblk: not able to allocate"
-								" frq.");
-				return -ENOMEM;
-			}
-
-			frq->rrqd = rrqd;
-			frq->sync_point = w_buf->cur_mem;
-			frq->wait = wait;
-
-			spin_lock_irq(&w_buf->s_lock);
-			w_buf->sync_point = w_buf->cur_mem;
-			list_add_tail(&frq->list, &w_buf->flush_list);
-			spin_unlock_irq(&w_buf->s_lock);
-
-			atomic_inc(&rrqd->flush_ref);
-			WARN_ON(kref_put(&rblk->w_buf.refs,
-							pblk_free_w_buffer));
-
-			to_wait++;
-		}
-		spin_unlock(&rlun->lock_lists);
-	}
-
-	queue_work(pblk->kw_wq, &pblk->ws_writer);
-
-	/* All buffers meet current sync point */
-	if (!to_wait)
-		complete(wait);
-
-	return 0;
-}
-#endif
 
 static blk_qc_t pblk_make_rq(struct request_queue *q, struct bio *bio)
 {
