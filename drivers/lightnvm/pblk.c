@@ -1386,6 +1386,7 @@ static int pblk_submit_read(struct pblk *pblk, struct bio *bio,
 		bio_io_error(bio);
 		return NVM_IO_ERR;
 	}
+	memset(rqd, 0, pblk_r_rq_size);
 	rqd->metadata = NULL;
 
 	if (nr_pages > 1) {
