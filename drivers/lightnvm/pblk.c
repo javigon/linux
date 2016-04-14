@@ -1118,29 +1118,10 @@ out:
 }
 #endif
 
-static int pblk_write_ppalist_rq(struct pblk *pblk, struct bio *bio,
-					unsigned long flags, int nr_pages)
-{
-	//TODO: FLUSH
-
-	if (!pblk_write_to_cache(pblk, bio, flags, nr_pages))
-		return NVM_IO_REQUEUE;
-
-#ifdef CONFIG_NVM_DEBUG
-		atomic_add(nr_pages, &pblk->inflight_writes);
-		atomic_add(nr_pages, &pblk->req_writes);
-#endif
-
-	/* Use count as a heuristic for setting up a job in workqueue */
-	if (pblk_rb_count(&pblk->rwb) > pblk->min_write_pgs)
-		queue_work(pblk->kw_wq, &pblk->ws_writer);
-
-	return NVM_IO_DONE;
-}
-
-static int pblk_write_rq(struct pblk *pblk, struct bio *bio,
+static int pblk_buffer_write(struct pblk *pblk, struct bio *bio,
 							unsigned long flags)
 {
+	uint8_t nr_pages = pblk_get_pages(bio);
 	int ret = NVM_IO_DONE;
 
 	if (bio->bi_rw & (REQ_FLUSH | REQ_FUA)) {
@@ -1153,12 +1134,12 @@ static int pblk_write_rq(struct pblk *pblk, struct bio *bio,
 		ret = NVM_IO_OK;
 	}
 
-	if (!pblk_write_to_cache(pblk, bio, flags, 1))
+	if (!pblk_write_to_cache(pblk, bio, flags, nr_pages))
 		return NVM_IO_REQUEUE;
 
 #ifdef CONFIG_NVM_DEBUG
-	atomic_inc(&pblk->inflight_writes);
-	atomic_inc(&pblk->req_writes);
+	atomic_add(nr_pages, &pblk->inflight_writes);
+	atomic_add(nr_pages, &pblk->req_writes);
 #endif
 
 	/* Use count as a heuristic for setting up a job in workqueue */
@@ -1167,17 +1148,6 @@ static int pblk_write_rq(struct pblk *pblk, struct bio *bio,
 
 out:
 	return ret;
-}
-
-static int pblk_buffer_write(struct pblk *pblk, struct bio *bio,
-							unsigned long flags)
-{
-	uint8_t nr_pages = pblk_get_pages(bio);
-
-	if (nr_pages > 1)
-		return pblk_write_ppalist_rq(pblk, bio, flags, nr_pages);
-
-	return pblk_write_rq(pblk, bio, flags);
 }
 
 #if 0
