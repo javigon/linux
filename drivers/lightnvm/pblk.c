@@ -1944,7 +1944,7 @@ static void pblk_submit_write(struct work_struct *work)
 		goto end_unlock;
 
 	pgs_read = pblk_rb_read_to_bio(&pblk->rwb, bio, ctx, secs_to_sync);
-	if (pgs_read > secs_to_sync)
+	if (!pgs_read)
 		goto fail_sync;
 	pblk_rb_read_commit(&pblk->rwb, pgs_read);
 
