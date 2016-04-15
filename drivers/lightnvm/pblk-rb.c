@@ -525,12 +525,12 @@ unsigned long pblk_rb_sync_point_count(struct pblk_rb *rb)
 void pblk_rb_print_debug(struct pblk_rb *rb)
 {
 	if (rb->sync_point != ADDR_EMPTY)
-		pr_info("pblk_rb: %lu\t%lu\t%lu\t%u\tsync:y(%lu)\n",
+		pr_info("pblk_rb: %lu\t%lu\t%lu\t%u\ty(%lu)\n",
 			rb->mem, rb->subm, rb->sync,
 			atomic_read(&rb->inflight_sync_point),
 			rb->sync_point);
 	else
-		pr_info("pblk_rb: %lu\t%lu\t%lu\t%u\tsync:n\n",
+		pr_info("pblk_rb: %lu\t%lu\t%lu\t%u\tn\n",
 			rb->mem, rb->subm, rb->sync,
 			atomic_read(&rb->inflight_sync_point));
 }
