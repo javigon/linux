@@ -56,11 +56,8 @@ static void pblk_page_pad_invalidate(struct pblk *pblk, struct pblk_addr *a)
 {
 	struct pblk_block *rblk = a->rblk;
 
-	WARN_ON(test_and_set_bit(a->ppa.ppa, rblk->sync_bitmap));
 	WARN_ON(test_and_set_bit(a->ppa.ppa, rblk->invalid_pages));
 	rblk->nr_invalid_pages++;
-
-	ppa_set_padded(&a->ppa);
 }
 
 //TODO
@@ -791,7 +788,6 @@ static int pblk_map_page(struct pblk *pblk, struct pblk_w_ctx *ctx_list,
 			ret = -EINVAL;
 			goto out;
 		}
-		spin_unlock(&rlun->lock);
 
 		/* TODO: Implement GC path with emergency blocks */
 
@@ -814,11 +810,10 @@ static int pblk_map_page(struct pblk *pblk, struct pblk_w_ctx *ctx_list,
 			/* write context for target bio completion */
 			ctx_list[i].ppa.ppa = addr_to_ppa(paddr);
 			ctx_list[i].ppa.rblk = rblk;
+			ctx_list[i].flags |= PBLK_PADDED_ADDR;
 
 			pblk_page_pad_invalidate(pblk, &ctx_list[i].ppa);
 		}
-
-		spin_lock(&rlun->lock);
 	}
 	spin_unlock(&rlun->lock);
 
@@ -917,15 +912,12 @@ try:
 	pblk_rb_sync_end(&pblk->rwb, flags);
 }
 
-static void pblk_sync_buffer(struct pblk *pblk, struct pblk_addr p)
+static void pblk_sync_buffer(struct pblk *pblk, struct pblk_addr p, int flags)
 {
 	struct nvm_dev *dev = pblk->dev;
 	struct pblk_block *rblk = p.rblk;
 	u64 block_ppa;
 	struct nvm_lun *lun;
-
-	if (ppa_padded(p.ppa))
-		goto out;
 
 	lun = rblk->parent->lun;
 
@@ -933,11 +925,11 @@ static void pblk_sync_buffer(struct pblk *pblk, struct pblk_addr p)
 	WARN_ON(test_and_set_bit(block_ppa, rblk->sync_bitmap));
 
 #ifdef CONFIG_NVM_DEBUG
-		atomic_inc(&pblk->sync_writes);
+	atomic_inc(&pblk->sync_writes);
+	if (!(flags & PBLK_PADDED_ADDR))
 		atomic_dec(&pblk->inflight_writes);
 #endif
 
-out:
 	if (bitmap_full(rblk->sync_bitmap, dev->sec_per_blk))
 		pblk_run_gc(pblk, rblk);
 }
@@ -947,16 +939,13 @@ static void pblk_end_io_write(struct pblk *pblk, struct nvm_rq *rqd,
 {
 	struct pblk_ctx *ctx;
 	struct pblk_w_ctx *w_ctx;
-	struct pblk_addr addr;
 	int i;
 
 	ctx = pblk_set_ctx(pblk, rqd);
 	w_ctx = ctx->w_ctx;
 
-	for (i = 0; i < nr_pages; i++) {
-		pblk_memcpy_addr(&addr, &w_ctx[i].ppa);
-		pblk_sync_buffer(pblk, addr);
-	}
+	for (i = 0; i < nr_pages; i++)
+		pblk_sync_buffer(pblk, w_ctx[i].ppa, w_ctx[i].flags);
 
 	pblk_compl_queue(pblk, rqd, ctx);
 
@@ -1632,6 +1621,7 @@ static void pblk_submit_write(struct work_struct *work)
 	struct pblk_ctx *ctx;
 	unsigned int pgs_read;
 	unsigned int secs_avail, secs_to_sync, secs_to_flush = 0;
+	unsigned long sp;
 	int err;
 
 	rqd = mempool_alloc(pblk->w_rq_pool, GFP_KERNEL);
@@ -1660,15 +1650,16 @@ static void pblk_submit_write(struct work_struct *work)
 		goto end_unlock;
 	}
 
-	if (secs_to_flush <= secs_to_sync)
-		pblk_rb_sync_point_reset(&pblk->rwb);
-
 	if (!secs_to_sync)
 		goto end_unlock;
 
-	pgs_read = pblk_rb_read_to_bio(&pblk->rwb, bio, ctx, secs_to_sync);
+
+	pgs_read = pblk_rb_read_to_bio(&pblk->rwb, bio, ctx, secs_to_sync, &sp);
 	if (!pgs_read)
 		goto fail_sync;
+
+	if (secs_to_flush <= secs_to_sync)
+		pblk_rb_sync_point_reset(&pblk->rwb, sp);
 	pblk_rb_read_commit(&pblk->rwb, pgs_read);
 
 	bio->bi_iter.bi_sector = 0; /* artificial bio */

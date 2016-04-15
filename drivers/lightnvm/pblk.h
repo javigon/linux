@@ -79,6 +79,10 @@ struct pblk_compl_ctx {
 	unsigned int nentries;
 };
 
+enum {
+	PBLK_PADDED_ADDR = 8,
+};
+
 /* Write context */
 struct pblk_w_ctx {
 	struct bio *bio;		/* Original bio - used for completing in
@@ -139,6 +143,10 @@ struct pblk_rb {
 	spinlock_t w_lock;		/* Write lock */
 	spinlock_t s_lock;		/* Submit lock */
 	spinlock_t sy_lock;		/* Sync lock */
+
+#if CONFIG_NVM_DEBUG
+	atomic_t inflight_sync_point;	/* Not served REQ_FLUSH | REQ_FUA */
+#endif
 };
 
 struct pblk_block {
@@ -272,7 +280,8 @@ unsigned int pblk_rb_read(struct pblk_rb *rb, void *buf,
 					unsigned int nentries);
 unsigned int pblk_rb_read_to_bio(struct pblk_rb *rb, struct bio *bio,
 					struct pblk_ctx *ctx,
-					unsigned int nentries);
+					unsigned int nentries,
+					unsigned long *sp);
 void pblk_rb_read_commit(struct pblk_rb *rb, unsigned int entries);
 void pblk_rb_read_rollback(struct pblk_rb *rb);
 unsigned int pblk_rb_copy_entry_to_bio(struct pblk_rb *rb, struct bio *bio,
@@ -282,7 +291,7 @@ unsigned long pblk_rb_sync_advance(struct pblk_rb *rb, unsigned int nentries);
 void pblk_rb_sync_end(struct pblk_rb *rb, unsigned long flags);
 int pblk_rb_sync_point_set(struct pblk_rb *rb, struct bio *bio);
 unsigned long pblk_rb_sync_point_count(struct pblk_rb *rb);
-void pblk_rb_sync_point_reset(struct pblk_rb *rb);
+void pblk_rb_sync_point_reset(struct pblk_rb *rb, unsigned long sp);
 
 // unsigned pblk_rb_get_ref(struct pblk_rb *rb, void *ptr, unsigned nentries);
 // unsigned pblk_rb_get_ref_lock(struct pblk_rb *rb, void *ptr, unsigned nentries);

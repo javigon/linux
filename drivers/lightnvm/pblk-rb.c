@@ -64,6 +64,9 @@ int pblk_rb_init(struct pblk_rb *rb, struct pblk_rb_entry *rb_entry_base,
 		entry->data = rb->data + (i * rb->seg_size);
 	}
 
+#if CONFIG_NVM_DEBUG
+	atomic_set(&rb->inflight_sync_point, 0);
+#endif
 	return 0;
 }
 
@@ -326,7 +329,8 @@ out:
  */
 unsigned int pblk_rb_read_to_bio(struct pblk_rb *rb, struct bio *bio,
 					struct pblk_ctx *ctx,
-					unsigned int nentries)
+					unsigned int nentries,
+					unsigned long *sp)
 {
 	struct pblk *pblk = container_of(rb, struct pblk, rwb);
 	struct request_queue *q = pblk->dev->q;
@@ -376,6 +380,14 @@ unsigned int pblk_rb_read_to_bio(struct pblk_rb *rb, struct bio *bio,
 
 		memcpy_wctx(&w_ctx_list[i], &entry->w_ctx);
 		upt_ctx = &w_ctx_list[i].upt_ctx;
+
+		if (entry->w_ctx.bio != NULL) {
+			*sp = subm;
+#if CONFIG_NVM_DEBUG
+	atomic_dec(&rb->inflight_sync_point);
+#endif
+		}
+
 		subm = (subm + 1) & (rb->nentries - 1);
 
 		/* If the address cannot be locked on the l2p table, return a no
@@ -459,6 +471,10 @@ int pblk_rb_sync_point_set(struct pblk_rb *rb, struct bio *bio)
 	sync_point = smp_load_acquire(&rb->sync_point);
 	subm = READ_ONCE(rb->subm);
 
+#if CONFIG_NVM_DEBUG
+	atomic_inc(&rb->inflight_sync_point);
+#endif
+
 	if (mem == subm) {
 		ret = NVM_IO_DONE;
 		goto out;
@@ -481,9 +497,12 @@ out:
 	return ret;
 }
 
-void pblk_rb_sync_point_reset(struct pblk_rb *rb)
+void pblk_rb_sync_point_reset(struct pblk_rb *rb, unsigned long sp)
 {
-	smp_store_release(&rb->sync_point, ADDR_EMPTY);
+	unsigned long sync_point = smp_load_acquire(&rb->sync_point);
+
+	if (sync_point == sp)
+		smp_store_release(&rb->sync_point, ADDR_EMPTY);
 }
 
 unsigned long pblk_rb_sync_point_count(struct pblk_rb *rb)
@@ -506,11 +525,14 @@ unsigned long pblk_rb_sync_point_count(struct pblk_rb *rb)
 void pblk_rb_print_debug(struct pblk_rb *rb)
 {
 	if (rb->sync_point != ADDR_EMPTY)
-		pr_info("pblk_rb: %lu\t%lu\t%lu\tsync:y(%lu)\n",
-			rb->mem, rb->subm, rb->sync, rb->sync_point);
+		pr_info("pblk_rb: %lu\t%lu\t%lu\t%u\tsync:y(%lu)\n",
+			rb->mem, rb->subm, rb->sync,
+			atomic_read(&rb->inflight_sync_point),
+			rb->sync_point);
 	else
-		pr_info("pblk_rb: %lu\t%lu\t%lu\tsync:n\n",
-			rb->mem, rb->subm, rb->sync);
+		pr_info("pblk_rb: %lu\t%lu\t%lu\t%u\tsync:n\n",
+			rb->mem, rb->subm, rb->sync,
+			atomic_read(&rb->inflight_sync_point));
 }
 #endif
 
