@@ -1602,6 +1602,8 @@ static int pblk_calc_secs_to_sync(struct pblk *pblk, unsigned long secs_avail,
 		}
 	}
 
+	BUG_ON(!secs_to_sync && secs_to_flush);
+
 	return secs_to_sync;
 }
 
