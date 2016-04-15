@@ -1962,7 +1962,10 @@ static int pblk_luns_init(struct pblk *pblk, int lun_begin, int lun_end)
 
 	/* 1:1 mapping */
 	for (i = 0; i < pblk->nr_luns; i++) {
-		int lunid = lun_begin + i;
+		/* Align lun list to the channel each lun belongs to */
+		int ch =  ((lun_begin + i) % pblk->dev->nr_chnls);
+		int lun_raw =  ((lun_begin + i) / pblk->dev->nr_chnls);
+		int lunid =  lun_raw + ch * pblk->dev->luns_per_chnl;
 		struct nvm_lun *lun;
 
 		if (dev->mt->reserve_lun(dev, lunid)) {
