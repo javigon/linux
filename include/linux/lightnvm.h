@@ -409,10 +409,10 @@ static inline struct ppa_addr generic_to_dev_addr(struct nvm_dev *dev,
 	return l;
 }
 
-static inline struct ppa_addr dev_to_generic_addr(struct nvm_dev *dev,
+static inline struct ppa_addr dev_to_generic_addr(struct nvm_tgt_dev *tgt_dev,
 						struct ppa_addr r)
 {
-	struct nvm_geo *geo = &dev->geo;
+	struct nvm_geo *geo = &tgt_dev->geo;
 	struct ppa_addr l;
 
 	l.ppa = 0;
@@ -538,7 +538,7 @@ extern int nvm_set_bb_tbl(struct nvm_dev *dev, struct ppa_addr *ppas,
 extern int nvm_max_phys_sects(struct nvm_tgt_dev *);
 extern int nvm_submit_io(struct nvm_tgt_dev *, struct nvm_rq *);
 extern void nvm_generic_to_addr_mode(struct nvm_dev *, struct nvm_rq *);
-extern void nvm_addr_to_generic_mode(struct nvm_dev *, struct nvm_rq *);
+extern void nvm_addr_to_generic_mode(struct nvm_tgt_dev *, struct nvm_rq *);
 extern int nvm_set_rqd_ppalist(struct nvm_dev *, struct nvm_rq *,
 					const struct ppa_addr *, int, int);
 extern void nvm_free_rqd_ppalist(struct nvm_dev *, struct nvm_rq *);
@@ -555,6 +555,9 @@ extern int nvm_submit_ppa_list(struct nvm_dev *, struct ppa_addr *, int, int,
 							int, void *, int);
 extern int nvm_bb_tbl_fold(struct nvm_dev *, u8 *, int);
 extern int nvm_get_bb_tbl(struct nvm_dev *, struct ppa_addr, u8 *);
+
+int nvm_boundary_checks(struct nvm_tgt_dev *tgt_dev, struct ppa_addr *ppas,
+								int nr_ppas);
 
 /* sysblk.c */
 #define NVM_SYSBLK_MAGIC 0x4E564D53 /* "NVMS" */
@@ -582,6 +585,19 @@ extern int nvm_dev_factory(struct nvm_dev *, int flags);
 		for ((lunid) = 0; (lunid) < (geo)->luns_per_chnl;	\
 					(lunid)++, (ppa).g.lun = (lunid))
 
+static inline void print_ppa(struct ppa_addr *p, char *msg, int error)
+{
+	if (p->c.is_cached) {
+		pr_err("ppa: (%s: %x) cache line: %llu\n",
+				msg, error, (u64)p->c.line);
+	} else {
+		pr_err("ppa: (%s: %x) %llx: ch:%d,lun:%d,blk:%d,pg:%d,pl:%d,sec:%d\n",
+			msg, error, p->ppa,
+			p->g.ch, p->g.lun, p->g.blk,
+			p->g.pg, p->g.pl, p->g.sec);
+	}
+}
+
 #else /* CONFIG_NVM */
 struct nvm_dev_ops;
 
@@ -594,5 +610,6 @@ static inline int nvm_register(struct nvm_dev *dev)
 	return -EINVAL;
 }
 static inline void nvm_unregister(struct nvm_dev *dev) {}
+
 #endif /* CONFIG_NVM */
 #endif /* LIGHTNVM.H */
