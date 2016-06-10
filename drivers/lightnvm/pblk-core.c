@@ -1721,8 +1721,8 @@ int pblk_setup_w_multi(struct pblk *pblk, struct nvm_rq *rqd,
 
 static void pblk_free_blk(struct pblk_block *rblk)
 {
-	if (rblk->rlpg)
-		kfree(rblk->rlpg);
+	/* All bitmaps are allocated together with the rlpg structure */
+	kfree(rblk->rlpg);
 }
 
 void pblk_free_blks(struct pblk *pblk)
