@@ -33,7 +33,7 @@ static void pblk_free_gc_rqd(struct pblk *pblk, struct nvm_rq *rqd)
 static int pblk_write_list_to_cache(struct pblk *pblk, struct bio *bio,
 				    unsigned long flags, u64 *lba_list,
 				    struct pblk_kref_buf *ref_buf,
-				    unsigned int nr_secs,
+				    struct pblk_rb *rb, unsigned int nr_secs,
 				    unsigned int nr_rec_secs, int *ret_val)
 {
 	struct pblk_w_ctx w_ctx;
@@ -45,20 +45,22 @@ static int pblk_write_list_to_cache(struct pblk *pblk, struct bio *bio,
 
 	BUG_ON(!bio_has_data(bio) || (nr_rec_secs != bio->bi_vcnt));
 
-	pblk_rb_write_init(&pblk->rwb);
+	pblk_rb_write_init(rb);
 
-	if (pblk_rb_space(&pblk->rwb) < nr_secs)
+	if (pblk_rb_space(rb) < nr_secs) {
+		printk(KERN_CRIT "UPS\n");
 		goto rollback;
+	}
 
-	if (pblk_rb_update_l2p(&pblk->rwb, nr_secs))
+	if (pblk_rb_update_l2p(rb, nr_secs))
 		goto rollback;
 
 	/* Update the write buffer head (mem) with the entries that we can
 	 * write. The write in itself cannot fail, so there is no need to
 	 * rollback from here on.
 	 */
-	pos = pblk_rb_write_pos(&pblk->rwb);
-	pblk_rb_write_commit(&pblk->rwb, valid_secs);
+	pos = pblk_rb_write_pos(rb);
+	pblk_rb_write_commit(rb, valid_secs);
 
 	if (bio->bi_rw & (REQ_FLUSH | REQ_FUA)) {
 		b = bio;
@@ -84,7 +86,7 @@ static int pblk_write_list_to_cache(struct pblk *pblk, struct bio *bio,
 		kref_get(&ref_buf->ref);
 
 		data = bio_data(bio);
-		pblk_rb_write_entry(&pblk->rwb, data, w_ctx, pos + valid_secs);
+		pblk_rb_write_entry(rb, data, w_ctx, pos + valid_secs);
 
 		bio_advance(bio, PBLK_EXPOSED_PAGE_SIZE);
 		valid_secs++;
@@ -102,7 +104,7 @@ static int pblk_write_list_to_cache(struct pblk *pblk, struct bio *bio,
 			continue;
 
 		ppa = pblk_cacheline_to_ppa(
-				pblk_rb_wrap_pos(&pblk->rwb, pos + valid_secs));
+				pblk_rb_wrap_pos(rb, pos + valid_secs));
 		pblk_update_map(pblk, lba_list[i], NULL, ppa);
 		valid_secs++;
 	}
@@ -115,7 +117,7 @@ static int pblk_write_list_to_cache(struct pblk *pblk, struct bio *bio,
 	return 1;
 
 rollback:
-	pblk_rb_write_rollback(&pblk->rwb);
+	pblk_rb_write_rollback(rb);
 	return 0;
 }
 
@@ -299,6 +301,7 @@ int pblk_gc_move_valid_secs(struct pblk *pblk, struct pblk_block *rblk,
 	struct nvm_dev *dev = pblk->dev;
 	struct request_queue *q = dev->q;
 	struct nvm_rq *rqd;
+	struct pblk_rb *rb;
 	struct pblk_addr *gp;
 	struct bio *bio;
 	struct pblk_kref_buf *ref_buf;
@@ -309,6 +312,7 @@ int pblk_gc_move_valid_secs(struct pblk *pblk, struct pblk_block *rblk,
 	unsigned int read_left, ignored;
 	int max = pblk->max_write_pgs;
 	int i, off;
+	int flags = PBLK_IOTYPE_REF | PBLK_IOTYPE_GC;
 	int ret, moved = 0;
 	DECLARE_COMPLETION_ONSTACK(wait);
 
@@ -360,6 +364,15 @@ int pblk_gc_move_valid_secs(struct pblk *pblk, struct pblk_block *rblk,
 				ignored++;
 				continue;
 			}
+		}
+
+		/* In normal case, use normal write buffer, use GC buffer if
+		 * user writes are being limited due to lack of space on media
+		 */
+		rb = (pblk_rate_control(pblk)) ? &pblk->rgcb : &pblk->rwb;
+		//JAVIER
+		if (pblk_rate_control(pblk)) {
+			printk(KERN_CRIT "WRITE TO GC\n");
 		}
 
 		if (ignored == secs_to_gc)
@@ -423,11 +436,11 @@ int pblk_gc_move_valid_secs(struct pblk *pblk, struct pblk_block *rblk,
 		bio->bi_rw = WRITE;
 write_retry:
 		/* Writes to the buffer fail due to lack of space */
-		if (!pblk_write_list_to_cache(pblk, bio, PBLK_IOTYPE_REF,
-					&lba_list[off], ref_buf, secs_to_gc,
-					secs_in_disk, &ret)) {
-			if (pblk_rb_count(&pblk->rwb) >= pblk->min_write_pgs)
-				pblk_write_kick(pblk);
+		if (!pblk_write_list_to_cache(pblk, bio, flags,
+					&lba_list[off], ref_buf, rb,
+					secs_to_gc, secs_in_disk, &ret)) {
+			if (pblk_rb_count(rb) >= pblk->min_write_pgs)
+				pblk_rb_kick_writer(pblk, rb);
 			schedule();
 			goto write_retry;
 		}
@@ -440,8 +453,8 @@ next:
 		moved += secs_to_gc;
 
 		/* Use count as a heuristic for setting up a job in workqueue */
-		if (pblk_rb_count(&pblk->rwb) >= pblk->min_write_pgs)
-			pblk_write_kick(pblk);
+		if (pblk_rb_count(rb) >= pblk->min_write_pgs)
+			pblk_rb_kick_writer(pblk, rb);
 	} while (read_left > 0);
 
 	kref_put(&ref_buf->ref, pblk_free_ref_mem);
@@ -561,6 +574,10 @@ next_lba_list:
 	} while (nr_ppas < PBLK_MAX_REQ_ADDRS);
 
 prepare_ppas:
+	printk(KERN_CRIT "GC: blk:%lu, n_ppas:%d\n",
+			rblk->parent->id,
+			nr_ppas);
+
 	moved = pblk_gc_move_valid_secs(pblk, rblk, gc_lba_list, nr_ppas);
 	if (moved != nr_ppas) {
 		pr_err("pblk: could not GC all sectors:blk:%lu, GC:%d/%d/%d\n",
@@ -599,6 +616,15 @@ void pblk_lun_gc(struct work_struct *work)
 
 	nr_blocks_need = pblk->dev->blks_per_lun / GC_LIMIT_INVERSE;
 
+	pr_err_ratelimited("LUN:%d,need:%d, have:%d, count:%lu\n",
+			lun->id,
+			nr_blocks_need,
+			lun->nr_free_blocks,
+			pblk_rb_count(&pblk->rgcb));
+
+	if (unlikely(pblk_rb_count(&pblk->rgcb)))
+		pblk_rb_kick_writer(pblk, &pblk->rgcb);
+
 	if (nr_blocks_need < pblk->nr_luns)
 		nr_blocks_need = pblk->nr_luns;
 
@@ -619,7 +645,9 @@ void pblk_lun_gc(struct work_struct *work)
 
 		BUG_ON(!block_is_full(pblk, rblk));
 
-		pr_debug("pblk: selected block '%lu' for GC\n", block->id);
+		//JAVIER
+		printk(KERN_CRIT "pblk: selected block '%lu' for GC\n", block->id);
+		/* pr_debug("pblk: selected block '%lu' for GC\n", block->id); */
 
 		blk_ws->pblk = pblk;
 		blk_ws->rblk = rblk;

@@ -35,9 +35,10 @@
  * allocated and their size must be a power of two
  * (Documentation/circular-buffers.txt)
  */
-int pblk_rb_init(struct pblk_rb *rb, struct pblk_rb_entry *rb_entry_base,
-		 void *rb_data_base, unsigned long grace_area_sz,
-		 unsigned int power_size, unsigned int power_seg_sz)
+void pblk_rb_init(struct pblk_rb *rb, struct pblk_rb_entry *rb_entry_base,
+		  void *rb_data_base, unsigned long grace_area_sz,
+		  unsigned int power_size, unsigned int power_seg_sz,
+		  int type)
 {
 	struct pblk_rb_entry *entry;
 	unsigned int i;
@@ -49,6 +50,7 @@ int pblk_rb_init(struct pblk_rb *rb, struct pblk_rb_entry *rb_entry_base,
 	rb->grace_area = grace_area_sz;
 	rb->mem = rb->subm = rb->sync = rb->l2p_update = 0;
 	rb->sync_point = RB_EMPTY_ENTRY;
+	rb->type = type;
 
 	rb->data_size = rb->nr_entries * rb->seg_size;
 	if (rb->data_size & (rb->data_size - 1)) {
@@ -66,10 +68,16 @@ int pblk_rb_init(struct pblk_rb *rb, struct pblk_rb_entry *rb_entry_base,
 		entry->data = rb->data + (i * rb->seg_size);
 	}
 
+	INIT_WORK(&rb->ws_writer, pblk_submit_write);
+
 #ifdef CONFIG_NVM_DEBUG
 	atomic_set(&rb->inflight_sync_point, 0);
 #endif
-	return 0;
+}
+
+void pblk_rb_kick_writer(struct pblk *pblk, struct pblk_rb *rb)
+{
+	queue_work(pblk->kw_wq, &rb->ws_writer);
 }
 
 /**
@@ -220,6 +228,7 @@ void pblk_rb_read_commit(struct pblk_rb *rb, unsigned int nr_entries)
 void pblk_rb_read_rollback(struct pblk_rb *rb)
 {
 	lockdep_assert_held(&rb->r_lock);
+	smp_store_release(&rb->subm, READ_ONCE(rb->subm));
 	spin_unlock(&rb->r_lock);
 }
 
@@ -511,7 +520,8 @@ out:
 unsigned int pblk_rb_read_to_bio(struct pblk_rb *rb, struct bio *bio,
 				 struct pblk_ctx *ctx,
 				 unsigned int nr_entries,
-				 unsigned long *sync_point)
+				 unsigned long *sync_point,
+				 int *is_gc)
 {
 	struct pblk *pblk = container_of(rb, struct pblk, rwb);
 	struct request_queue *q = pblk->dev->q;
@@ -522,6 +532,7 @@ unsigned int pblk_rb_read_to_bio(struct pblk_rb *rb, struct bio *bio,
 	unsigned long count;
 	unsigned int pad = 0, read = 0, to_read = nr_entries;
 	unsigned int i;
+	int gc_in_rq = 0;
 	int flags;
 	int ret;
 
@@ -579,6 +590,8 @@ try:
 		}
 
 		flags &= ~PBLK_VALID_DATA;
+		gc_in_rq |= flags & PBLK_IOTYPE_GC;
+
 		/* Release flags on context. Protect from writes */
 		smp_store_release(&entry->w_ctx.flags, flags);
 
@@ -586,6 +599,7 @@ try:
 	}
 
 	read = to_read;
+	*is_gc = gc_in_rq;
 
 #ifdef CONFIG_NVM_DEBUG
 	atomic_add(pad, &pblk->padded_writes);

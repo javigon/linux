@@ -90,6 +90,7 @@ static int pblk_setup_rec_rq(struct pblk *pblk, struct nvm_rq *rqd,
 	unsigned int setup_secs;
 	struct pblk_sec_meta *meta;
 	int min = pblk->min_write_pgs;
+	int flags = 0;
 	int i;
 	int ret = 0;
 
@@ -102,7 +103,7 @@ static int pblk_setup_rec_rq(struct pblk *pblk, struct nvm_rq *rqd,
 	if (unlikely(nr_rec_secs == 1)) {
 		BUG_ON(nr_secs != 1);
 		BUG_ON(padded_secs != 0);
-		ret = pblk_setup_w_single(pblk, rqd, ctx, meta);
+		ret = pblk_setup_w_single(pblk, rqd, ctx, meta, flags);
 		goto out;
 	}
 
@@ -122,7 +123,10 @@ static int pblk_setup_rec_rq(struct pblk *pblk, struct nvm_rq *rqd,
 
 		setup_secs = (i + min > nr_rec_secs) ?
 						(nr_rec_secs % min) : min;
-		ret = pblk_setup_w_multi(pblk, rqd, ctx, meta, setup_secs, i);
+		ret = pblk_setup_w_multi(pblk, rqd, ctx, meta, setup_secs,
+								i, flags);
+		if (ret)
+			goto out;
 	}
 
 	rqd->ppa_status = (u64)0;
@@ -178,9 +182,13 @@ static void pblk_submit_rec(struct work_struct *work)
 		goto fail;
 	}
 
+retry:
+	/* The request setup might fail if we are close to capacity and need to
+	 * attend GC. Prioritize GC and retry
+	 */
 	if (pblk_setup_rec_rq(pblk, rqd, ctx, nr_rec_secs)) {
-		pr_err("pblk: could not setup recovery request\n");
-		goto fail;
+		schedule();
+		goto retry;
 	}
 
 #ifdef CONFIG_NVM_DEBUG

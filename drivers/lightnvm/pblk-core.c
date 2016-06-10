@@ -97,7 +97,6 @@ int pblk_read_rq(struct pblk *pblk, struct bio *bio, struct nvm_rq *rqd,
 		 sector_t laddr, unsigned long flags,
 		 unsigned long *read_bitmap)
 {
-	/* int is_gc = *flags & PBLK_IOTYPE_GC; */
 	struct pblk_addr *gp;
 
 	if (laddr == ADDR_EMPTY) {
@@ -516,7 +515,7 @@ static int pblk_write_to_cache(struct pblk *pblk, struct bio *bio,
 	}
 
 	if (bio->bi_rw & (REQ_FLUSH | REQ_FUA))
-		pblk_write_kick(pblk);
+		pblk_rb_kick_writer(pblk, &pblk->rwb);
 
 	return 1;
 
@@ -537,7 +536,7 @@ int pblk_buffer_write(struct pblk *pblk, struct bio *bio, unsigned long flags)
 		if (!bio_has_data(bio)) {
 			if (pblk_rb_sync_point_set(&pblk->rwb, bio))
 				ret = NVM_IO_OK;
-			pblk_write_kick(pblk);
+			pblk_rb_kick_writer(pblk, &pblk->rwb);
 			goto out;
 		}
 	}
@@ -552,7 +551,7 @@ int pblk_buffer_write(struct pblk *pblk, struct bio *bio, unsigned long flags)
 
 	/* Use count as a heuristic for setting up a job in workqueue */
 	if (pblk_rb_count(&pblk->rwb) >= pblk->min_write_pgs)
-		pblk_write_kick(pblk);
+		pblk_rb_kick_writer(pblk, &pblk->rwb);
 
 out:
 	return ret;
@@ -767,14 +766,14 @@ void pblk_set_lun_cur(struct pblk_lun *rlun, struct pblk_block *rblk, int is_bb)
 }
 
 static int pblk_replace_blk(struct pblk *pblk, struct pblk_block *rblk,
-			    struct pblk_lun *rlun, int is_bb)
+			    struct pblk_lun *rlun, int is_bb, int is_gc)
 {
 	struct nvm_lun *lun = rlun->parent;
 	int ret = 0;
 
 	pblk_disable_lun(rlun, lun);
 
-	rblk = pblk_get_blk(pblk, rlun, 0);
+	rblk = pblk_get_blk(pblk, rlun, is_gc);
 	if (!rblk) {
 		pr_err("pblk: cannot allocate new block\n");
 		ret = -ENOSPC;
@@ -1044,7 +1043,7 @@ static void pblk_end_io_write(struct pblk *pblk, struct nvm_rq *rqd)
 		return pblk_end_w_pad(pblk, rqd, ctx);
 
 	pblk_compl_queue(pblk, rqd, ctx);
-	pblk_write_kick(pblk);
+	pblk_rb_kick_writer(pblk, &pblk->rwb);
 }
 
 static void pblk_end_io_read(struct pblk *pblk, struct nvm_rq *rqd,
@@ -1098,7 +1097,7 @@ void pblk_end_io(struct nvm_rq *rqd)
 }
 
 static int pblk_setup_w_rq(struct pblk *pblk, struct nvm_rq *rqd,
-			   struct pblk_ctx *ctx)
+			   struct pblk_ctx *ctx, int flags)
 {
 	struct pblk_compl_ctx *c_ctx = ctx->c_ctx;
 	unsigned int valid_secs = c_ctx->nr_valid;
@@ -1115,17 +1114,19 @@ static int pblk_setup_w_rq(struct pblk *pblk, struct nvm_rq *rqd,
 		goto out;
 
 	meta = rqd->meta_list;
+	ctx->flags = flags;
 
 	if (unlikely(nr_secs == 1)) {
 		BUG_ON(padded_secs != 0);
-		ret = pblk_setup_w_single(pblk, rqd, ctx, meta);
+		ret = pblk_setup_w_single(pblk, rqd, ctx, meta, flags);
 		goto out;
 	}
 
 	for (i = 0; i < nr_secs; i += min) {
 		setup_secs = (i + min > valid_secs) ?
 						(valid_secs % min) : min;
-		ret = pblk_setup_w_multi(pblk, rqd, ctx, meta, setup_secs, i);
+		ret = pblk_setup_w_multi(pblk, rqd, ctx, meta, setup_secs, i,
+									flags);
 		if (ret)
 			goto out;
 	}
@@ -1182,7 +1183,8 @@ int pblk_calc_secs_to_sync(struct pblk *pblk, unsigned long secs_avail,
  */
 void pblk_submit_write(struct work_struct *work)
 {
-	struct pblk *pblk = container_of(work, struct pblk, ws_writer);
+	struct pblk_rb *rb = container_of(work, struct pblk_rb, ws_writer);
+	struct pblk *pblk = container_of(rb, struct pblk, rwb);
 	struct nvm_dev *dev = pblk->dev;
 	struct bio *bio;
 	struct nvm_rq *rqd;
@@ -1191,6 +1193,7 @@ void pblk_submit_write(struct work_struct *work)
 	unsigned int pgs_read;
 	unsigned int secs_avail, secs_to_sync, secs_to_flush = 0;
 	unsigned long sync_point;
+	int is_gc;
 	int err;
 
 	rqd = mempool_alloc(pblk->w_rq_pool, GFP_KERNEL);
@@ -1200,6 +1203,7 @@ void pblk_submit_write(struct work_struct *work)
 	}
 	memset(rqd, 0, pblk_w_rq_size);
 	ctx = pblk_set_ctx(pblk, rqd);
+	ctx->flags |= (rb->type & PBLK_RB_GC) ? PBLK_IOTYPE_GC : 0;
 	c_ctx = ctx->c_ctx;
 
 	bio = bio_alloc(GFP_KERNEL, pblk->max_write_pgs);
@@ -1227,9 +1231,11 @@ void pblk_submit_write(struct work_struct *work)
 	}
 
 	pgs_read = pblk_rb_read_to_bio(&pblk->rwb, bio, ctx, secs_to_sync,
-							&sync_point);
-	if (!pgs_read)
+							&sync_point, &is_gc);
+	if (!pgs_read) {
+		pblk_rb_read_rollback(&pblk->rwb);
 		goto fail_sync;
+	}
 
 	if (secs_to_flush <= secs_to_sync)
 		pblk_rb_sync_point_reset(&pblk->rwb, sync_point);
@@ -1244,11 +1250,14 @@ void pblk_submit_write(struct work_struct *work)
 	bio->bi_rw = WRITE;
 	rqd->bio = bio;
 
+retry:
 	/* Assign lbas to ppas and populate request structure */
-	err = pblk_setup_w_rq(pblk, rqd, ctx);
+	err = pblk_setup_w_rq(pblk, rqd, ctx, is_gc);
 	if (err) {
 		pr_err("pblk: could not setup write request\n");
-		goto fail_free_bio;
+		schedule();
+		goto retry;
+		/* goto fail_free_bio; */
 	}
 
 	err = nvm_submit_io(dev, rqd);
@@ -1270,7 +1279,7 @@ fail_sync:
 	/* Kick the queue to avoid a deadlock in the case that no new I/Os are
 	 * coming in.
 	 */
-	pblk_write_kick(pblk);
+	pblk_rb_kick_writer(pblk, &pblk->rwb);
 fail_bio:
 	bio_put(bio);
 fail_rqd:
@@ -1605,33 +1614,37 @@ try:
  * number of sectors in the page, taking number of planes also into
  * consideration
  *
- * TODO: We are missing GC path
  * TODO: Add support for MLC and TLC padding. For now only supporting SLC
  */
 static int pblk_map_rr_page(struct pblk *pblk, unsigned int sentry,
 				struct ppa_addr *ppa_list,
 				struct pblk_sec_meta *meta_list,
-				unsigned int nr_secs, unsigned int valid_secs)
+				unsigned int nr_secs, unsigned int valid_secs,
+				int flags)
 {
 	struct pblk_lun *rlun;
 	struct pblk_block *rblk;
 	struct nvm_lun *lun;
-	int is_gc = 0; /* TODO: Fix for now */
+	int is_gc = 0, gc_io = flags & NVM_IOTYPE_GC;
 	int ret = 0;
 
 try_rr:
-	rlun = pblk_get_lun_rr(pblk, is_gc);
+	rlun = pblk_get_lun_rr(pblk, gc_io);
 	lun = rlun->parent;
 
 try_lun:
 	/* TODO: This should follow a richer heuristic */
-	if (lun->nr_free_blocks < pblk->nr_luns * 4) {
-		pr_debug("pblk: not space left on lun:%d. Emergency GC\n",
-						lun->id);
+	if (lun->nr_free_blocks < pblk->gc_limit) {
+		if (gc_io) {
+			is_gc = 1;
+			goto map;
+		}
+
 		ret = -ENOSPC;
 		goto out;
 	}
 
+map:
 	spin_lock(&rlun->lock);
 	rblk = rlun->cur;
 
@@ -1648,7 +1661,7 @@ try_lun:
 		pblk_disable_lun(rlun, lun);
 		spin_unlock(&rlun->lock);
 
-		ret = pblk_replace_blk(pblk, rblk, rlun, 1);
+		ret = pblk_replace_blk(pblk, rblk, rlun, 1, is_gc);
 		if (ret)
 			goto out;
 
@@ -1659,7 +1672,7 @@ try_lun:
 							nr_secs, valid_secs);
 	if (ret) {
 		spin_unlock(&rlun->lock);
-		ret = pblk_replace_blk(pblk, rblk, rlun, 1);
+		ret = pblk_replace_blk(pblk, rblk, rlun, 1, is_gc);
 		if (ret)
 			goto out;
 
@@ -1678,7 +1691,7 @@ try_lun:
 
 	/* Prepare block for next write */
 	if (block_is_full(pblk, rblk)) {
-		ret = pblk_replace_blk(pblk, rblk, rlun, 0);
+		ret = pblk_replace_blk(pblk, rblk, rlun, 0, is_gc);
 		if (ret)
 			goto out;
 	}
@@ -1689,7 +1702,8 @@ out:
 
 
 int pblk_setup_w_single(struct pblk *pblk, struct nvm_rq *rqd,
-			struct pblk_ctx *ctx, struct pblk_sec_meta *meta)
+			struct pblk_ctx *ctx, struct pblk_sec_meta *meta,
+			int flags)
 {
 	struct pblk_compl_ctx *c_ctx = ctx->c_ctx;
 	int ret;
@@ -1702,21 +1716,20 @@ int pblk_setup_w_single(struct pblk *pblk, struct nvm_rq *rqd,
 	BUG_ON(pblk->dev->sec_per_pl != 1);
 
 	return pblk_map_rr_page(pblk, c_ctx->sentry, &rqd->ppa_addr,
-							&meta[0], 1, 1);
+						&meta[0], 1, 1, flags);
 
 	return ret;
 }
 
 int pblk_setup_w_multi(struct pblk *pblk, struct nvm_rq *rqd,
 		       struct pblk_ctx *ctx, struct pblk_sec_meta *meta,
-		       unsigned int valid_secs, int off)
+		       unsigned int valid_secs, int off, int flags)
 {
 	struct pblk_compl_ctx *c_ctx = ctx->c_ctx;
 	int min = pblk->min_write_pgs;
 
-	return pblk_map_rr_page(pblk, c_ctx->sentry + off,
-					&rqd->ppa_list[off],
-					&meta[off], min, valid_secs);
+	return pblk_map_rr_page(pblk, c_ctx->sentry + off, &rqd->ppa_list[off],
+					&meta[off], min, valid_secs, flags);
 }
 
 static void pblk_free_blk(struct pblk_block *rblk)

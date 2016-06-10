@@ -31,7 +31,7 @@
 #include <linux/lightnvm.h>
 
 /* Run only GC if less than 1/X blocks are free */
-#define GC_LIMIT_INVERSE 10
+#define GC_LIMIT_INVERSE 3
 #define GC_TIME_MSECS 5000
 
 #define PBLK_SECTOR (512)
@@ -55,6 +55,8 @@ enum {
 	PBLK_IOTYPE_REF = 16,
 
 	/* Write buffer flags */
+	PBLK_RB_GENERAL = 32,
+	PBLK_RB_GC = 64,
 	PBLK_VALID_DATA = 128,
 };
 
@@ -187,6 +189,9 @@ struct pblk_rb {
 
 	void *data;			/* Data buffer*/
 
+	int type;
+	struct work_struct ws_writer;
+
 	spinlock_t w_lock;		/* Write lock */
 	spinlock_t r_lock;		/* Read lock */
 	spinlock_t s_lock;		/* Sync lock */
@@ -282,6 +287,7 @@ struct pblk {
 	u64 poffset; /* physical page offset */
 	int lun_offset;
 
+	int gc_limit;
 	int nr_luns;
 	struct pblk_lun *luns;
 
@@ -290,6 +296,7 @@ struct pblk {
 	unsigned long total_blocks;
 
 	struct pblk_rb rwb;
+	struct pblk_rb rgcb;
 
 	int min_write_pgs; /* minimum amount of pages required by controller */
 	int max_write_pgs; /* maximum amount of pages supported by controller */
@@ -325,7 +332,6 @@ struct pblk {
 	spinlock_t trans_lock;
 	struct bio_list requeue_bios;
 	struct work_struct ws_requeue;
-	struct work_struct ws_writer;
 
 	/* Simple translation map of logical addresses to physical addresses.
 	 * The logical addresses is known by the host system, while the physical
@@ -360,14 +366,16 @@ struct pblk_block_ws {
 /*
  * pblk ring buffer operations
  */
-int pblk_rb_init(struct pblk_rb *rb, struct pblk_rb_entry *rb_entry_base,
-		 void *rb_data_base, unsigned long grace_area_sz,
-			unsigned int power_size, unsigned int power_seg_sz);
+void pblk_rb_init(struct pblk_rb *rb, struct pblk_rb_entry *rb_entry_base,
+		  void *rb_data_base, unsigned long grace_area_sz,
+		  unsigned int power_size, unsigned int power_seg_sz,
+		  int type);
 unsigned long pblk_rb_calculate_size(unsigned long nr_entries);
 void *pblk_rb_data_ref(struct pblk_rb *rb);
 void *pblk_rb_entries_ref(struct pblk_rb *rb);
 
 void pblk_rb_write_init(struct pblk_rb *rb);
+void pblk_rb_kick_writer(struct pblk *pblk, struct pblk_rb *rb);
 unsigned long pblk_rb_write_pos(struct pblk_rb *rb);
 void pblk_rb_write_entry(struct pblk_rb *rb, void *data,
 			 struct pblk_w_ctx w_ctx, unsigned int pos);
@@ -385,7 +393,8 @@ unsigned int pblk_rb_read(struct pblk_rb *rb, void *buf,
 unsigned int pblk_rb_read_to_bio(struct pblk_rb *rb, struct bio *bio,
 				 struct pblk_ctx *ctx,
 				 unsigned int nr_entries,
-				 unsigned long *sp);
+				 unsigned long *sp,
+				 int *is_gc);
 unsigned int pblk_rb_read_to_bio_list(struct pblk_rb *rb, struct bio *bio,
 				      struct pblk_ctx *ctx,
 				      struct list_head *list,
@@ -430,9 +439,10 @@ int pblk_fill_partial_read_bio(struct pblk *pblk, struct bio *bio,
 void pblk_discard(struct pblk *pblk, struct bio *bio);
 int pblk_setup_w_multi(struct pblk *pblk, struct nvm_rq *rqd,
 		       struct pblk_ctx *ctx, struct pblk_sec_meta *meta,
-		       unsigned int valid_secs, int off);
+		       unsigned int valid_secs, int off, int flags);
 int pblk_setup_w_single(struct pblk *pblk, struct nvm_rq *rqd,
-			struct pblk_ctx *ctx, struct pblk_sec_meta *meta);
+			struct pblk_ctx *ctx, struct pblk_sec_meta *meta,
+			int flags);
 int pblk_alloc_w_rq(struct pblk *pblk, struct nvm_rq *rqd,
 		    struct pblk_ctx *ctx, unsigned int nr_secs);
 void pblk_read_from_cache(struct pblk *pblk, struct bio *bio,
@@ -475,6 +485,18 @@ int pblk_gc_move_valid_secs(struct pblk *pblk, struct pblk_block *rblk,
 #ifdef CONFIG_NVM_DEBUG
 ssize_t pblk_rb_sysfs(struct pblk_rb *rb, char *buf);
 #endif
+
+/* Simple heuristic to determine whether emergency GC is needed or not */
+static inline int pblk_rate_control(struct pblk *pblk)
+{
+	struct pblk_lun *rlun = &pblk->luns[1];
+	struct nvm_lun *lun = rlun->parent;
+
+	if (unlikely(lun->nr_free_blocks < 10))
+		return 1;
+
+	return 0;
+}
 
 static inline void pblk_print_failed_bio(struct nvm_rq *rqd, int nr_ppas)
 {
@@ -550,11 +572,6 @@ static inline void pblk_ch_semas_up(struct pblk *pblk, struct nvm_rq *rqd)
 		ppa = dev_to_generic_addr(pblk->dev, rqd->ppa_addr);
 		up(&pblk->ch_list[ppa.g.ch].ch_sm);
 	}
-}
-
-static inline void pblk_write_kick(struct pblk *pblk)
-{
-	queue_work(pblk->kw_wq, &pblk->ws_writer);
 }
 
 static inline void *pblk_rlpg_to_llba(struct pblk_blk_rec_lpg *lpg)

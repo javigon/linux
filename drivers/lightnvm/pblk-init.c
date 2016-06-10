@@ -150,6 +150,39 @@ static void pblk_rwb_free(struct pblk *pblk)
 	vfree(pblk_rb_entries_ref(&pblk->rwb));
 }
 
+static int pblk_rgcb_init(struct pblk *pblk)
+{
+	struct nvm_dev *dev = pblk->dev;
+	struct pblk_rb_entry *entries;
+	void *data_buffer;
+	unsigned long nr_entries, data_size;
+	unsigned int power_size, power_seg_sz, grace_area_sz;
+
+	/* Allocate one block for emergency GC */
+	nr_entries = pblk_rb_calculate_size(dev->sec_per_blk);
+	data_size = nr_entries * dev->sec_size;
+
+	data_buffer = vzalloc(data_size);
+	if (!data_buffer)
+		return -ENOMEM;
+
+	entries = vzalloc(nr_entries * sizeof(struct pblk_rb_entry));
+	if (!entries) {
+		vfree(data_buffer);
+		return -ENOMEM;
+	}
+
+	/* Assume no grace area for now - only support for SLC and MLC */
+	grace_area_sz = 0;
+	power_size = get_count_order(nr_entries);
+	power_seg_sz = get_count_order(dev->sec_size);
+
+	pblk_rb_init(&pblk->rgcb, entries, data_buffer, grace_area_sz,
+					power_size, power_seg_sz, PBLK_RB_GC);
+
+	return 0;
+}
+
 static int pblk_rwb_init(struct pblk *pblk)
 {
 	struct nvm_dev *dev = pblk->dev;
@@ -184,7 +217,7 @@ static int pblk_rwb_init(struct pblk *pblk)
 
 	entries = vzalloc(nr_entries * sizeof(struct pblk_rb_entry));
 	if (!entries) {
-		vfree(pblk->rwb.data);
+		vfree(data_buffer);
 		return -ENOMEM;
 	}
 
@@ -193,8 +226,10 @@ static int pblk_rwb_init(struct pblk *pblk)
 	power_size = get_count_order(nr_entries);
 	power_seg_sz = get_count_order(dev->sec_size);
 
-	return pblk_rb_init(&pblk->rwb, entries, data_buffer, grace_area_sz,
-						power_size, power_seg_sz);
+	pblk_rb_init(&pblk->rwb, entries, data_buffer, grace_area_sz,
+				power_size, power_seg_sz, PBLK_RB_GENERAL);
+
+	return 0;
 }
 
 /* Minimum pages needed within a lun */
@@ -272,8 +307,18 @@ static int pblk_core_init(struct pblk *pblk)
 	if (pblk_rwb_init(pblk))
 		goto free_kw_wq;
 
+	/* Init emergency GC buffer */
+	if (pblk_rgcb_init(pblk))
+		goto free_rwb;
+
+
+	pblk->gc_limit = pblk->nr_luns * 4;
 	INIT_LIST_HEAD(&pblk->compl_list);
+
 	return 0;
+
+free_rwb:
+	pblk_rwb_free(pblk);
 free_kw_wq:
 	destroy_workqueue(pblk->kw_wq);
 free_w_rq_pool:
@@ -654,6 +699,25 @@ static ssize_t pblk_sysfs_write_buffer(struct pblk *pblk, char *buf)
 	return pblk_rb_sysfs(&pblk->rwb, buf);
 }
 
+static ssize_t pblk_sysfs_backpointer(struct pblk *pblk, char *buf)
+{
+	struct pblk_ctx *c;
+	struct pblk_compl_ctx *c_ctx;
+	int i = 0;
+	ssize_t sz = 0;
+
+	list_for_each_entry(c, &pblk->compl_list, list) {
+		c_ctx = c->c_ctx;
+		sz += sprintf(buf + sz, "Entry:%d\t%u\t%u\t%u\n",
+			i,
+			c_ctx->sentry,
+			c_ctx->nr_valid,
+			c_ctx->nr_padded);
+	}
+
+	return sz;
+}
+
 #else
 static ssize_t pblk_sysfs_stats(struct pblk *pblk, char *buf)
 {
@@ -671,6 +735,11 @@ static ssize_t pblk_sysfs_bad_blks(struct pblk *pblk, char *buf)
 }
 
 static ssize_t pblk_sysfs_write_buffer(struct pblk *pblk, char *buf)
+{
+	return 0;
+}
+
+static ssize_t pblk_sysfs_backpointer(struct pblk *pblk, char *buf)
 {
 	return 0;
 }
@@ -696,11 +765,17 @@ static struct attribute sys_rb_attr = {
 	.mode = S_IRUGO
 };
 
+static struct attribute sys_backpointer_attr = {
+	.name = "backpointer",
+	.mode = S_IRUGO
+};
+
 static struct attribute *pblk_attrs[] = {
 	&sys_stats_attr,
 	&sys_open_blocks_attr,
 	&sys_bad_blocks_attr,
 	&sys_rb_attr,
+	&sys_backpointer_attr,
 	NULL,
 };
 
@@ -721,6 +796,8 @@ static ssize_t pblk_sysfs_show(struct nvm_target *t, struct attribute *attr,
 		return pblk_sysfs_bad_blks(pblk, buf);
 	if (strcmp(attr->name, "write_buffer") == 0)
 		return pblk_sysfs_write_buffer(pblk, buf);
+	if (strcmp(attr->name, "backpointer") == 0)
+		return pblk_sysfs_backpointer(pblk, buf);
 
 	return 0;
 }
@@ -788,7 +865,6 @@ static void *pblk_init(struct nvm_dev *dev, struct gendisk *tdisk,
 	spin_lock_init(&pblk->bio_lock);
 	spin_lock_init(&pblk->trans_lock);
 	INIT_WORK(&pblk->ws_requeue, pblk_requeue);
-	INIT_WORK(&pblk->ws_writer, pblk_submit_write);
 
 	pblk->nr_luns = lun_end - lun_begin + 1;
 
