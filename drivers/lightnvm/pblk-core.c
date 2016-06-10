@@ -1126,6 +1126,8 @@ static int pblk_setup_w_rq(struct pblk *pblk, struct nvm_rq *rqd,
 		setup_secs = (i + min > valid_secs) ?
 						(valid_secs % min) : min;
 		ret = pblk_setup_w_multi(pblk, rqd, ctx, meta, setup_secs, i);
+		if (ret)
+			goto out;
 	}
 
 #ifdef CONFIG_NVM_DEBUG
@@ -1215,11 +1217,14 @@ void pblk_submit_write(struct work_struct *work)
 	secs_to_sync = pblk_calc_secs_to_sync(pblk, secs_avail, secs_to_flush);
 	if (secs_to_sync < 0) {
 		pr_err("pblk: bad buffer sync calculation\n");
-		goto end_rollback;
+		pblk_rb_read_rollback(&pblk->rwb);
+		goto fail_bio;
 	}
 
-	if (!secs_to_sync)
-		goto end_rollback;
+	if (!secs_to_sync) {
+		pblk_rb_read_rollback(&pblk->rwb);
+		goto fail_bio;
+	}
 
 	pgs_read = pblk_rb_read_to_bio(&pblk->rwb, bio, ctx, secs_to_sync,
 							&sync_point);
@@ -1266,8 +1271,6 @@ fail_sync:
 	 * coming in.
 	 */
 	pblk_write_kick(pblk);
-end_rollback:
-	pblk_rb_read_rollback(&pblk->rwb);
 fail_bio:
 	bio_put(bio);
 fail_rqd:
@@ -1698,15 +1701,8 @@ int pblk_setup_w_single(struct pblk *pblk, struct nvm_rq *rqd,
 	 */
 	BUG_ON(pblk->dev->sec_per_pl != 1);
 
-	ret = pblk_map_rr_page(pblk, c_ctx->sentry, &rqd->ppa_addr,
+	return pblk_map_rr_page(pblk, c_ctx->sentry, &rqd->ppa_addr,
 							&meta[0], 1, 1);
-	if (ret) {
-		/*
-		 * TODO:  There is no more available pages, we need to
-		 * recover. Probably a requeue of the bio is enough.
-		 */
-		BUG_ON(1);
-	}
 
 	return ret;
 }
@@ -1717,20 +1713,10 @@ int pblk_setup_w_multi(struct pblk *pblk, struct nvm_rq *rqd,
 {
 	struct pblk_compl_ctx *c_ctx = ctx->c_ctx;
 	int min = pblk->min_write_pgs;
-	int ret = 0;
 
-	ret = pblk_map_rr_page(pblk, c_ctx->sentry + off,
+	return pblk_map_rr_page(pblk, c_ctx->sentry + off,
 					&rqd->ppa_list[off],
 					&meta[off], min, valid_secs);
-	if (ret) {
-		/*
-		 * TODO:  There is no more available pages, we need to
-		 * recover. Probably a requeue of the bio is enough.
-		 */
-		BUG_ON(1);
-	}
-
-	return ret;
 }
 
 static void pblk_free_blk(struct pblk_block *rblk)
