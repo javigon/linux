@@ -75,10 +75,14 @@ struct rrpc_lun {
 	struct rrpc_block *cur, *gc_cur;
 	struct rrpc_block *blocks;	/* Reference to block allocation */
 
+	struct nvm_lun_mgmt *mgmt;
+
 	struct list_head prio_list;	/* Blocks that may be GC'ed */
 	struct list_head wblk_list;	/* Queued blocks to be written to */
 
 	struct work_struct ws_gc;
+
+	int reserved_blocks;
 
 	spinlock_t lock;
 };

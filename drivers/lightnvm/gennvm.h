@@ -23,15 +23,16 @@
 struct gen_lun {
 	struct nvm_lun vlun;
 
-	int reserved_blocks;
-	/* lun block lists */
-	struct list_head used_list;	/* In-use blocks */
-	struct list_head free_list;	/* Not used blocks i.e. released
-					 * and ready for use
-					 */
-	struct list_head bb_list;	/* Bad blocks. Mutually exclusive with
-					 * free_list and used_list
-					 */
+	/* A LUN can either be managed by the media manager if it is shared
+	 * among several used through the generic get/put block interface or
+	 * exclusively owned by a target. In this case, the target manages
+	 * the LUN. gen_lun always maintains a reference to the LUN management.
+	 *
+	 * Exclusive access is managed by the dev->lun_map bitmask. 0:
+	 * non-exclusive, 1: exclusive.
+	 */
+	struct nvm_lun_mgmt *mgmt;
+	struct nvm_target *tgt;
 };
 
 struct gen_dev {

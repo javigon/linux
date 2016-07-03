@@ -188,17 +188,45 @@ static void rrpc_set_lun_cur(struct rrpc_lun *rlun, struct rrpc_block *new_rblk,
 	*cur_rblk = new_rblk;
 }
 
+static struct nvm_block *__rrpc_get_blk(struct rrpc *rrpc,
+							struct rrpc_lun *rlun)
+{
+	struct nvm_block *blk = NULL;
+
+	if (list_empty(&rlun->mgmt->free_list))
+		goto out;
+
+	blk = list_first_entry(&rlun->mgmt->free_list, struct nvm_block, list);
+
+	list_move_tail(&blk->list, &rlun->mgmt->used_list);
+	blk->state = NVM_BLK_ST_TGT;
+	rlun->mgmt->nr_free_blocks--;
+
+out:
+	return blk;
+}
+
 static struct rrpc_block *rrpc_get_blk(struct rrpc *rrpc, struct rrpc_lun *rlun,
 							unsigned long flags)
 {
 	struct nvm_block *blk;
 	struct rrpc_block *rblk;
+	int is_gc = flags & NVM_IOTYPE_GC;
 
-	blk = nvm_get_blk(rrpc->dev, rlun->parent, flags);
-	if (!blk) {
-		pr_err("nvm: rrpc: cannot get new block from media manager\n");
+	spin_lock(&rlun->lock);
+	if (!is_gc && rlun->mgmt->nr_free_blocks < rlun->reserved_blocks) {
+		pr_err("nvm: rrpc: cannot give block to non GC request\n");
+		spin_unlock(&rlun->lock);
 		return NULL;
 	}
+
+	blk = __rrpc_get_blk(rrpc, rlun);
+	if (!blk) {
+		pr_err("nvm: rrpc: cannot get new block\n");
+		spin_unlock(&rlun->lock);
+		return NULL;
+	}
+	spin_unlock(&rlun->lock);
 
 	rblk = rrpc_get_rblk(rlun, blk->id);
 	blk->priv = rblk;
@@ -212,7 +240,24 @@ static struct rrpc_block *rrpc_get_blk(struct rrpc *rrpc, struct rrpc_lun *rlun,
 
 static void rrpc_put_blk(struct rrpc *rrpc, struct rrpc_block *rblk)
 {
-	nvm_put_blk(rrpc->dev, rblk->parent);
+	struct nvm_block *blk = rblk->parent;
+	struct rrpc_lun *rlun = rblk->rlun;
+
+	spin_lock(&rlun->lock);
+	if (blk->state & NVM_BLK_ST_TGT) {
+		list_move_tail(&blk->list, &rlun->mgmt->free_list);
+		rlun->mgmt->nr_free_blocks++;
+		blk->state = NVM_BLK_ST_FREE;
+	} else if (blk->state & NVM_BLK_ST_BAD) {
+		list_move_tail(&blk->list, &rlun->mgmt->bb_list);
+		blk->state = NVM_BLK_ST_BAD;
+	} else {
+		WARN_ON_ONCE(1);
+		pr_err("rrpc: erroneous block type (%lu -> %u)\n",
+							blk->id, blk->state);
+		list_move_tail(&blk->list, &rlun->mgmt->bb_list);
+	}
+	spin_unlock(&rlun->lock);
 }
 
 static void rrpc_put_blks(struct rrpc *rrpc)
@@ -450,7 +495,6 @@ static void rrpc_lun_gc(struct work_struct *work)
 {
 	struct rrpc_lun *rlun = container_of(work, struct rrpc_lun, ws_gc);
 	struct rrpc *rrpc = rlun->rrpc;
-	struct nvm_lun *lun = rlun->parent;
 	struct rrpc_block_gc *gcb;
 	unsigned int nr_blocks_need;
 
@@ -460,7 +504,7 @@ static void rrpc_lun_gc(struct work_struct *work)
 		nr_blocks_need = rrpc->nr_luns;
 
 	spin_lock(&rlun->lock);
-	while (nr_blocks_need > lun->nr_free_blocks &&
+	while (nr_blocks_need > rlun->mgmt->nr_free_blocks &&
 					!list_empty(&rlun->prio_list)) {
 		struct rrpc_block *rblock = block_prio_find_max(rlun);
 		struct nvm_block *block = rblock->parent;
@@ -529,8 +573,7 @@ static struct rrpc_lun *rrpc_get_lun_rr(struct rrpc *rrpc, int is_gc)
 	 * estimate.
 	 */
 	rrpc_for_each_lun(rrpc, rlun, i) {
-		if (rlun->parent->nr_free_blocks >
-					max_free->parent->nr_free_blocks)
+		if (rlun->mgmt->nr_free_blocks > max_free->mgmt->nr_free_blocks)
 			max_free = rlun;
 	}
 
@@ -587,15 +630,10 @@ static struct rrpc_addr *rrpc_map_page(struct rrpc *rrpc, sector_t laddr,
 {
 	struct rrpc_lun *rlun;
 	struct rrpc_block *rblk, **cur_rblk;
-	struct nvm_lun *lun;
 	u64 paddr;
 	int gc_force = 0;
 
 	rlun = rrpc_get_lun_rr(rrpc, is_gc);
-	lun = rlun->parent;
-
-	if (!is_gc && lun->nr_free_blocks < rrpc->nr_luns * 4)
-		return NULL;
 
 	/*
 	 * page allocation steps:
@@ -613,15 +651,21 @@ static struct rrpc_addr *rrpc_map_page(struct rrpc *rrpc, sector_t laddr,
 
 	spin_lock(&rlun->lock);
 	cur_rblk = &rlun->cur;
-	rblk = rlun->cur;
 retry:
+
+	if (!is_gc && rlun->mgmt->nr_free_blocks < rrpc->nr_luns * 4) {
+		spin_unlock(&rlun->lock);
+		return NULL;
+	}
+
+	rblk = *cur_rblk;
+
 	paddr = rrpc_alloc_addr(rrpc, rblk);
 
 	if (paddr != ADDR_EMPTY)
 		goto done;
 
 	if (!list_empty(&rlun->wblk_list)) {
-new_blk:
 		rblk = list_first_entry(&rlun->wblk_list, struct rrpc_block,
 									prio);
 		rrpc_set_lun_cur(rlun, rblk, cur_rblk);
@@ -639,19 +683,18 @@ new_blk:
 		 * Therefore, make sure that one is used, instead of the
 		 * one just added.
 		 */
-		goto new_blk;
+		goto retry;
 	}
 
 	if (unlikely(is_gc) && !gc_force) {
 		/* retry from emergency gc block */
-		cur_rblk = &rlun->gc_cur;
-		rblk = rlun->gc_cur;
-		gc_force = 1;
 		spin_lock(&rlun->lock);
+		cur_rblk = &rlun->gc_cur;
+		gc_force = 1;
 		goto retry;
 	}
 
-	pr_err("rrpc: failed to allocate new block\n");
+	pr_err("rrpc: failed to allocate new block (is_gc=%u)\n", is_gc);
 	return NULL;
 done:
 	spin_unlock(&rlun->lock);
@@ -1139,7 +1182,7 @@ static void rrpc_luns_free(struct rrpc *rrpc)
 		lun = rlun->parent;
 		if (!lun)
 			break;
-		dev->mt->release_lun(dev, lun->id);
+		dev->mt->release_lun(dev, lun->id, rlun->mgmt);
 		vfree(rlun->blocks);
 	}
 
@@ -1168,8 +1211,10 @@ static int rrpc_luns_init(struct rrpc *rrpc, int lun_begin, int lun_end)
 	for (i = 0; i < rrpc->nr_luns; i++) {
 		int lunid = lun_begin + i;
 		struct nvm_lun *lun;
+		struct nvm_lun_mgmt *mgmt;
 
-		if (dev->mt->reserve_lun(dev, lunid)) {
+		mgmt = dev->mt->reserve_lun(dev, lunid, rrpc->disk);
+		if (!mgmt) {
 			pr_err("rrpc: lun %u is already allocated\n", lunid);
 			goto err;
 		}
@@ -1180,6 +1225,7 @@ static int rrpc_luns_init(struct rrpc *rrpc, int lun_begin, int lun_end)
 
 		rlun = &rrpc->luns[i];
 		rlun->parent = lun;
+		rlun->mgmt = mgmt;
 		rlun->blocks = vzalloc(sizeof(struct rrpc_block) *
 						rrpc->dev->blks_per_lun);
 		if (!rlun->blocks) {
@@ -1196,6 +1242,8 @@ static int rrpc_luns_init(struct rrpc *rrpc, int lun_begin, int lun_end)
 			INIT_LIST_HEAD(&rblk->prio);
 			spin_lock_init(&rblk->lock);
 		}
+
+		rlun->reserved_blocks = 2; /* for GC only */
 
 		rlun->rrpc = rrpc;
 		INIT_LIST_HEAD(&rlun->prio_list);
