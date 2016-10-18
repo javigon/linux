@@ -435,38 +435,44 @@ static void gen_free(struct nvm_dev *dev)
 	dev->mp = NULL;
 }
 
-static ssize_t gen_sysfs_blocks(struct gen_dev *gn, char *page)
+static ssize_t gen_sysfs_blocks(struct nvm_dev *dev, char *page)
 {
-	int i;
+	struct gen_dev *gn = dev->mp;
+	struct list_head *n;
 	unsigned int used, free, bb_list, total_lun;
 	unsigned int free_local;
-	struct list_head *n;
 	ssize_t offset = 0;
+	int i;
 
 	for (i = 0; i < gn->nr_luns; i++) {
+		char owner[DISK_NAME_LEN] = "gennvm";
 		struct gen_lun *lun = &gn->luns[i];
 
 		used = free = bb_list = total_lun = 0;
 
 		spin_lock(&lun->vlun.lock);
-		list_for_each(n, &lun->used_list)
+		list_for_each(n, &lun->mgmt->used_list)
 			used++;
 
-		list_for_each(n, &lun->free_list)
+		list_for_each(n, &lun->mgmt->free_list)
 			free++;
 
-		list_for_each(n, &lun->bb_list)
+		list_for_each(n, &lun->mgmt->bb_list)
 			bb_list++;
 
-		free_local = lun->vlun.nr_free_blocks;
+		free_local = lun->mgmt->nr_free_blocks;
 		spin_unlock(&lun->vlun.lock);
 
-		total_lun = used + free+ bb_list;
+		total_lun = used + free + bb_list;
+
+		if (test_bit(i, dev->lun_map))
+			sprintf(owner, "%s", lun->tgt->disk->disk_name);
 
 		offset += sprintf(page + offset,
-				"lun=(%i %i), u=%u, f=%u, b=%u, t=%u (v=%u)\n",
-				lun->vlun.chnl_id, lun->vlun.lun_id,
-				used, free, bb_list, total_lun, free_local);
+			"lun=(%i %i), o=%s, u=%u, f=%u, b=%u, t=%u/%u (v=%u)\n",
+			lun->vlun.chnl_id, lun->vlun.lun_id, owner,
+			used, free, bb_list, total_lun, dev->blks_per_lun,
+			free_local);
 	}
 
 	return offset;
@@ -476,11 +482,10 @@ static ssize_t gen_sysfs_show(struct device *dev,
 			      struct device_attribute *dattr, char *page)
 {
 	struct nvm_dev *ndev = container_of(dev, struct nvm_dev, dev);
-	struct gen_dev *gn = ndev->mp;
 	struct attribute *attr = &dattr->attr;
 
 	if (strcmp(attr->name, "blocks") == 0)
-		return gen_sysfs_blocks(gn, page);
+		return gen_sysfs_blocks(ndev, page);
 
 	return 0;
 }
