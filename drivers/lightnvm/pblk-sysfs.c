@@ -119,15 +119,16 @@ static ssize_t pblk_sysfs_blocks(struct pblk *pblk, char *page)
 	struct pblk_lun *rlun;
 	struct nvm_block *blk;
 	struct pblk_block *rblk;
-	unsigned int free, used, used_int, bad, total_lun;
+	unsigned int free, used, used_int, used_cnt, bad, total_lun;
 	int i;
-	ssize_t sz = 0;
+	ssize_t line, sz = 0;
 
 	pblk_for_each_lun(pblk, rlun, i) {
 		free = used = used_int = bad = 0;
 
-		spin_lock(&rlun->lock_lists);
 		spin_lock(&rlun->lock);
+		spin_lock(&rlun->lock_lists);
+
 		list_for_each_entry(blk, &rlun->mgmt->free_list, list)
 			free++;
 		list_for_each_entry(blk, &rlun->mgmt->used_list, list)
@@ -142,17 +143,30 @@ static ssize_t pblk_sysfs_blocks(struct pblk *pblk, char *page)
 		list_for_each_entry(rblk, &rlun->g_bb_list, list)
 			used_int++;
 
+		used_cnt = pblk->dev->blks_per_lun - free - bad;
 		total_lun = used + free + bad;
 
-		sz += sprintf(page + sz,
-			"lun=(%i %i), u=%u/%u, f=%u, b=%u, t=%u/%u (v=%u)\n",
-			rlun->parent->chnl_id, rlun->parent->lun_id,
-			used, used_int, free, bad,
-			total_lun, pblk->dev->blks_per_lun,
-			rlun->mgmt->nr_free_blocks);
+		if ((used_cnt != used_int) || (used_cnt != used))
+			pr_err("pblk: used list corruption (t:%u,i:%u,c:%u)\n",
+					used, used_int, used_cnt);
 
-		spin_unlock(&rlun->lock);
+		if (pblk->dev->blks_per_lun != total_lun)
+			pr_err("pblk: list corruption (t:%u,c:%u)\n",
+					pblk->dev->blks_per_lun, total_lun);
+
+		line = sprintf(page + sz,
+			"lun(%i %i):u=%u,f=%u,b=%u,t=%u,v=%u\n",
+			rlun->parent->chnl_id, rlun->parent->lun_id,
+			used, free, bad, total_lun, rlun->mgmt->nr_free_blocks);
+
 		spin_unlock(&rlun->lock_lists);
+		spin_unlock(&rlun->lock);
+
+		sz += line;
+		if (sz + line > PAGE_SIZE) {
+			sz += sprintf(page + sz, "Cannot fit all LUNs\n");
+			break;
+		}
 	}
 
 	return sz;
@@ -196,22 +210,26 @@ static ssize_t pblk_sysfs_bad_blks(struct pblk *pblk, char *page)
 	struct pblk_lun *rlun;
 	struct pblk_block *rblk;
 	int i;
-	ssize_t sz = 0;
+	ssize_t line, sz = 0;
 
 	pblk_for_each_lun(pblk, rlun, i) {
-		sz += sprintf(page + sz, "LUN:%d\n", rlun->parent->id);
+		int bad_blks = 0;
 
 		spin_lock(&rlun->lock_lists);
-		list_for_each_entry(rblk, &rlun->g_bb_list, list) {
-			spin_lock(&rblk->lock);
-			sz += sprintf(page + sz,
-				"bad:\tblk:%lu\t%u\n",
-				rblk->parent->id,
-				bitmap_weight(rblk->sector_bitmap,
-						pblk->dev->sec_per_blk));
-			spin_unlock(&rblk->lock);
-		}
+		list_for_each_entry(rblk, &rlun->g_bb_list, list)
+			bad_blks++;
 		spin_unlock(&rlun->lock_lists);
+
+		line = sprintf(page + sz, "lun(%i %i):bad=%u\n",
+				rlun->parent->chnl_id,
+				rlun->parent->lun_id,
+				bad_blks);
+
+		sz += line;
+		if (sz + line > PAGE_SIZE) {
+			sz += sprintf(page + sz, "Cannot fit all LUNs\n");
+			break;
+		}
 	}
 
 	return sz;
@@ -222,26 +240,28 @@ static ssize_t pblk_sysfs_gc_blks(struct pblk *pblk, char *page)
 	struct pblk_lun *rlun;
 	struct nvm_lun *lun;
 	struct pblk_block *rblk;
-	struct ppa_addr p;
 	int i;
-	ssize_t sz = 0;
+	ssize_t line, sz = 0;
 
 	pblk_for_each_lun(pblk, rlun, i) {
-		lun = rlun->parent;
-		sz += sprintf(page + sz, "LUN:%d\n", rlun->parent->id);
+		int gc_blks = 0;
 
+		lun = rlun->parent;
 		spin_lock(&lun->lock);
-		list_for_each_entry(rblk, &rlun->prio_list, prio) {
-			p = pblk_blk_ppa_to_gaddr(pblk->dev, rblk->b_gen_ppa,
-						block_to_addr(pblk, rblk));
-			spin_lock(&rblk->lock);
-			sz += sprintf(page + sz,
-				"gc:\tblk:%lu (ch:%d,pl:%d,lun:%d,blk:%d)\n",
-				rblk->parent->id,
-				p.g.ch, p.g.pl, p.g.lun, p.g.blk);
-			spin_unlock(&rblk->lock);
-		}
+		list_for_each_entry(rblk, &rlun->prio_list, prio)
+			gc_blks++;
 		spin_unlock(&lun->lock);
+
+		line = sprintf(page + sz, "lun(%i %i):gc=%u\n",
+				rlun->parent->chnl_id,
+				rlun->parent->lun_id,
+				gc_blks);
+
+		sz += line;
+		if (sz + line > PAGE_SIZE) {
+			sz += sprintf(page + sz, "Cannot fit all LUNs\n");
+			break;
+		}
 	}
 
 	return sz;
