@@ -39,6 +39,9 @@
 #define PBLK_MAX_REQ_ADDRS (64)
 #define PBLK_MAX_REQ_ADDRS_PW (6)
 
+/* Max 512 LUNs per device */
+#define PBLK_MAX_LUNS_BITMAP (4)
+
 #define NR_PHY_IN_LOG (PBLK_EXPOSED_PAGE_SIZE / PBLK_SECTOR)
 
 #define pblk_for_each_lun(pblk, rlun, i) \
@@ -568,7 +571,8 @@ int pblk_map_page(struct pblk *pblk, struct pblk_block *rblk,
 int pblk_map_rr_page(struct pblk *pblk, unsigned int sentry,
 		     struct ppa_addr *ppa_list,
 		     struct pblk_sec_meta *meta_list,
-		     unsigned int nr_secs, unsigned int valid_secs);
+		     unsigned int nr_secs, unsigned int valid_secs,
+		     unsigned long *lun_bitmap);
 int pblk_map_replace_lun(struct pblk *pblk, int lun_pos);
 ssize_t pblk_map_set_active_luns(struct pblk *pblk, int nr_luns);
 ssize_t pblk_map_set_offset_active_luns(struct pblk *pblk, int offset);
@@ -583,9 +587,11 @@ int pblk_write_ts(void *data);
 void pblk_write_timer_fn(unsigned long data);
 int pblk_write_setup_m(struct pblk *pblk, struct nvm_rq *rqd,
 		       struct pblk_ctx *ctx, struct pblk_sec_meta *meta,
-		       unsigned int valid_secs, int off);
+		       unsigned int valid_secs, int off,
+		       unsigned long *lun_bitmap);
 int pblk_write_setup_s(struct pblk *pblk, struct nvm_rq *rqd,
-		       struct pblk_ctx *ctx, struct pblk_sec_meta *meta);
+		       struct pblk_ctx *ctx, struct pblk_sec_meta *meta,
+		       unsigned long *lun_bitmap);
 int pblk_write_alloc_rq(struct pblk *pblk, struct nvm_rq *rqd,
 		    struct pblk_ctx *ctx, unsigned int nr_secs);
 void pblk_end_io_write(struct pblk *pblk, struct nvm_rq *rqd);

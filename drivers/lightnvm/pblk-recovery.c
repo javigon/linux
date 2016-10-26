@@ -84,6 +84,7 @@ static int pblk_setup_rec_rq(struct pblk *pblk, struct nvm_rq *rqd,
 	unsigned int valid_secs = c_ctx->nr_valid;
 	unsigned int padded_secs = c_ctx->nr_padded;
 	unsigned int nr_secs = valid_secs + padded_secs;
+	unsigned long lun_bitmap[PBLK_MAX_LUNS_BITMAP];
 	unsigned int setup_secs;
 	struct pblk_sec_meta *meta;
 	int min = pblk->min_write_pgs;
@@ -92,6 +93,8 @@ static int pblk_setup_rec_rq(struct pblk *pblk, struct nvm_rq *rqd,
 #ifdef CONFIG_NVM_DEBUG
 	struct ppa_addr *ppa_list;
 #endif
+
+	bitmap_zero(lun_bitmap, pblk->nr_luns);
 
 	ret = pblk_write_alloc_rq(pblk, rqd, ctx, nr_rec_secs);
 	if (ret)
@@ -109,7 +112,7 @@ static int pblk_setup_rec_rq(struct pblk *pblk, struct nvm_rq *rqd,
 		BUG_ON(nr_secs != 1);
 		BUG_ON(padded_secs != 0);
 #endif
-		ret = pblk_write_setup_s(pblk, rqd, ctx, meta);
+		ret = pblk_write_setup_s(pblk, rqd, ctx, meta, lun_bitmap);
 		goto out;
 	}
 
@@ -129,7 +132,8 @@ static int pblk_setup_rec_rq(struct pblk *pblk, struct nvm_rq *rqd,
 
 		setup_secs = (i + min > nr_rec_secs) ?
 						(nr_rec_secs % min) : min;
-		ret = pblk_write_setup_m(pblk, rqd, ctx, meta, setup_secs, i);
+		ret = pblk_write_setup_m(pblk, rqd, ctx, meta, setup_secs, i,
+								lun_bitmap);
 	}
 
 	rqd->ppa_status = (u64)0;
@@ -679,7 +683,8 @@ void pblk_close_rblk(struct pblk *pblk, struct pblk_block *rblk)
 {
 	struct nvm_rq *rqd;
 
-	down(&rblk->rlun->wr_sem);
+	if (down_interruptible(&rblk->rlun->wr_sem))
+		pr_err("pblk: lun semaphore failed\n");
 
 	rqd = pblk_setup_close_rblk(pblk, rblk, PBLK_IOTYPE_CLOSE_BLK);
 	if (!rqd) {

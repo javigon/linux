@@ -53,22 +53,26 @@ static ssize_t pblk_sysfs_consume_blocks_show(struct pblk *pblk, char *page)
 static ssize_t pblk_sysfs_rate_limiter(struct pblk *pblk, char *page)
 {
 	unsigned long free_blocks;
-	int rb_user_max;
+	struct pblk_lun *rlun;
+	int rb_user_max, rb_user_cnt;
+	int i;
 
 	spin_lock(&pblk->rl.lock);
 	free_blocks = pblk->rl.free_blocks;
 	rb_user_max = pblk->rl.rb_user_max;
+	rb_user_cnt = pblk->rl.rb_user_cnt;
 	spin_unlock(&pblk->rl.lock);
 
-	return sprintf(page, "wb:%u/%lu (stop:<%u/%u, full:>%u/%u, free:%lu)\n",
-				pblk->rl.rb_user_max,
+	return sprintf(page,
+			"wb:%u/%lu(%u) (stop:<%u/%u, full:>%u/%u, free:%lu)\n",
+				rb_user_max,
 				pblk_rb_nr_entries(&pblk->rwb),
+				rb_user_cnt,
 				1 << pblk->rl.low_pw,
 				pblk->rl.low_lun,
 				1 << pblk->rl.high_pw,
 				pblk->rl.high_lun,
 				free_blocks);
-	return 0;
 }
 
 static ssize_t pblk_sysfs_gc_state_show(struct pblk *pblk, char *page)
