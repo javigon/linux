@@ -301,28 +301,30 @@ static unsigned long pblk_end_w_bio(struct pblk *pblk, struct nvm_rq *rqd,
 				    struct pblk_ctx *ctx)
 {
 	struct pblk_compl_ctx *c_ctx = ctx->c_ctx;
-	struct pblk_w_ctx *w_ctx;
 	struct bio *original_bio;
 	int nr_entries = c_ctx->nr_valid;
 	unsigned long ret;
 	int i;
+	int cur_lun = -1;
 
-	for (i = 0; i < nr_entries; i += pblk->min_write_pgs) {
+	for (i = 0; i < nr_entries; i++) {
 		struct pblk_block *rblk;
+		struct pblk_w_ctx *w_ctx;
 
 		w_ctx = pblk_rb_w_ctx(&pblk->rwb, c_ctx->sentry + i);
 		rblk = w_ctx->ppa.rblk;
-		up(&rblk->rlun->wr_sem);
-	}
 
-	for (i = 0; i < nr_entries; i++) {
-		w_ctx = pblk_rb_w_ctx(&pblk->rwb, c_ctx->sentry + i);
 		pblk_sync_buffer(pblk, w_ctx->ppa.rblk, w_ctx->paddr,
 								w_ctx->flags);
 		original_bio = w_ctx->bio;
 		if (original_bio) {
 			bio_endio(original_bio);
 			w_ctx->bio = NULL;
+		}
+
+		if (rblk->rlun->parent->id != cur_lun) {
+			up(&rblk->rlun->wr_sem);
+			cur_lun = rblk->rlun->parent->id;
 		}
 	}
 
