@@ -78,27 +78,41 @@ static struct pblk_lun *get_map_next_lun(struct pblk *pblk, int *lun_pos)
 }
 
 static struct pblk_lun *pblk_map_get_lun_rr(struct pblk *pblk, int *lun_pos,
+					    unsigned long *lun_bitmap,
 					    int is_gc)
 {
-	unsigned int i;
 	struct pblk_lun *rlun, *max_free;
 	struct nvm_lun_mgmt *cur_mgmt, *max_mgmt;
+	unsigned int i;
+	unsigned int free_lun = 0;
 
-	if (!is_gc)
-		return get_map_next_lun(pblk, lun_pos);
+	if (!is_gc) {
+		do {
+			max_free = get_map_next_lun(pblk, lun_pos);
+		} while (test_bit(max_free->prov_pos, lun_bitmap));
+
+		goto out;
+	}
 
 	/* during GC, we don't care about RR, instead we want to make
-	 * sure that we maintain evenness between the block luns.
+	 * sure that we maintain evenness between the block luns. In this case,
+	 * we need to make sure not to map the same LUN twice on the same I/O
 	 */
-	max_free = &pblk->luns[0];
-	*lun_pos = 0;
+	do {
+		max_free = pblk->w_luns.luns[free_lun++];
+		*lun_pos = free_lun;
+	} while (test_bit(max_free->prov_pos, lun_bitmap) &&
+					free_lun < pblk->w_luns.nr_luns);
 
 	/* prevent GC-ing lun from devouring pages of a lun with
 	 * little free blocks. We don't take the lock as we only need an
 	 * estimate.
 	 */
-	for (i = 0; i < pblk->w_luns.nr_luns; i++) {
+	for (i = free_lun; i < pblk->w_luns.nr_luns; i++) {
 		rlun = pblk->w_luns.luns[i];
+		if (test_bit(rlun->parent->id, lun_bitmap))
+			continue;
+
 		cur_mgmt = rlun->mgmt;
 		max_mgmt = max_free->mgmt;
 
@@ -108,6 +122,8 @@ static struct pblk_lun *pblk_map_get_lun_rr(struct pblk *pblk, int *lun_pos,
 		}
 	}
 
+out:
+	WARN_ON(test_and_set_bit(max_free->prov_pos, lun_bitmap));
 	return max_free;
 }
 
@@ -259,7 +275,8 @@ int pblk_map_page(struct pblk *pblk, struct pblk_block *rblk,
 int pblk_map_rr_page(struct pblk *pblk, unsigned int sentry,
 		     struct ppa_addr *ppa_list,
 		     struct pblk_sec_meta *meta_list,
-		     unsigned int nr_secs, unsigned int valid_secs)
+		     unsigned int nr_secs, unsigned int valid_secs,
+		     unsigned long *lun_bitmap)
 {
 	struct pblk_block *rblk;
 	struct pblk_lun *rlun;
@@ -267,7 +284,8 @@ int pblk_map_rr_page(struct pblk *pblk, unsigned int sentry,
 	int ret = 0;
 
 try_lun:
-	rlun = pblk_map_get_lun_rr(pblk, &lun_pos, pblk_gc_status(pblk));
+	rlun = pblk_map_get_lun_rr(pblk, &lun_pos, lun_bitmap,
+							pblk_gc_status(pblk));
 	spin_lock(&rlun->lock);
 
 try_cur:
@@ -291,10 +309,11 @@ try_cur:
 		}
 		goto try_cur;
 	}
-
 	spin_unlock(&rlun->lock);
 
-	down(&rlun->wr_sem);
+	if (down_interruptible(&rlun->wr_sem))
+		pr_err("pblk: lun semaphore failed\n");
+
 	return ret;
 }
 
