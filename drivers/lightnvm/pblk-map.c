@@ -48,7 +48,7 @@ int pblk_map_replace_lun(struct pblk *pblk, int lun_pos)
 	int ret = 1;
 
 	spin_lock(&pblk->w_luns.lock);
-	if (unlikely(pblk->w_luns.nr_blocks == -1))
+	if (pblk->w_luns.nr_blocks == -1)
 		goto out;
 
 	if (++pblk->w_luns.lun_blocks[lun_pos] >= pblk->w_luns.nr_blocks) {
@@ -344,6 +344,9 @@ ssize_t pblk_map_set_active_luns(struct pblk *pblk, int nr_luns)
 	pblk->w_luns.luns = luns;
 	pblk->w_luns.lun_blocks = lun_blocks;
 
+	/* By default consume one block per active lun */
+	pblk->w_luns.nr_blocks = 1;
+
 	for (i = cpy_luns; i < nr_luns; i++) {
 		pblk->w_luns.lun_blocks[i] = 0;
 		if (!__pblk_map_replace_lun(pblk, i))
@@ -393,10 +396,12 @@ int pblk_map_init(struct pblk *pblk)
 	int i;
 
 	pblk->w_luns.nr_luns = pblk->nr_luns;
-	pblk->w_luns.nr_blocks = 1;
 
 	pblk->w_luns.next_lun = -1;
 	pblk->w_luns.next_w_lun = -1;
+
+	/* By default, all luns are active. No need to replace on alloc. */
+	pblk->w_luns.nr_blocks = -1;
 
 	pblk->w_luns.luns = kcalloc(pblk->w_luns.nr_luns, sizeof(void *),
 								GFP_KERNEL);
