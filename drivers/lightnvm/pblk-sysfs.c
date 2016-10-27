@@ -53,9 +53,7 @@ static ssize_t pblk_sysfs_consume_blocks_show(struct pblk *pblk, char *page)
 static ssize_t pblk_sysfs_rate_limiter(struct pblk *pblk, char *page)
 {
 	unsigned long free_blocks;
-	struct pblk_lun *rlun;
 	int rb_user_max, rb_user_cnt;
-	int i;
 
 	spin_lock(&pblk->rl.lock);
 	free_blocks = pblk->rl.free_blocks;
