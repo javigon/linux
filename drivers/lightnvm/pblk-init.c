@@ -58,7 +58,7 @@ static int pblk_submit_io(struct request_queue *q, struct pblk *pblk,
 	 * TODO: split bio too in case rate limiter leaves less entries for user
 	 * I/O the incoming bio sizes.
 	 */
-	if (unlikely(pblk_get_secs(bio) >= pblk_rb_nr_entries(&pblk->rwb)))
+	if (unlikely(pblk_get_secs(bio) >= pblk_rl_sysfs_rate_show(pblk)))
 		blk_queue_split(q, &bio, q->bio_split);
 
 	return pblk_write_to_cache(pblk, bio, flags);
