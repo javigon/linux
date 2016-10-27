@@ -42,6 +42,8 @@ static int pblk_submit_io_checks(struct pblk *pblk, struct bio *bio)
 static int pblk_submit_io(struct request_queue *q, struct pblk *pblk,
 			  struct bio *bio, unsigned long flags)
 {
+	int ret;
+
 	if (pblk_submit_io_checks(pblk, bio))
 		return NVM_IO_ERR;
 
@@ -50,18 +52,25 @@ static int pblk_submit_io(struct request_queue *q, struct pblk *pblk,
 	 */
 	if (bio_data_dir(bio) == READ) {
 		blk_queue_split(q, &bio, q->bio_split);
-		return pblk_submit_read(pblk, bio, flags);
+		ret = pblk_submit_read(pblk, bio, flags);
+		if (ret == NVM_IO_DONE && bio_flagged(bio, BIO_CLONED))
+			bio_put(bio);
+
+		return ret;
 	}
 
 	/* Prevent deadlock in the case of a modest LUN configuration and large
-	 * user I/Os, i.e., > 256kb.
-	 * TODO: split bio too in case rate limiter leaves less entries for user
-	 * I/O the incoming bio sizes.
+	 * user I/Os. Unless stalled, the rate limiter leaves at least 256KB
+	 * available for user I/O.
 	 */
 	if (unlikely(pblk_get_secs(bio) >= pblk_rl_sysfs_rate_show(pblk)))
 		blk_queue_split(q, &bio, q->bio_split);
 
-	return pblk_write_to_cache(pblk, bio, flags);
+	ret = pblk_write_to_cache(pblk, bio, flags);
+	if (bio_flagged(bio, BIO_CLONED))
+		bio_put(bio);
+
+	return ret;
 }
 
 static blk_qc_t pblk_make_rq(struct request_queue *q, struct bio *bio)
