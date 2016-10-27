@@ -261,7 +261,7 @@ static void pblk_rb_update_map(struct pblk *pblk, struct pblk_w_ctx *w_ctx)
 }
 
 static int __pblk_rb_update_l2p(struct pblk_rb *rb, unsigned long *l2p_upd,
-				unsigned int to_update, unsigned long limit)
+				unsigned long to_update)
 {
 	struct pblk *pblk = container_of(rb, struct pblk, rwb);
 	struct pblk_rb_entry *entry;
@@ -270,9 +270,6 @@ static int __pblk_rb_update_l2p(struct pblk_rb *rb, unsigned long *l2p_upd,
 	unsigned long i;
 
 	for (i = 0; i < to_update; i++) {
-		if (unlikely(to_update > limit))
-			return 1;
-
 		entry = &rb->entries[*l2p_upd];
 		w_ctx = &entry->w_ctx;
 		rblk = w_ctx->ppa.rblk;
@@ -284,7 +281,6 @@ static int __pblk_rb_update_l2p(struct pblk_rb *rb, unsigned long *l2p_upd,
 		 */
 		if (unlikely(block_is_bad(rblk))) {
 			pblk_rb_requeue_entry(rb, entry);
-			to_update++;
 			goto next_unlock;
 		}
 
@@ -318,12 +314,7 @@ static int pblk_rb_update_l2p(struct pblk_rb *rb, unsigned int nr_entries,
 		goto out;
 
 	count = pblk_rb_ring_count(sync, rb->l2p_update, rb->nr_entries);
-	if (count < nr_entries) {
-		ret = 1;
-		goto out;
-	}
-
-	ret = __pblk_rb_update_l2p(rb, &rb->l2p_update, nr_entries, count);
+	ret = __pblk_rb_update_l2p(rb, &rb->l2p_update, count);
 
 out:
 	return ret;
@@ -345,7 +336,7 @@ void pblk_rb_sync_l2p(struct pblk_rb *rb)
 	sync = smp_load_acquire(&rb->sync);
 
 	to_update = pblk_rb_ring_count(sync, rb->l2p_update, rb->nr_entries);
-	__pblk_rb_update_l2p(rb, &rb->l2p_update, to_update, to_update);
+	__pblk_rb_update_l2p(rb, &rb->l2p_update, to_update);
 
 	spin_unlock(&rb->w_lock);
 }
