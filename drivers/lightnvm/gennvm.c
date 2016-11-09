@@ -94,8 +94,6 @@ static struct nvm_tgt_dev *gen_create_tgt_dev(struct nvm_dev *dev,
 	tgt_dev->geo.nr_luns = nr_luns;
 	tgt_dev->total_secs = nr_luns * tgt_dev->geo.sec_per_lun;
 	tgt_dev->q = dev->q;
-	tgt_dev->ops = dev->ops;
-	tgt_dev->mt = dev->mt;
 	memcpy(&tgt_dev->identity, &dev->identity, sizeof(struct nvm_id));
 
 	tgt_dev->parent = dev;
@@ -430,7 +428,6 @@ static struct nvmm_type gen = {
 
 	.get_area		= gen_get_area,
 	.put_area		= gen_put_area,
-
 };
 
 static int __init gen_module_init(void)
