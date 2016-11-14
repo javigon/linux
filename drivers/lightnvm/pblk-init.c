@@ -122,9 +122,6 @@ static int pblk_l2p_init(struct pblk *pblk)
 {
 	struct nvm_dev *dev = pblk->dev;
 	sector_t i;
-	u64 slba;
-
-	slba = pblk->soffset >> (ilog2(dev->sec_size) - 9);
 
 	pblk->trans_map = vzalloc(sizeof(struct pblk_addr) * pblk->rl.nr_secs);
 	if (!pblk->trans_map)
@@ -413,28 +410,6 @@ err:
 	return ret;
 }
 
-/*
- * returns 0 on success and stores the beginning address in *begin
- */
-static int pblk_area_init(struct pblk *pblk, sector_t *begin)
-{
-	struct nvm_dev *dev = pblk->dev;
-	struct nvmm_type *mt = dev->mt;
-	sector_t size = pblk->rl.nr_secs * dev->sec_size;
-
-	size >>= 9;
-
-	return mt->get_area(dev, begin, size);
-}
-
-static void pblk_area_free(struct pblk *pblk)
-{
-	struct nvm_dev *dev = pblk->dev;
-	struct nvmm_type *mt = dev->mt;
-
-	mt->put_area(dev, pblk->soffset);
-}
-
 static int pblk_writer_init(struct pblk *pblk)
 {
 	setup_timer(&pblk->wtimer, pblk_write_timer_fn, (unsigned long)pblk);
@@ -457,7 +432,6 @@ static void pblk_free(struct pblk *pblk)
 	pblk_l2p_free(pblk);
 	pblk_core_free(pblk);
 	pblk_luns_free(pblk);
-	pblk_area_free(pblk);
 	pblk_map_free(pblk);
 	pblk_writer_free(pblk);
 	pblk_rwb_free(pblk);
@@ -612,7 +586,6 @@ static void *pblk_init(struct nvm_dev *dev, struct gendisk *tdisk,
 	struct request_queue *bqueue = dev->q;
 	struct request_queue *tqueue = tdisk->queue;
 	struct pblk *pblk;
-	sector_t soffset;
 	int ret;
 
 	if (dev->identity.dom & NVM_RSP_L2P) {
@@ -656,13 +629,6 @@ static void *pblk_init(struct nvm_dev *dev, struct gendisk *tdisk,
 #endif
 
 	init_waitqueue_head(&pblk->wait);
-
-	ret = pblk_area_init(pblk, &soffset);
-	if (ret < 0) {
-		pr_err("pblk: could not initialize area\n");
-		return ERR_PTR(ret);
-	}
-	pblk->soffset = soffset;
 
 	ret = pblk_luns_init(pblk, lun_begin, lun_end);
 	if (ret) {

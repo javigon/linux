@@ -352,8 +352,6 @@ struct pblk {
 	struct nvm_dev *dev;
 	struct gendisk *disk;
 
-	sector_t soffset; /* logical sector offset */
-
 	int nr_luns;
 	struct pblk_lun *luns;
 
