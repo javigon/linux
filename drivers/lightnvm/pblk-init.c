@@ -599,10 +599,11 @@ static struct nvm_tgt_type tt_pblk = {
 	.init		= pblk_init,
 	.exit		= pblk_exit,
 
-	.sysfs_init	= pblk_sysfs_init,
-	.sysfs_exit	= pblk_sysfs_exit,
-	.sysfs_show	= pblk_sysfs_show,
-	.sysfs_store	= pblk_sysfs_store,
+	//JAVIER: REDO
+	/* .sysfs_init	= pblk_sysfs_init, */
+	/* .sysfs_exit	= pblk_sysfs_exit, */
+	/* .sysfs_show	= pblk_sysfs_show, */
+	/* .sysfs_store	= pblk_sysfs_store, */
 };
 
 static void *pblk_init(struct nvm_dev *dev, struct gendisk *tdisk,
