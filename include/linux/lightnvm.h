@@ -450,12 +450,8 @@ static inline int ppa_cmp_blk(struct ppa_addr ppa1, struct ppa_addr ppa2)
 	if (ppa_empty(ppa1) || ppa_empty(ppa2))
 		return 0;
 
-
-	if ((ppa1.g.ch == ppa2.g.ch) && (ppa1.g.lun == ppa2.g.lun) &&
-					(ppa1.g.blk == ppa2.g.blk))
-		return 1;
-
-	return 0;
+	return ((ppa1.g.ch == ppa2.g.ch) && (ppa1.g.lun == ppa2.g.lun) &&
+					(ppa1.g.blk == ppa2.g.blk));
 }
 
 static inline int ppa_to_slc(struct nvm_dev *dev, int slc_pg)
