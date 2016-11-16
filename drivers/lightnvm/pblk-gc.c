@@ -19,13 +19,15 @@
 
 static void pblk_free_gc_rqd(struct pblk *pblk, struct nvm_rq *rqd)
 {
+	struct nvm_tgt_dev *dev = pblk->dev;
 	uint8_t nr_secs = rqd->nr_ppas;
 
 	if (nr_secs > 1)
-		nvm_dev_dma_free(pblk->dev, rqd->ppa_list, rqd->dma_ppa_list);
+		nvm_dev_dma_free(dev->parent, rqd->ppa_list, rqd->dma_ppa_list);
 
 	if (rqd->meta_list)
-		nvm_dev_dma_free(pblk->dev, rqd->meta_list, rqd->dma_meta_list);
+		nvm_dev_dma_free(dev->parent, rqd->meta_list,
+							rqd->dma_meta_list);
 
 	pblk_free_rqd(pblk, rqd, READ);
 }
@@ -58,7 +60,7 @@ static int pblk_gc_read_victim_blk(struct pblk *pblk, u64 *lba_list,
 				   unsigned int secs_to_gc,
 				   unsigned int secs_in_disk, int off)
 {
-	struct nvm_dev *dev = pblk->dev;
+	struct nvm_tgt_dev *dev = pblk->dev;
 	struct request_queue *q = dev->q;
 	struct bio *bio;
 	struct nvm_rq *rqd;
@@ -139,7 +141,8 @@ static int pblk_gc_write_to_buffer(struct pblk *pblk, u64 *lba_list,
 int pblk_gc_move_valid_secs(struct pblk *pblk, struct pblk_block *rblk,
 			    u64 *lba_list, unsigned int nr_entries)
 {
-	struct nvm_dev *dev = pblk->dev;
+	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_geo *geo = &dev->geo;
 	struct pblk_kref_buf *ref_buf;
 	void *data;
 	unsigned int data_len;
@@ -153,7 +156,7 @@ int pblk_gc_move_valid_secs(struct pblk *pblk, struct pblk_block *rblk,
 		return 0;
 
 	alloc_entries = (nr_entries > max) ? max : nr_entries;
-	data = kmalloc(alloc_entries * dev->sec_size, GFP_KERNEL);
+	data = kmalloc(alloc_entries * geo->sec_size, GFP_KERNEL);
 	if (!data)
 		goto out;
 
@@ -177,7 +180,7 @@ int pblk_gc_move_valid_secs(struct pblk *pblk, struct pblk_block *rblk,
 			goto next;
 
 		secs_in_disk = secs_to_gc - ignored;
-		data_len = secs_in_disk * dev->sec_size;
+		data_len = secs_in_disk * geo->sec_size;
 
 		/* Read from GC victim block */
 		if (pblk_gc_read_victim_blk(pblk, lba_list, data, data_len,
@@ -216,11 +219,8 @@ void pblk_gc_queue(struct work_struct *work)
 	struct pblk_block *rblk = blk_ws->rblk;
 	struct pblk_lun *rlun = rblk->rlun;
 
-	spin_lock(&rlun->lock_lists);
-	list_move_tail(&rblk->list, &rlun->closed_list);
-	spin_unlock(&rlun->lock_lists);
-
 	spin_lock(&rlun->lock);
+	list_move_tail(&rblk->list, &rlun->closed_list);
 	list_add_tail(&rblk->prio, &rlun->prio_list);
 	spin_unlock(&rlun->lock);
 
@@ -230,8 +230,8 @@ void pblk_gc_queue(struct work_struct *work)
 #endif
 
 	mempool_free(blk_ws, pblk->blk_ws_pool);
-	pr_debug("nvm: block '%lu' is full, allow GC (sched)\n",
-							rblk->parent->id);
+	pr_debug("nvm: block '%d' is full, allow GC (sched)\n",
+							rblk->id);
 }
 
 /* the block with highest number of invalid pages, will be in the beginning
@@ -299,22 +299,22 @@ static void pblk_block_gc(struct work_struct *work)
 #endif
 
 	mempool_free(blk_ws, pblk->blk_ws_pool);
-	pr_debug("pblk: block '%lu' being reclaimed\n", rblk->parent->id);
+	pr_debug("pblk: block '%d' being reclaimed\n", rblk->id);
 
 	recov_page = kzalloc(page_size, GFP_KERNEL);
 	if (!recov_page)
 		goto put_back;
 
 	if (pblk_recov_read(pblk, rblk, recov_page)) {
-		pr_err("pblk: could not recover last page. Blk:%lu\n",
-						rblk->parent->id);
+		pr_err("pblk: could not recover last page. Blk:%d\n",
+						rblk->id);
 		goto free_recov_page;
 	}
 
 	lba_list = pblk_recov_get_lba_list(pblk, recov_page);
 	if (!lba_list) {
-		pr_err("pblk: Could not interpret recover page. Blk:%lu\n",
-							rblk->parent->id);
+		pr_err("pblk: Could not interpret recover page. Blk:%d\n",
+							rblk->id);
 		goto free_recov_page;
 	}
 
@@ -335,8 +335,8 @@ next_lba_list:
 prepare_ppas:
 	moved = pblk_gc_move_valid_secs(pblk, rblk, gc_lba_list, nr_ppas);
 	if (moved != nr_ppas) {
-		pr_err("pblk: could not GC all sectors:blk:%lu, GC:%d/%d/%d\n",
-						rblk->parent->id,
+		pr_err("pblk: could not GC all sectors:blk:%d, GC:%d/%d/%d\n",
+						rblk->id,
 						moved, nr_ppas,
 						nr_valid_secs);
 		goto put_back;
@@ -385,7 +385,7 @@ static void pblk_lun_gc(struct pblk *pblk, struct pblk_lun *rlun)
 		nr_blocks_need = pblk->nr_luns;
 
 	spin_lock(&rlun->lock);
-	nr_free_blocks = rlun->mgmt->nr_free_blocks;
+	nr_free_blocks = rlun->nr_free_blocks;
 
 	run_gc = (nr_blocks_need > nr_free_blocks || gc->gc_forced);
 	while (run_gc && !list_empty(&rlun->prio_list)) {

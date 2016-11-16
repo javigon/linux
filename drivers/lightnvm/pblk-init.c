@@ -30,10 +30,12 @@ static const struct block_device_operations pblk_fops = {
 
 static int pblk_submit_io_checks(struct pblk *pblk, struct bio *bio)
 {
+	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_geo *geo = &dev->geo;
 	int bio_size = bio_sectors(bio) << 9;
-	int is_flush = (bio_op(bio) & REQ_PREFLUSH);
+	int is_flush = (bio->bi_opf & REQ_PREFLUSH);
 
-	if ((bio_size < pblk->dev->sec_size) && (!is_flush))
+	if ((bio_size < geo->sec_size) && (!is_flush))
 		return 1;
 
 	return 0;
@@ -78,9 +80,9 @@ static blk_qc_t pblk_make_rq(struct request_queue *q, struct bio *bio)
 	struct pblk *pblk = q->queuedata;
 	int err;
 
-	if (bio_op(bio) & REQ_OP_DISCARD) {
+	if (bio_op(bio) == REQ_OP_DISCARD) {
 		pblk_discard(pblk, bio);
-		if (!(bio_op(bio) & REQ_PREFLUSH))
+		if (!(bio->bi_opf & REQ_PREFLUSH))
 			return BLK_QC_T_NONE;
 	}
 
@@ -129,7 +131,6 @@ static void pblk_l2p_free(struct pblk *pblk)
 
 static int pblk_l2p_init(struct pblk *pblk)
 {
-	struct nvm_dev *dev = pblk->dev;
 	sector_t i;
 
 	pblk->trans_map = vzalloc(sizeof(struct pblk_addr) * pblk->rl.nr_secs);
@@ -154,7 +155,8 @@ static void pblk_rwb_free(struct pblk *pblk)
 
 static int pblk_rwb_init(struct pblk *pblk)
 {
-	struct nvm_dev *dev = pblk->dev;
+	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_geo *geo = &dev->geo;
 	struct pblk_rb_entry *entries;
 	unsigned long nr_entries;
 	unsigned int power_size, power_seg_sz;
@@ -166,7 +168,7 @@ static int pblk_rwb_init(struct pblk *pblk)
 		return -ENOMEM;
 
 	power_size = get_count_order(nr_entries);
-	power_seg_sz = get_count_order(dev->sec_size);
+	power_seg_sz = get_count_order(geo->sec_size);
 
 	return pblk_rb_init(&pblk->rwb, entries, power_size, power_seg_sz);
 }
@@ -177,6 +179,9 @@ static int pblk_rwb_init(struct pblk *pblk)
 
 static int pblk_core_init(struct pblk *pblk)
 {
+	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_geo *geo = &dev->geo;
+
 	down_write(&pblk_lock);
 	if (!pblk_blk_ws_cache) {
 		pblk_blk_ws_cache = kmem_cache_create("pblk_blk_ws",
@@ -230,13 +235,12 @@ static int pblk_core_init(struct pblk *pblk)
 	if (!pblk->page_pool)
 		return -ENOMEM;
 
-	pblk->blk_ws_pool = mempool_create_slab_pool(pblk->dev->nr_luns,
+	pblk->blk_ws_pool = mempool_create_slab_pool(geo->nr_luns,
 							pblk_blk_ws_cache);
 	if (!pblk->blk_ws_pool)
 		goto free_page_pool;
 
-	pblk->rec_pool = mempool_create_slab_pool(pblk->dev->nr_luns,
-							pblk_rec_cache);
+	pblk->rec_pool = mempool_create_slab_pool(geo->nr_luns, pblk_rec_cache);
 	if (!pblk->rec_pool)
 		goto free_blk_ws_pool;
 
@@ -296,8 +300,6 @@ static void pblk_core_free(struct pblk *pblk)
 
 static void pblk_luns_free(struct pblk *pblk)
 {
-	struct nvm_dev *dev = pblk->dev;
-	struct nvm_lun *lun;
 	struct pblk_lun *rlun;
 	int i;
 
@@ -306,42 +308,94 @@ static void pblk_luns_free(struct pblk *pblk)
 
 	for (i = 0; i < pblk->nr_luns; i++) {
 		rlun = &pblk->luns[i];
-		lun = rlun->parent;
-		if (!lun)
-			break;
-		dev->mt->release_lun(dev, lun->id, rlun->mgmt);
 		vfree(rlun->blocks);
 	}
 
 	kfree(pblk->luns);
 }
 
-static int pblk_luns_init(struct pblk *pblk, int lun_begin, int lun_end)
+static int pblk_bb_discovery(struct nvm_tgt_dev *dev, struct pblk_lun *rlun)
 {
-	struct nvm_dev *dev = pblk->dev;
+	struct nvm_geo *geo = &dev->geo;
+	struct pblk_block *rblk;
+	struct ppa_addr ppa;
+	u8 *blks;
+	int nr_blks;
+	int i;
+	int ret;
+
+	nr_blks = geo->blks_per_lun * geo->plane_mode;
+	blks = kmalloc(nr_blks, GFP_KERNEL);
+	if (!blks)
+		return -ENOMEM;
+
+	ppa.ppa = 0;
+	ppa.g.ch = rlun->bppa.g.ch;
+	ppa.g.lun = rlun->bppa.g.lun;
+
+	ret = nvm_get_bb_tbl(dev->parent, ppa, blks);
+	if (ret) {
+		pr_err("pblk: could not get BB table\n");
+		kfree(blks);
+		goto out;
+	}
+
+	nr_blks = nvm_bb_tbl_fold(dev->parent, blks, nr_blks);
+	if (nr_blks < 0)
+		return nr_blks;
+
+	rlun->nr_free_blocks = geo->blks_per_lun;
+	for (i = 0; i < nr_blks; i++) {
+		if (blks[i] == NVM_BLK_T_FREE)
+			continue;
+
+		rblk = &rlun->blocks[i];
+		list_move_tail(&rblk->list, &rlun->bb_list);
+		rblk->state = NVM_BLK_ST_BAD;
+		rlun->nr_free_blocks--;
+	}
+
+out:
+	kfree(blks);
+	return ret;
+}
+
+static void pblk_set_lun_ppa(struct pblk_lun *rlun, struct ppa_addr ppa)
+{
+	rlun->bppa.ppa = 0;
+	rlun->bppa.g.ch = ppa.g.ch;
+	rlun->bppa.g.lun = ppa.g.lun;
+}
+
+static int pblk_luns_init(struct pblk *pblk, struct ppa_addr *luns)
+{
+	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_geo *geo = &dev->geo;
 	struct pblk_lun *rlun;
 	int i, j, mod, ret = -EINVAL;
 	int max_write_ppas;
 
-	pblk->min_write_pgs = dev->sec_per_pl * (dev->sec_size / PAGE_SIZE);
+	pblk->nr_luns = geo->nr_luns;
+
+	pblk->min_write_pgs = geo->sec_per_pl * (geo->sec_size / PAGE_SIZE);
 	max_write_ppas = pblk->min_write_pgs * pblk->nr_luns;
-	pblk->max_write_pgs = (max_write_ppas < dev->ops->max_phys_sect) ?
-				max_write_ppas : dev->ops->max_phys_sect;
+	pblk->max_write_pgs = (max_write_ppas < nvm_max_phys_sects(dev)) ?
+				max_write_ppas : nvm_max_phys_sects(dev);
 
 	if (pblk->max_write_pgs > PBLK_MAX_REQ_ADDRS) {
 		pr_err("pblk: device exposes too many sectors per write");
 		return -EINVAL;
 	}
 
-	pblk->pgs_in_buffer = NVM_MEM_PAGE_WRITE * dev->sec_per_pg *
-				dev->nr_planes * pblk->nr_luns;
+	pblk->pgs_in_buffer = NVM_MEM_PAGE_WRITE * geo->sec_per_pg *
+				geo->nr_planes * pblk->nr_luns;
 
 	if (pblk->max_write_pgs > PBLK_MAX_REQ_ADDRS) {
 		pr_err("pblk: cannot support device max_phys_sect\n");
 		return -EINVAL;
 	}
 
-	div_u64_rem(dev->sec_per_blk, pblk->min_write_pgs, &mod);
+	div_u64_rem(geo->sec_per_blk, pblk->min_write_pgs, &mod);
 	if (mod) {
 		pr_err("pblk: bad configuration of sectors/pages\n");
 		return -EINVAL;
@@ -352,66 +406,55 @@ static int pblk_luns_init(struct pblk *pblk, int lun_begin, int lun_end)
 	if (!pblk->luns)
 		return -ENOMEM;
 
+	pblk->rl.total_blocks = pblk->rl.nr_secs = 0;
+
 	/* 1:1 mapping */
 	for (i = 0; i < pblk->nr_luns; i++) {
 		/* Align lun list to the channel each lun belongs to */
-		int ch = (lun_begin + i) % dev->nr_chnls;
-		int lun_raw = (lun_begin + i) / dev->nr_chnls;
-		int lunid = lun_raw + ch * dev->luns_per_chnl;
-		struct nvm_lun *lun;
-		struct nvm_lun_mgmt *mgmt;
-
-		mgmt = dev->mt->reserve_lun(dev, lunid, pblk->disk);
-		if (!mgmt) {
-			pr_err("pblk: lun %u is already allocated\n", lunid);
-			goto err;
-		}
-
-		lun = dev->mt->get_lun(dev, lunid);
-		if (!lun)
-			goto err;
+		//TODO: JAVIER: Stripe across LUNS
+		/* int ch = (lun_begin + i) % dev->nr_chnls; */
+		/* int lun_raw = (lun_begin + i) / dev->nr_chnls; */
+		/* int lunid = lun_raw + ch * dev->luns_per_chnl; */
 
 		rlun = &pblk->luns[i];
 		rlun->pblk = pblk;
-		rlun->mgmt = mgmt;
-		rlun->parent = lun;
-		rlun->ch = ch;
-		rlun->prov_pos = i;
+		rlun->id = i;
+		pblk_set_lun_ppa(rlun, luns[i]);
 		rlun->blocks = vzalloc(sizeof(struct pblk_block) *
-						pblk->dev->blks_per_lun);
+							geo->blks_per_lun);
 		if (!rlun->blocks) {
 			ret = -ENOMEM;
 			goto err;
 		}
 
-		sema_init(&rlun->wr_sem, 1);
-
-		for (j = 0; j < pblk->dev->blks_per_lun; j++) {
-			struct pblk_block *rblk = &rlun->blocks[j];
-			struct nvm_block *blk = &lun->blocks[j];
-
-			rblk->parent = blk;
-			rblk->rlun = rlun;
-			INIT_LIST_HEAD(&rblk->prio);
-			spin_lock_init(&rblk->lock);
-		}
-
+		INIT_LIST_HEAD(&rlun->free_list);
+		INIT_LIST_HEAD(&rlun->bb_list);
+		INIT_LIST_HEAD(&rlun->g_bb_list);
 		INIT_LIST_HEAD(&rlun->prio_list);
 		INIT_LIST_HEAD(&rlun->open_list);
 		INIT_LIST_HEAD(&rlun->closed_list);
-		INIT_LIST_HEAD(&rlun->g_bb_list);
+
+		sema_init(&rlun->wr_sem, 1);
+
+		for (j = 0; j < geo->blks_per_lun; j++) {
+			struct pblk_block *rblk = &rlun->blocks[j];
+
+			rblk->id = j;
+			rblk->rlun = rlun;
+			rblk->state = NVM_BLK_T_FREE;
+			INIT_LIST_HEAD(&rblk->prio);
+			spin_lock_init(&rblk->lock);
+
+			list_add_tail(&rblk->list, &rlun->free_list);
+		}
+
+		if (pblk_bb_discovery(dev, rlun))
+			goto err;
 
 		spin_lock_init(&rlun->lock);
-		spin_lock_init(&rlun->lock_lists);
 
-		pblk->rl.total_blocks += dev->blks_per_lun;
-		pblk->rl.nr_secs += dev->sec_per_lun;
-	}
-
-	ret = pblk_map_init(pblk);
-	if (ret) {
-		kfree(pblk->luns);
-		goto err;
+		pblk->rl.total_blocks += geo->blks_per_lun;
+		pblk->rl.nr_secs += geo->sec_per_lun;
 	}
 
 	return 0;
@@ -481,11 +524,12 @@ static void pblk_exit(void *private)
 static sector_t pblk_capacity(void *private)
 {
 	struct pblk *pblk = private;
-	struct nvm_dev *dev = pblk->dev;
+	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_geo *geo = &dev->geo;
 	sector_t reserved, provisioned;
 
 	/* cur, gc, and two emergency blocks for each lun */
-	reserved = pblk->nr_luns * dev->sec_per_blk * 4;
+	reserved = pblk->nr_luns * geo->sec_per_blk * 4;
 	provisioned = pblk->capacity - reserved;
 
 	if (reserved > pblk->rl.nr_secs) {
@@ -499,6 +543,8 @@ static sector_t pblk_capacity(void *private)
 
 static int pblk_blocks_init(struct pblk *pblk)
 {
+	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_geo *geo = &dev->geo;
 	struct pblk_lun *rlun;
 	struct pblk_block *rblk;
 	int lun, blk;
@@ -510,16 +556,11 @@ static int pblk_blocks_init(struct pblk *pblk)
 
 	for (lun = 0; lun < pblk->nr_luns; lun++) {
 		rlun = &pblk->luns[lun];
-		for (blk = 0; blk < pblk->dev->blks_per_lun; blk++) {
+		for (blk = 0; blk < geo->blks_per_lun; blk++) {
 			rblk = &rlun->blocks[blk];
 
-			/* pre-calculated values */
-			rblk->b_lin_ppa = block_to_addr(pblk, rblk);
-			rblk->b_gen_ppa =
-				pblk_ppa_to_gaddr(pblk->dev, rblk->b_lin_ppa);
-
-			if (!rblk->parent->state)
-				pblk->capacity += pblk->dev->sec_per_blk;
+			if (!rblk->state)
+				pblk->capacity += geo->sec_per_blk;
 
 #ifndef CONFIG_NVM_PBLK_NO_RECOV
 			ret = pblk_recov_scan_blk(pblk, rblk);
@@ -567,8 +608,7 @@ err:
 	return -ENOMEM;
 }
 
-static void *pblk_init(struct nvm_dev *dev, struct gendisk *tdisk,
-		       int lun_begin, int lun_end);
+static void *pblk_init(struct nvm_tgt_dev *dev, struct gendisk *tdisk);
 
 /* physical block device target */
 static struct nvm_tgt_type tt_pblk = {
@@ -582,15 +622,14 @@ static struct nvm_tgt_type tt_pblk = {
 	.init		= pblk_init,
 	.exit		= pblk_exit,
 
-	//JAVIER: REDO
+	//TODO: JAVIER: REDO
 	/* .sysfs_init	= pblk_sysfs_init, */
 	/* .sysfs_exit	= pblk_sysfs_exit, */
 	/* .sysfs_show	= pblk_sysfs_show, */
 	/* .sysfs_store	= pblk_sysfs_store, */
 };
 
-static void *pblk_init(struct nvm_dev *dev, struct gendisk *tdisk,
-		       int lun_begin, int lun_end)
+static void *pblk_init(struct nvm_tgt_dev *dev, struct gendisk *tdisk)
 {
 	struct request_queue *bqueue = dev->q;
 	struct request_queue *tqueue = tdisk->queue;
@@ -618,8 +657,6 @@ static void *pblk_init(struct nvm_dev *dev, struct gendisk *tdisk,
 	INIT_WORK(&pblk->ws_requeue, pblk_requeue);
 	INIT_WORK(&pblk->ws_gc, pblk_gc);
 
-	pblk->nr_luns = lun_end - lun_begin + 1;
-
 #ifdef CONFIG_NVM_DEBUG
 	atomic_set(&pblk->inflight_writes, 0);
 	atomic_set(&pblk->padded_writes, 0);
@@ -639,9 +676,15 @@ static void *pblk_init(struct nvm_dev *dev, struct gendisk *tdisk,
 
 	init_waitqueue_head(&pblk->wait);
 
-	ret = pblk_luns_init(pblk, lun_begin, lun_end);
+	ret = pblk_luns_init(pblk, dev->luns);
 	if (ret) {
 		pr_err("pblk: could not initialize luns\n");
+		goto err;
+	}
+
+	ret = pblk_map_init(pblk);
+	if (ret) {
+		pr_err("pblk: could not initialize map\n");
 		goto err;
 	}
 

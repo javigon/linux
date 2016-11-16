@@ -715,7 +715,7 @@ struct pblk_rb_entry *pblk_rb_sync_scan_entry(struct pblk_rb *rb,
 					      struct ppa_addr *ppa)
 {
 	struct pblk *pblk = container_of(rb, struct pblk, rwb);
-	struct nvm_dev *dev = pblk->dev;
+	struct nvm_tgt_dev *dev = pblk->dev;
 	struct pblk_rb_entry *entry;
 	struct pblk_w_ctx *w_ctx;
 	struct ppa_addr gppa;
@@ -730,8 +730,7 @@ struct pblk_rb_entry *pblk_rb_sync_scan_entry(struct pblk_rb *rb,
 		entry = &rb->entries[sync];
 		w_ctx = &entry->w_ctx;
 
-		gppa = pblk_ppa_to_gaddr(dev, global_addr(pblk,
-				w_ctx->ppa.rblk, w_ctx->paddr));
+		gppa = pblk_blk_ppa_to_gaddr(dev, w_ctx->ppa.rblk, w_ctx->paddr);
 
 		if (gppa.ppa == ppa->ppa)
 			return entry;
