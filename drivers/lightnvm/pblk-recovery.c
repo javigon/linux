@@ -57,8 +57,8 @@ retry_off:
 retry_move:
 	ret = pblk_gc_move_valid_secs(pblk, rblk, &lba_list[off], nr_entries);
 	if (ret != nr_entries) {
-		pr_err("pblk: could not recover all sectors:blk:%lu\n",
-					rblk->parent->id);
+		pr_err("pblk: could not recover all sectors:blk:%d\n",
+					rblk->id);
 		if (try < PBLK_GC_TRIES) {
 			off += ret;
 			goto retry_move;
@@ -67,9 +67,9 @@ retry_move:
 		}
 	}
 
-	spin_lock(&rblk->rlun->lock_lists);
+	spin_lock(&rblk->rlun->lock);
 	list_move_tail(&rblk->list, &rblk->rlun->g_bb_list);
-	spin_unlock(&rblk->rlun->lock_lists);
+	spin_unlock(&rblk->rlun->lock);
 
 	mempool_free(blk_ws, pblk->blk_ws_pool);
 	return;
@@ -162,13 +162,13 @@ void pblk_submit_rec(struct work_struct *work)
 	struct pblk_rec_ctx *recovery =
 			container_of(work, struct pblk_rec_ctx, ws_rec);
 	struct pblk *pblk = recovery->pblk;
-	struct nvm_dev *dev = pblk->dev;
+	struct nvm_tgt_dev *dev = pblk->dev;
 	struct nvm_rq *rqd = recovery->rqd;
-	struct bio *bio;
 	struct pblk_ctx *ctx = pblk_set_ctx(pblk, rqd);
+	int max_secs = nvm_max_phys_sects(dev);
+	struct bio *bio;
 	unsigned int nr_rec_secs;
 	unsigned int pgs_read;
-	int max_secs = dev->ops->max_phys_sect;
 	int err;
 
 	nr_rec_secs =
@@ -223,7 +223,7 @@ void pblk_run_recovery(struct pblk *pblk, struct pblk_block *rblk)
 		return;
 	}
 
-	pr_debug("Run recovery. Blk:%lu\n", rblk->parent->id);
+	pr_debug("Run recovery. Blk:%d\n", rblk->id);
 
 	blk_ws->pblk = pblk;
 	blk_ws->rblk = rblk;
@@ -237,11 +237,12 @@ int pblk_recov_setup_rq(struct pblk *pblk, struct pblk_ctx *ctx,
 			struct pblk_rec_ctx *recovery, u64 *comp_bits,
 			unsigned int c_entries)
 {
+	struct nvm_tgt_dev *dev = pblk->dev;
 	struct pblk_compl_ctx *c_ctx = ctx->c_ctx;
+	int max_secs = nvm_max_phys_sects(dev);
 	struct nvm_rq *rec_rqd;
 	struct pblk_ctx *rec_ctx;
 	struct pblk_compl_ctx *rec_c_ctx;
-	int max_secs = pblk->dev->ops->max_phys_sect;
 	int nr_entries = c_ctx->nr_valid + c_ctx->nr_padded;
 
 	rec_rqd = pblk_alloc_rqd(pblk, WRITE);
@@ -285,7 +286,7 @@ int pblk_recov_setup_rq(struct pblk *pblk, struct pblk_ctx *ctx,
 
 struct nvm_rq *pblk_recov_setup(struct pblk *pblk, void *recov_page)
 {
-	struct nvm_dev *dev = pblk->dev;
+	struct nvm_tgt_dev *dev = pblk->dev;
 	struct pblk_r_ctx *r_ctx;
 	struct nvm_rq *rqd;
 	struct bio *bio;
@@ -323,8 +324,9 @@ struct nvm_rq *pblk_recov_setup(struct pblk *pblk, void *recov_page)
 int pblk_recov_read(struct pblk *pblk, struct pblk_block *rblk,
 		    void *recov_page)
 {
-	struct nvm_dev *dev = pblk->dev;
-	unsigned int nr_rec_ppas = dev->sec_per_blk - pblk->nr_blk_dsecs;
+	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_geo *geo = &dev->geo;
+	unsigned int nr_rec_ppas = geo->sec_per_blk - pblk->nr_blk_dsecs;
 	struct ppa_addr ppa_addr[PBLK_RECOVERY_SECTORS];
 	struct nvm_rq *rqd;
 	struct bio *bio;
@@ -346,11 +348,10 @@ int pblk_recov_read(struct pblk *pblk, struct pblk_block *rblk,
 	/* Last page in block contains mapped lba list if block is closed */
 	for (i = 0; i < nr_rec_ppas; i++) {
 		rppa = pblk->nr_blk_dsecs + i;
-		ppa_addr[i] = pblk_ppa_to_gaddr(dev,
-					global_addr(pblk, rblk, rppa));
+		ppa_addr[i] = pblk_blk_ppa_to_gaddr(dev, rblk, rppa);
 	}
 
-	if (nvm_set_rqd_ppalist(dev, rqd, ppa_addr, nr_rec_ppas, 0)) {
+	if (nvm_set_rqd_ppalist(dev->parent, rqd, ppa_addr, nr_rec_ppas, 0)) {
 		pr_err("pblk: not able to set rqd ppa list\n");
 		ret = -1;
 		goto free_rqd;
@@ -365,7 +366,7 @@ int pblk_recov_read(struct pblk *pblk, struct pblk_block *rblk,
 	if (nvm_submit_io(dev, rqd)) {
 		pr_err("pblk: I/O submission failed\n");
 		ret = -1;
-		nvm_free_rqd_ppalist(dev, rqd);
+		nvm_free_rqd_ppalist(dev->parent, rqd);
 		goto free_ppa_list;
 	}
 	wait_for_completion_io(&wait);
@@ -375,7 +376,7 @@ int pblk_recov_read(struct pblk *pblk, struct pblk_block *rblk,
 								bio->bi_error);
 
 free_ppa_list:
-	nvm_free_rqd_ppalist(dev, rqd);
+	nvm_free_rqd_ppalist(dev->parent, rqd);
 free_rqd:
 	pblk_free_rqd(pblk, rqd, READ);
 	bio_put(bio);
@@ -433,7 +434,8 @@ u64 *pblk_recov_get_lba_list(struct pblk *pblk, struct pblk_blk_rec_lpg *rlpg)
 /* TODO: Fit lba in u32 when possible to fit metadata in one page */
 int pblk_recov_init(struct pblk *pblk)
 {
-	struct nvm_dev *dev = pblk->dev;
+	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_geo *geo = &dev->geo;
 	unsigned int nr_blk_dsecs;
 	unsigned int rlpg_len;
 	unsigned int bitmap_len, rlpg_page_len;
@@ -441,9 +443,9 @@ int pblk_recov_init(struct pblk *pblk)
 	int i = 1;
 
 retry:
-	nr_rec_ppas = i * dev->sec_per_pl;
-	nr_blk_dsecs = dev->sec_per_blk - nr_rec_ppas;
-	rlpg_page_len = nr_rec_ppas * dev->sec_size;
+	nr_rec_ppas = i * geo->sec_per_pl;
+	nr_blk_dsecs = geo->sec_per_blk - nr_rec_ppas;
+	rlpg_page_len = nr_rec_ppas * geo->sec_size;
 	bitmap_len =  BITS_TO_LONGS(nr_blk_dsecs) * sizeof(unsigned long);
 	rlpg_len = calc_rlpg_len(nr_blk_dsecs, bitmap_len);
 
@@ -474,12 +476,11 @@ retry:
  */
 int pblk_recov_scan_blk(struct pblk *pblk, struct pblk_block *rblk)
 {
-	struct nvm_dev *dev = pblk->dev;
+	struct nvm_tgt_dev *dev = pblk->dev;
 	struct pblk_lun *rlun = rblk->rlun;
 	struct pblk_blk_rec_lpg *rlpg;
 	struct ppa_addr ppa;
 	u64 *lba_list;
-	u64 bppa;
 	int i;
 	int ret = 0;
 
@@ -492,8 +493,8 @@ int pblk_recov_scan_blk(struct pblk *pblk, struct pblk_block *rblk)
 
 	ret = pblk_recov_read(pblk, rblk, rlpg);
 	if (ret) {
-		pr_err("pblk: could not recover last page. Blk:%lu\n",
-						rblk->parent->id);
+		pr_err("pblk: could not recover last page. Blk:%d\n",
+						rblk->id);
 		goto free_rlpg;
 	}
 
@@ -504,22 +505,16 @@ int pblk_recov_scan_blk(struct pblk *pblk, struct pblk_block *rblk)
 	rblk->nr_invalid_secs = rblk->rlpg->nr_invalid_secs;
 	rblk->cur_sec = rblk->rlpg->cur_sec;
 
-	spin_lock(&rlun->parent->lock);
-	rblk->parent->state = rblk->rlpg->blk_state;
-	spin_unlock(&rlun->parent->lock);
+	rblk->state = rblk->rlpg->blk_state;
 
 	/* For now, padded blocks are always closed on teardown */
-	spin_lock(&rlun->lock_lists);
-	list_add_tail(&rblk->list, &rlun->closed_list);
-	spin_unlock(&rlun->lock_lists);
-
 	spin_lock(&rlun->lock);
+	list_add_tail(&rblk->list, &rlun->closed_list);
 	list_add_tail(&rblk->prio, &rlun->prio_list);
 	spin_unlock(&rlun->lock);
 
-	bppa = global_addr(pblk, rblk, 0);
 	for (i = 0; i < pblk->nr_blk_dsecs; i++) {
-		ppa = pblk_ppa_to_gaddr(dev, bppa + i);
+		ppa = pblk_blk_ppa_to_gaddr(dev, rblk, i);
 		if (lba_list[i] != ADDR_EMPTY)
 			pblk_update_map(pblk, lba_list[i], rblk, ppa);
 
@@ -540,18 +535,18 @@ out:
 
 void pblk_recov_clean_g_bb_list(struct pblk *pblk, struct pblk_lun *rlun)
 {
-	struct nvm_dev *dev = pblk->dev;
+	struct nvm_tgt_dev *dev = pblk->dev;
 	struct pblk_block *rblk, *trblk;
 	struct ppa_addr gen_ppa;
 	LIST_HEAD(g_bb_list);
 
-	spin_lock(&rlun->lock_lists);
+	spin_lock(&rlun->lock);
 	list_cut_position(&g_bb_list, &rlun->g_bb_list, rlun->g_bb_list.prev);
-	spin_unlock(&rlun->lock_lists);
+	spin_unlock(&rlun->lock);
 
 	list_for_each_entry_safe(rblk, trblk, &g_bb_list, list) {
-		gen_ppa = pblk_ppa_to_gaddr(dev, block_to_addr(pblk, rblk));
-		nvm_set_bb_tbl(dev, &gen_ppa, 1, NVM_BLK_T_GRWN_BAD);
+		gen_ppa = pblk_blk_ppa_to_gaddr(dev, rblk, 0);
+		nvm_set_bb_tbl(dev->parent, &gen_ppa, 1, NVM_BLK_T_GRWN_BAD);
 
 		/* As sectors are recovered, the bitmap representing valid
 		 * mapped pages is emptied
@@ -566,7 +561,7 @@ void pblk_recov_clean_g_bb_list(struct pblk *pblk, struct pblk_lun *rlun)
 struct nvm_rq *pblk_setup_close_rblk(struct pblk *pblk, struct pblk_block *rblk,
 				     int io_type)
 {
-	struct nvm_dev *dev = pblk->dev;
+	struct nvm_tgt_dev *dev = pblk->dev;
 	struct bio *bio;
 	struct pblk_ctx *ctx;
 	struct nvm_rq *rqd;
@@ -583,10 +578,7 @@ struct nvm_rq *pblk_setup_close_rblk(struct pblk *pblk, struct pblk_block *rblk,
 	rblk->rlpg->status = PBLK_BLK_ST_CLOSED;
 	rblk->rlpg->nr_invalid_secs = rblk->nr_invalid_secs;
 	rblk->rlpg->cur_sec = rblk->cur_sec;
-
-	spin_lock(&rblk->rlun->parent->lock);
-	rblk->rlpg->blk_state = rblk->parent->state;
-	spin_unlock(&rblk->rlun->parent->lock);
+	rblk->rlpg->blk_state = rblk->state;
 
 	crc = crc32_le(crc, (unsigned char *)rblk->rlpg + sizeof(crc),
 					rblk->rlpg->rlpg_len - sizeof(crc));
@@ -630,10 +622,11 @@ fail_alloc_rqd:
 void __pblk_close_rblk(struct pblk *pblk, struct pblk_block *rblk,
 		       struct nvm_rq *rqd)
 {
-	struct nvm_dev *dev = pblk->dev;
+	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_geo *geo = &dev->geo;
 	struct ppa_addr ppa_addr[PBLK_RECOVERY_SECTORS];
 	int nr_entries = pblk->nr_blk_dsecs;
-	unsigned int nr_rec_ppas = dev->sec_per_blk - nr_entries;
+	unsigned int nr_rec_ppas = geo->sec_per_blk - nr_entries;
 	u64 paddr;
 	int i;
 #ifdef CONFIG_NVM_DEBUG
@@ -643,11 +636,10 @@ void __pblk_close_rblk(struct pblk *pblk, struct pblk_block *rblk,
 	/* address within a block for the last writable page */
 	for (i = 0; i < nr_rec_ppas; i++) {
 		paddr = nr_entries + i;
-		ppa_addr[i] = pblk_ppa_to_gaddr(dev,
-					global_addr(pblk, rblk, paddr));
+		ppa_addr[i] = pblk_blk_ppa_to_gaddr(dev, rblk, paddr);
 	}
 
-	if (nvm_set_rqd_ppalist(dev, rqd, ppa_addr, nr_rec_ppas, 0)) {
+	if (nvm_set_rqd_ppalist(dev->parent, rqd, ppa_addr, nr_rec_ppas, 0)) {
 		pr_err("pblk: not able to set rqd ppa list\n");
 		goto fail_set_rqd;
 	}
@@ -669,7 +661,7 @@ void __pblk_close_rblk(struct pblk *pblk, struct pblk_block *rblk,
 	return;
 
 fail_submit:
-	nvm_free_rqd_ppalist(dev, rqd);
+	nvm_free_rqd_ppalist(dev->parent, rqd);
 fail_set_rqd:
 	kfree(rqd);
 }
@@ -711,8 +703,9 @@ void pblk_close_blk(struct work_struct *work)
 #ifdef CONFIG_NVM_DEBUG
 void pblk_recov_blk_meta_sysfs(struct pblk *pblk, u64 value)
 {
-	struct nvm_dev *dev = pblk->dev;
-	unsigned int nr_rec_ppas = dev->sec_per_blk - pblk->nr_blk_dsecs;
+	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_geo *geo = &dev->geo;
+	unsigned int nr_rec_ppas = geo->sec_per_blk - pblk->nr_blk_dsecs;
 	struct ppa_addr bppa;
 	struct ppa_addr ppas[PBLK_RECOVERY_SECTORS];
 	struct ppa_addr *ppa_list;
@@ -753,7 +746,7 @@ void pblk_recov_blk_meta_sysfs(struct pblk *pblk, u64 value)
 		ppas[i] = ppa;
 	}
 
-	if (nvm_set_rqd_ppalist(dev, rqd, ppas, nr_rec_ppas, 0)) {
+	if (nvm_set_rqd_ppalist(dev->parent, rqd, ppas, nr_rec_ppas, 0)) {
 		pr_err("pblk: could not set rqd ppa list\n");
 		return;
 	}
@@ -769,7 +762,7 @@ void pblk_recov_blk_meta_sysfs(struct pblk *pblk, u64 value)
 
 	if (nvm_submit_io(dev, rqd)) {
 		pr_err("pblk: I/O submission failed\n");
-		nvm_free_rqd_ppalist(dev, rqd);
+		nvm_free_rqd_ppalist(dev->parent, rqd);
 		return;
 	}
 	wait_for_completion_io(&wait);
@@ -789,7 +782,7 @@ void pblk_recov_blk_meta_sysfs(struct pblk *pblk, u64 value)
 	for (i = 0; i < pblk->nr_blk_dsecs; i++)
 		pr_debug("lba[%i]: %llu\n", i, lba_list[i]);
 
-	nvm_free_rqd_ppalist(dev, rqd);
+	nvm_free_rqd_ppalist(dev->parent, rqd);
 	pblk_free_rqd(pblk, rqd, READ);
 	bio_put(bio);
 

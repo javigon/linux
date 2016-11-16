@@ -31,7 +31,7 @@ static int __pblk_write_to_cache(struct pblk *pblk, struct bio *bio,
 				 unsigned long flags, unsigned int nr_entries)
 {
 	sector_t laddr = pblk_get_laddr(bio);
-	struct bio *ctx_bio = (bio_op(bio) & REQ_PREFLUSH) ? bio : NULL;
+	struct bio *ctx_bio = (bio->bi_opf & REQ_PREFLUSH) ? bio : NULL;
 	struct pblk_w_ctx w_ctx;
 	unsigned long bpos, pos;
 	unsigned int i;
@@ -77,7 +77,7 @@ int pblk_write_to_cache(struct pblk *pblk, struct bio *bio, unsigned long flags)
 	int nr_secs = pblk_get_secs(bio);
 	int ret = NVM_IO_DONE;
 
-	if (bio_op(bio) & REQ_PREFLUSH) {
+	if (bio->bi_opf & REQ_PREFLUSH) {
 #ifdef CONFIG_NVM_DEBUG
 		atomic_inc(&pblk->nr_flush);
 #endif
@@ -108,7 +108,7 @@ retry:
 	} else
 		spin_unlock_irq(&pblk->lock);
 
-	if (bio_op(bio) & REQ_PREFLUSH)
+	if (bio->bi_opf & REQ_PREFLUSH)
 		pblk_write_kick(pblk);
 
 out:

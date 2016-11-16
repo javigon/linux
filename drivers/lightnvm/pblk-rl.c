@@ -86,9 +86,9 @@ static void pblk_rl_update_rates(struct pblk *pblk, struct pblk_lun *rlun)
 	lockdep_assert_held(&rl->lock);
 #endif
 
-	if (rlun->mgmt->nr_free_blocks > rl->high_lun)
+	if (rlun->nr_free_blocks > rl->high_lun)
 		should_stop_gc = 1;
-	else if (rlun->mgmt->nr_free_blocks < rl->low_lun)
+	else if (rlun->nr_free_blocks < rl->low_lun)
 		should_start_gc = 1;
 
 	if (rl->free_blocks >= high) {
@@ -117,7 +117,7 @@ void pblk_rl_free_blks_inc(struct pblk *pblk, struct pblk_lun *rlun)
 	lockdep_assert_held(&rlun->lock);
 #endif
 
-	rlun->mgmt->nr_free_blocks++;
+	rlun->nr_free_blocks++;
 
 	spin_lock(&pblk->rl.lock);
 	pblk->rl.free_blocks++;
@@ -131,7 +131,7 @@ void pblk_rl_free_blks_dec(struct pblk *pblk, struct pblk_lun *rlun)
 	lockdep_assert_held(&rlun->lock);
 #endif
 
-	rlun->mgmt->nr_free_blocks--;
+	rlun->nr_free_blocks--;
 
 	spin_lock(&pblk->rl.lock);
 	pblk->rl.free_blocks--;
@@ -142,15 +142,6 @@ void pblk_rl_free_blks_dec(struct pblk *pblk, struct pblk_lun *rlun)
 int pblk_rl_gc_thrs(struct pblk *pblk)
 {
 	return pblk->rl.high_lun + 1;
-}
-
-int pblk_rl_calc_max_wr_speed(struct pblk *pblk)
-{
-	struct nvm_dev *dev = pblk->dev;
-	unsigned long secs_per_sec = (dev->sec_per_pl * NSEC_PER_SEC) /
-						dev->identity.groups[0].tprt;
-
-	return secs_per_sec * pblk_map_get_active_luns(pblk);
 }
 
 int pblk_rl_sysfs_rate_show(struct pblk *pblk)
@@ -168,6 +159,8 @@ int pblk_rl_sysfs_rate_store(struct pblk *pblk, int value)
 /* TODO: Update values correctly on power up recovery */
 void pblk_rl_init(struct pblk *pblk)
 {
+	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_geo *geo = &dev->geo;
 	struct pblk_prov *rl = &pblk->rl;
 	unsigned int rb_windows;
 
@@ -175,8 +168,8 @@ void pblk_rl_init(struct pblk *pblk)
 
 	rl->high_pw = get_count_order(rl->total_blocks / PBLK_USER_HIGH_THRS);
 	rl->low_pw = get_count_order(rl->total_blocks / PBLK_USER_LOW_THRS);
-	rl->high_lun = pblk->dev->blks_per_lun / PBLK_USER_HIGH_THRS;
-	rl->low_lun = pblk->dev->blks_per_lun / PBLK_USER_LOW_THRS;
+	rl->high_lun = geo->blks_per_lun / PBLK_USER_HIGH_THRS;
+	rl->low_lun = geo->blks_per_lun / PBLK_USER_LOW_THRS;
 	if (rl->low_lun < 3)
 		rl->low_lun = 3;
 

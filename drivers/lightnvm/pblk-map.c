@@ -82,14 +82,13 @@ static struct pblk_lun *pblk_map_get_lun_rr(struct pblk *pblk, int *lun_pos,
 					    int is_gc)
 {
 	struct pblk_lun *rlun, *max_free;
-	struct nvm_lun_mgmt *cur_mgmt, *max_mgmt;
 	unsigned int i;
 	unsigned int free_lun = 0;
 
 	if (!is_gc) {
 		do {
 			max_free = get_map_next_lun(pblk, lun_pos);
-		} while (test_bit(max_free->prov_pos, lun_bitmap));
+		} while (test_bit(max_free->id, lun_bitmap));
 
 		goto out;
 	}
@@ -101,7 +100,7 @@ static struct pblk_lun *pblk_map_get_lun_rr(struct pblk *pblk, int *lun_pos,
 	do {
 		max_free = pblk->w_luns.luns[free_lun++];
 		*lun_pos = free_lun;
-	} while (test_bit(max_free->prov_pos, lun_bitmap) &&
+	} while (test_bit(max_free->id, lun_bitmap) &&
 					free_lun < pblk->w_luns.nr_luns);
 
 	/* prevent GC-ing lun from devouring pages of a lun with
@@ -110,20 +109,17 @@ static struct pblk_lun *pblk_map_get_lun_rr(struct pblk *pblk, int *lun_pos,
 	 */
 	for (i = free_lun; i < pblk->w_luns.nr_luns; i++) {
 		rlun = pblk->w_luns.luns[i];
-		if (test_bit(rlun->parent->id, lun_bitmap))
+		if (test_bit(rlun->id, lun_bitmap))
 			continue;
 
-		cur_mgmt = rlun->mgmt;
-		max_mgmt = max_free->mgmt;
-
-		if (cur_mgmt->nr_free_blocks > max_mgmt->nr_free_blocks) {
+		if (rlun->nr_free_blocks > max_free->nr_free_blocks) {
 			max_free = rlun;
 			*lun_pos = i;
 		}
 	}
 
 out:
-	WARN_ON(test_and_set_bit(max_free->prov_pos, lun_bitmap));
+	WARN_ON(test_and_set_bit(max_free->id, lun_bitmap));
 	return max_free;
 }
 
@@ -193,7 +189,7 @@ int pblk_map_page(struct pblk *pblk, struct pblk_block *rblk,
 		  struct pblk_sec_meta *meta_list,
 		  unsigned int nr_secs, unsigned int valid_secs)
 {
-	struct nvm_dev *dev = pblk->dev;
+	struct nvm_tgt_dev *dev = pblk->dev;
 	struct pblk_blk_rec_lpg *rlpg = rblk->rlpg;
 	struct pblk_w_ctx *w_ctx;
 	u64 *lba_list;
@@ -216,16 +212,15 @@ int pblk_map_page(struct pblk *pblk, struct pblk_block *rblk,
 			 * page write at this point. We get a new block for this
 			 * LUN when the current block is full.
 			 */
-			pr_err("pblk: corrupted l2p mapping, blk:%lu,n:%d/%d\n",
-					rblk->parent->id,
+			pr_err("pblk: corrupted l2p mapping, blk:%d,n:%d/%d\n",
+					rblk->id,
 					i, nr_secs);
 			spin_unlock(&rblk->lock);
 			return -EINVAL;
 		}
 
 		/* ppa to be sent to the device */
-		ppa_list[i] = pblk_blk_ppa_to_gaddr(dev, rblk->b_gen_ppa,
-						global_addr(pblk, rblk, paddr));
+		ppa_list[i] = pblk_blk_ppa_to_gaddr(dev, rblk, paddr);
 
 		/* Write context for target bio completion on write buffer. Note
 		 * that the write buffer is protected by the sync backpointer,

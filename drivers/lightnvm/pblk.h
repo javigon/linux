@@ -211,7 +211,7 @@ struct pblk_blk_rec_lenghts {
 };
 
 struct pblk_block {
-	struct nvm_block *parent;
+	int id;				/* id inside of LUN */
 	struct pblk_lun *rlun;
 	struct list_head prio;
 	struct list_head list;
@@ -230,20 +230,19 @@ struct pblk_block {
 	/* number of secs that are invalid, wrt host page size */
 	unsigned int nr_invalid_secs;
 
-	/* Pre-calculated values */
-	struct ppa_addr b_gen_ppa;	/* Base generic ppa for block */
-	u64 b_lin_ppa;			/* Base linear ppa for block */
+	int state;
 
 	spinlock_t lock;
 };
 
 struct pblk_lun {
 	struct pblk *pblk;
-	struct nvm_lun *parent;
+	
+	int id;
+	struct ppa_addr bppa;
+
 	struct pblk_block *cur;
 	struct pblk_block *blocks;	/* Reference to block allocation */
-
-	struct nvm_lun_mgmt *mgmt;
 
 	/* In-use blocks - pblk block */
 	struct list_head prio_list;	/* Blocks that may be GC'ed */
@@ -260,14 +259,18 @@ struct pblk_lun {
 					 *disposed
 					 */
 
-	int ch;				/* Channel the lun belongs to */
-	int prov_pos;			/* Position of the lun on the
-					 * provisioning bitmap
+	/* lun block lists */
+	struct list_head free_list;	/* Not used blocks i.e. released
+					 * and ready for use
 					 */
+	struct list_head bb_list;	/* Bad blocks. Mutually exclusive with
+					 * free_list and used blocks
+					 * (open_list + closed_list + g_bb_list)
+					 */
+	unsigned int nr_free_blocks;	/* Number of unused blocks */
 
 	struct semaphore wr_sem;
 
-	spinlock_t lock_lists;
 	spinlock_t lock;
 };
 
@@ -352,7 +355,7 @@ struct pblk {
 	/* instance must be kept in top to resolve pblk in unprep */
 	struct nvm_tgt_instance instance;
 
-	struct nvm_dev *dev;
+	struct nvm_tgt_dev *dev;
 	struct gendisk *disk;
 
 	int nr_luns;
@@ -522,6 +525,7 @@ struct pblk_blk_rec_lpg *pblk_alloc_blk_meta(struct pblk *pblk,
 					     u32 status);
 void pblk_put_blk(struct pblk *pblk, struct pblk_block *rblk);
 void pblk_erase_blk(struct pblk *pblk, struct pblk_block *rblk);
+void pblk_mark_bb(struct pblk *pblk, struct ppa_addr ppa);
 void pblk_end_io(struct nvm_rq *rqd);
 void pblk_end_sync_bio(struct bio *bio);
 void pblk_free_blks(struct pblk *pblk);
@@ -654,7 +658,6 @@ int pblk_gc_sysfs_enable(struct pblk *pblk, int value);
  * pblk rate limiter
  */
 void pblk_rl_init(struct pblk *pblk);
-int pblk_rl_calc_max_wr_speed(struct pblk *pblk);
 int pblk_rl_gc_thrs(struct pblk *pblk);
 void pblk_rl_user_in(struct pblk *pblk, int nr_entries);
 void pblk_rl_user_out(struct pblk *pblk, int nr_entries);
@@ -686,19 +689,6 @@ static inline u64 nvm_addr_to_cacheline(struct ppa_addr gp)
 	BUG_ON(gp.ppa == ADDR_EMPTY);
 #endif
 	return gp.c.line;
-}
-
-static inline int ppa_cmp_blk(struct ppa_addr ppa1, struct ppa_addr ppa2)
-{
-	if (ppa_empty(ppa1) || ppa_empty(ppa2))
-		return 0;
-
-
-	if ((ppa1.g.ch == ppa2.g.ch) && (ppa1.g.lun == ppa2.g.lun) &&
-					(ppa1.g.blk == ppa2.g.blk))
-		return 1;
-
-	return 0;
 }
 
 static inline void pblk_write_kick(struct pblk *pblk)
@@ -748,11 +738,13 @@ static inline void pblk_free_ref_mem(struct kref *ref)
 }
 
 /* Calculate the page offset of within a block from a generic address */
-static inline u64 pblk_gaddr_to_pg_offset(struct nvm_dev *dev,
+static inline u64 pblk_gaddr_to_pg_offset(struct nvm_tgt_dev *dev,
 					  struct ppa_addr p)
 {
-	return (u64) (p.g.pg * dev->sec_per_pl) +
-				(p.g.pl * dev->sec_per_pg) + p.g.sec;
+	struct nvm_geo *geo = &dev->geo;
+
+	return (u64) (p.g.pg * geo->sec_per_pl) +
+				(p.g.pl * geo->sec_per_pg) + p.g.sec;
 }
 
 static inline struct ppa_addr pblk_cacheline_to_ppa(u64 addr)
@@ -763,20 +755,6 @@ static inline struct ppa_addr pblk_cacheline_to_ppa(u64 addr)
 	p.c.is_cached = 1;
 
 	return p;
-}
-
-/* Calculate global addr for the given block */
-static inline u64 block_to_addr(struct pblk *pblk, struct pblk_block *rblk)
-{
-	struct nvm_block *blk = rblk->parent;
-
-	return blk->id * pblk->dev->sec_per_blk;
-}
-
-static inline u64 global_addr(struct pblk *pblk, struct pblk_block *rblk,
-			      u64 paddr)
-{
-	return rblk->b_lin_ppa + paddr;
 }
 
 static inline struct ppa_addr pblk_dev_addr_to_ppa(u64 addr)
@@ -804,10 +782,11 @@ static inline u64 ppa_to_addr(struct ppa_addr ppa)
 
 static inline int pblk_set_progr_mode(struct pblk *pblk, int type)
 {
-	struct nvm_dev *dev = pblk->dev;
+	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_geo *geo = &dev->geo;
 	int flags;
 
-	switch (dev->plane_mode) {
+	switch (geo->plane_mode) {
 	case NVM_PLANE_QUAD:
 		flags = NVM_IO_QUAD_ACCESS;
 		break;
@@ -833,89 +812,99 @@ static inline int pblk_set_read_mode(struct pblk *pblk)
 	return NVM_IO_SNGL_ACCESS | NVM_IO_SUSPEND | NVM_IO_SCRAMBLE_ENABLE;
 }
 
-static struct ppa_addr blk_linear_to_generic_addr(struct nvm_dev *dev,
-						  struct ppa_addr baddr,
-						  struct ppa_addr r)
+// static struct ppa_addr blk_linear_to_generic_addr(struct nvm_tgt_dev *dev,
+// 						  struct ppa_addr baddr,
+// 						  u64 r)
+// {
+// 	struct ppa_addr l;
+// 	int secs, pgs, pls;
+// 	sector_t ppa = r.ppa;
+//
+// 	l = baddr;
+//
+// 	div_u64_rem(ppa, geo->sec_per_pg, &secs);
+// 	l.g.sec = secs;
+//
+// 	sector_div(ppa, geo->sec_per_pg);
+// 	div_u64_rem(ppa, geo->nr_planes, &pls);
+// 	l.g.pl = pls;
+//
+// 	sector_div(ppa, geo->nr_planes);
+// 	div_u64_rem(ppa, geo->pgs_per_blk, &pgs);
+// 	l.g.pg = pgs;
+//
+// 	return l;
+// }
+
+// static struct ppa_addr linear_to_generic_addr(struct nvm_tgt_dev *dev,
+// 					      struct ppa_addr r)
+// {
+// 	struct nvm_geo *geo = &dev->geo;
+	// struct ppa_addr l;
+// 	int secs, pgs, pls, blks, luns;
+// 	sector_t ppa = r.ppa;
+//
+// 	l.ppa = 0;
+//
+// 	div_u64_rem(ppa, geo->sec_per_pg, &secs);
+// 	l.g.sec = secs;
+//
+// 	sector_div(ppa, geo->sec_per_pg);
+// 	div_u64_rem(ppa, geo->nr_planes, &pls);
+// 	l.g.pl = pls;
+//
+// 	sector_div(ppa, geo->nr_planes);
+// 	div_u64_rem(ppa, geo->pgs_per_blk, &pgs);
+// 	l.g.pg = pgs;
+//
+// 	sector_div(ppa, geo->pgs_per_blk);
+// 	div_u64_rem(ppa, geo->blks_per_lun, &blks);
+// 	l.g.blk = blks;
+//
+// 	sector_div(ppa, geo->blks_per_lun);
+// 	div_u64_rem(ppa, geo->luns_per_chnl, &luns);
+// 	l.g.lun = luns;
+//
+// 	sector_div(ppa, geo->luns_per_chnl);
+// 	l.g.ch = ppa;
+//
+// 	return l;
+// }
+
+// static inline struct ppa_addr pblk_ppa_to_gaddr(struct nvm_tgt_dev *dev, u64 addr)
+// {
+	// struct ppa_addr paddr;
+//
+	// paddr.ppa = addr;
+	// return linear_to_generic_addr(dev, paddr);
+// }
+
+static inline struct ppa_addr pblk_blk_ppa_to_gaddr(struct nvm_tgt_dev *dev,
+						    struct pblk_block *rblk,
+						    u64 page_addr)
 {
-	struct ppa_addr l;
+	struct nvm_geo *geo = &dev->geo;
+	struct pblk_lun *rlun = rblk->rlun;
+	struct ppa_addr p;
 	int secs, pgs, pls;
-	sector_t ppa = r.ppa;
 
-	l = baddr;
+	/* Set base address for LUN and block */
+	p = rlun->bppa;
+	p.g.blk = rblk->id;
 
-	div_u64_rem(ppa, dev->sec_per_pg, &secs);
-	l.g.sec = secs;
+	/* Calculate page, plane and sector */
+	div_u64_rem(page_addr, geo->sec_per_pg, &secs);
+	p.g.sec = secs;
 
-	sector_div(ppa, dev->sec_per_pg);
-	div_u64_rem(ppa, dev->nr_planes, &pls);
-	l.g.pl = pls;
+	sector_div(page_addr, geo->sec_per_pg);
+	div_u64_rem(page_addr, geo->nr_planes, &pls);
+	p.g.pl = pls;
 
-	sector_div(ppa, dev->nr_planes);
-	div_u64_rem(ppa, dev->pgs_per_blk, &pgs);
-	l.g.pg = pgs;
+	sector_div(page_addr, geo->nr_planes);
+	div_u64_rem(page_addr, geo->pgs_per_blk, &pgs);
+	p.g.pg = pgs;
 
-	return l;
-}
-
-static struct ppa_addr linear_to_generic_addr(struct nvm_dev *dev,
-					      struct ppa_addr r)
-{
-	struct ppa_addr l;
-	int secs, pgs, pls, blks, luns;
-	sector_t ppa = r.ppa;
-
-	l.ppa = 0;
-
-	div_u64_rem(ppa, dev->sec_per_pg, &secs);
-	l.g.sec = secs;
-
-	sector_div(ppa, dev->sec_per_pg);
-	div_u64_rem(ppa, dev->nr_planes, &pls);
-	l.g.pl = pls;
-
-	sector_div(ppa, dev->nr_planes);
-	div_u64_rem(ppa, dev->pgs_per_blk, &pgs);
-	l.g.pg = pgs;
-
-	sector_div(ppa, dev->pgs_per_blk);
-	div_u64_rem(ppa, dev->blks_per_lun, &blks);
-	l.g.blk = blks;
-
-	sector_div(ppa, dev->blks_per_lun);
-	div_u64_rem(ppa, dev->luns_per_chnl, &luns);
-	l.g.lun = luns;
-
-	sector_div(ppa, dev->luns_per_chnl);
-	l.g.ch = ppa;
-
-	return l;
-}
-
-static inline struct ppa_addr pblk_ppa_to_gaddr(struct nvm_dev *dev, u64 addr)
-{
-	struct ppa_addr paddr;
-
-	paddr.ppa = addr;
-	return linear_to_generic_addr(dev, paddr);
-}
-
-static inline struct ppa_addr pblk_blk_ppa_to_gaddr(struct nvm_dev *dev,
-						    struct ppa_addr baddr,
-						    u64 addr)
-{
-	struct ppa_addr paddr;
-
-	paddr.ppa = addr;
-	return blk_linear_to_generic_addr(dev, baddr, paddr);
-}
-
-static inline struct pblk_block *pblk_get_rblk(struct pblk_lun *rlun,
-							unsigned long blk_id)
-{
-	struct pblk *pblk = rlun->pblk;
-	int lun_blk = blk_id % pblk->dev->blks_per_lun;
-
-	return &rlun->blocks[lun_blk];
+	return p;
 }
 
 static inline unsigned int pblk_get_bi_idx(struct bio *bio)
@@ -940,7 +929,7 @@ static inline sector_t pblk_get_sector(sector_t laddr)
 
 static inline int block_is_bad(struct pblk_block *rblk)
 {
-	return (rblk->parent->state == NVM_BLK_ST_BAD);
+	return (rblk->state == NVM_BLK_ST_BAD);
 }
 
 static inline int block_is_full(struct pblk *pblk, struct pblk_block *rblk)

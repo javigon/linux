@@ -36,8 +36,9 @@ static ssize_t pblk_sysfs_luns_show(struct pblk *pblk, char *page)
 		rlun = pblk->w_luns.luns[i];
 		sz += sprintf(page + sz, "POS:%d, CH:%d, LUN:%d\n",
 					i,
-					rlun->ch,
-					rlun->parent->id);
+					rlun->bppa.g.ch,
+					rlun->bppa.g.lun);
+
 	}
 	spin_unlock(&pblk->w_luns.lock);
 
@@ -118,24 +119,21 @@ static ssize_t pblk_sysfs_stats_debug(struct pblk *pblk, char *page)
 
 static ssize_t pblk_sysfs_blocks(struct pblk *pblk, char *page)
 {
+	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_geo *geo = &dev->geo;
 	struct pblk_lun *rlun;
-	struct nvm_block *blk;
 	struct pblk_block *rblk;
-	unsigned int free, used, used_int, used_cnt, bad, total_lun;
+	unsigned int free, used_int, used_cnt, bad, total_lun;
 	int i;
 	ssize_t line, sz = 0;
 
 	pblk_for_each_lun(pblk, rlun, i) {
-		free = used = used_int = bad = 0;
+		free = used_int = bad = 0;
 
 		spin_lock(&rlun->lock);
-		spin_lock(&rlun->lock_lists);
-
-		list_for_each_entry(blk, &rlun->mgmt->free_list, list)
+		list_for_each_entry(rblk, &rlun->free_list, list)
 			free++;
-		list_for_each_entry(blk, &rlun->mgmt->used_list, list)
-			used++;
-		list_for_each_entry(blk, &rlun->mgmt->bb_list, list)
+		list_for_each_entry(rblk, &rlun->bb_list, list)
 			bad++;
 
 		list_for_each_entry(rblk, &rlun->open_list, list)
@@ -144,25 +142,23 @@ static ssize_t pblk_sysfs_blocks(struct pblk *pblk, char *page)
 			used_int++;
 		list_for_each_entry(rblk, &rlun->g_bb_list, list)
 			used_int++;
+		spin_unlock(&rlun->lock);
 
-		used_cnt = pblk->dev->blks_per_lun - free - bad;
-		total_lun = used + free + bad;
+		used_cnt = geo->blks_per_lun - free - bad;
+		total_lun = used_int + free + bad;
 
-		if ((used_cnt != used_int) || (used_cnt != used))
-			pr_err("pblk: used list corruption (t:%u,i:%u,c:%u)\n",
-					used, used_int, used_cnt);
+		if ((used_cnt != used_int))
+			pr_err("pblk: used list corruption (i:%u,c:%u)\n",
+					used_int, used_cnt);
 
-		if (pblk->dev->blks_per_lun != total_lun)
+		if (geo->blks_per_lun != total_lun)
 			pr_err("pblk: list corruption (t:%u,c:%u)\n",
-					pblk->dev->blks_per_lun, total_lun);
+					geo->blks_per_lun, total_lun);
 
 		line = sprintf(page + sz,
 			"lun(%i %i):u=%u,f=%u,b=%u,t=%u,v=%u\n",
-			rlun->parent->chnl_id, rlun->parent->lun_id,
-			used, free, bad, total_lun, rlun->mgmt->nr_free_blocks);
-
-		spin_unlock(&rlun->lock_lists);
-		spin_unlock(&rlun->lock);
+			rlun->bppa.g.ch, rlun->bppa.g.lun,
+			used_int, free, bad, total_lun, rlun->nr_free_blocks);
 
 		sz += line;
 		if (sz + line > PAGE_SIZE) {
@@ -182,26 +178,26 @@ static ssize_t pblk_sysfs_open_blks(struct pblk *pblk, char *page)
 	ssize_t sz = 0;
 
 	pblk_for_each_lun(pblk, rlun, i) {
-		sz += sprintf(page + sz, "LUN:%d\n", rlun->parent->id);
+		sz += sprintf(page + sz, "LUN:%d\n", rlun->id);
 
-		spin_lock(&rlun->lock_lists);
+		spin_lock(&rlun->lock);
 		list_for_each_entry(rblk, &rlun->open_list, list) {
 			spin_lock(&rblk->lock);
 			sz += sprintf(page + sz,
-				"open:\tblk:%lu\t%u\t%u\t%u\t%u\t%u\t%u\n",
-				rblk->parent->id,
-				pblk->dev->sec_per_blk,
+				"open:\tblk:%d\t%u\t%u\t%u\t%u\t%u\t%u\n",
+				rblk->id,
+				pblk->dev->geo.sec_per_blk,
 				pblk->nr_blk_dsecs,
 				bitmap_weight(rblk->sector_bitmap,
-							pblk->dev->sec_per_blk),
+						pblk->dev->geo.sec_per_blk),
 				bitmap_weight(rblk->sync_bitmap,
-							pblk->dev->sec_per_blk),
+						pblk->dev->geo.sec_per_blk),
 				bitmap_weight(rblk->invalid_bitmap,
-							pblk->dev->sec_per_blk),
+						pblk->dev->geo.sec_per_blk),
 				rblk->nr_invalid_secs);
 			spin_unlock(&rblk->lock);
 		}
-		spin_unlock(&rlun->lock_lists);
+		spin_unlock(&rlun->lock);
 	}
 
 	return sz;
@@ -217,14 +213,14 @@ static ssize_t pblk_sysfs_bad_blks(struct pblk *pblk, char *page)
 	pblk_for_each_lun(pblk, rlun, i) {
 		int bad_blks = 0;
 
-		spin_lock(&rlun->lock_lists);
+		spin_lock(&rlun->lock);
 		list_for_each_entry(rblk, &rlun->g_bb_list, list)
 			bad_blks++;
-		spin_unlock(&rlun->lock_lists);
+		spin_unlock(&rlun->lock);
 
 		line = sprintf(page + sz, "lun(%i %i):bad=%u\n",
-				rlun->parent->chnl_id,
-				rlun->parent->lun_id,
+				rlun->bppa.g.ch,
+				rlun->bppa.g.lun,
 				bad_blks);
 
 		sz += line;
@@ -240,7 +236,6 @@ static ssize_t pblk_sysfs_bad_blks(struct pblk *pblk, char *page)
 static ssize_t pblk_sysfs_gc_blks(struct pblk *pblk, char *page)
 {
 	struct pblk_lun *rlun;
-	struct nvm_lun *lun;
 	struct pblk_block *rblk;
 	int i;
 	ssize_t line, sz = 0;
@@ -248,15 +243,14 @@ static ssize_t pblk_sysfs_gc_blks(struct pblk *pblk, char *page)
 	pblk_for_each_lun(pblk, rlun, i) {
 		int gc_blks = 0;
 
-		lun = rlun->parent;
-		spin_lock(&lun->lock);
+		spin_lock(&rlun->lock);
 		list_for_each_entry(rblk, &rlun->prio_list, prio)
 			gc_blks++;
-		spin_unlock(&lun->lock);
+		spin_unlock(&rlun->lock);
 
 		line = sprintf(page + sz, "lun(%i %i):gc=%u\n",
-				rlun->parent->chnl_id,
-				rlun->parent->lun_id,
+				rlun->bppa.g.ch,
+				rlun->bppa.g.lun,
 				gc_blks);
 
 		sz += line;
@@ -428,7 +422,8 @@ static ssize_t pblk_sysfs_l2p_map_print(struct pblk *pblk, const char *page,
 static ssize_t pblk_sysfs_l2p_map_sanity(struct pblk *pblk, const char *page,
 					 ssize_t len)
 {
-	struct nvm_dev *dev = pblk->dev;
+	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_geo *geo = &dev->geo;
 	size_t c_len;
 	struct pblk_addr *gp;
 	struct ppa_addr ppa;
@@ -474,11 +469,11 @@ static ssize_t pblk_sysfs_l2p_map_sanity(struct pblk *pblk, const char *page,
 	}
 	spin_unlock(&pblk->trans_lock);
 
-	read_sec = kmalloc(dev->sec_size, GFP_KERNEL);
+	read_sec = kmalloc(geo->sec_size, GFP_KERNEL);
 	if (!read_sec)
 		goto out;
 
-	bio = bio_map_kern(dev->q, read_sec, dev->sec_size, GFP_KERNEL);
+	bio = bio_map_kern(dev->q, read_sec, geo->sec_size, GFP_KERNEL);
 	if (!bio) {
 		pr_err("pblk: could not allocate recovery bio\n");
 		goto out;
@@ -505,14 +500,14 @@ static ssize_t pblk_sysfs_l2p_map_sanity(struct pblk *pblk, const char *page,
 	r_ctx = nvm_rq_to_pdu(rqd);
 	r_ctx->flags = PBLK_IOTYPE_SYNC;
 
-	if (nvm_set_rqd_ppalist(dev, rqd, &ppa, 1, 0)) {
+	if (nvm_set_rqd_ppalist(dev->parent, rqd, &ppa, 1, 0)) {
 		pr_err("pblk: could not set rqd ppa list\n");
 		goto out;
 	}
 
 	if (nvm_submit_io(dev, rqd)) {
 		pr_err("pblk: I/O submission failed\n");
-		nvm_free_rqd_ppalist(dev, rqd);
+		nvm_free_rqd_ppalist(dev->parent, rqd);
 		goto out;
 	}
 
@@ -551,7 +546,6 @@ static ssize_t pblk_sysfs_cleanup(struct pblk *pblk, const char *page,
 				  ssize_t len)
 {
 	struct pblk_lun *rlun;
-	struct nvm_lun *lun;
 	struct pblk_block *rblk, *trblk;
 	size_t c_len;
 	int value;
@@ -578,19 +572,18 @@ static ssize_t pblk_sysfs_cleanup(struct pblk *pblk, const char *page,
 	spin_unlock(&pblk->trans_lock);
 
 	pblk_for_each_lun(pblk, rlun, i) {
-		spin_lock(&rlun->lock_lists);
+		spin_lock(&rlun->lock);
 		list_for_each_entry_safe(rblk, trblk, &rlun->open_list, list)
 			list_move_tail(&rblk->list, &cleanup_list);
 		list_for_each_entry_safe(rblk, trblk, &rlun->closed_list, list)
 			list_move_tail(&rblk->list, &cleanup_list);
-		spin_unlock(&rlun->lock_lists);
+		spin_unlock(&rlun->lock);
 
 		/* Blocks in closed_list are a superset of prio_list */
-		lun = rlun->parent;
-		spin_lock(&lun->lock);
+		spin_lock(&rlun->lock);
 		list_for_each_entry_safe(rblk, trblk, &rlun->prio_list, prio)
 			list_del_init(&rblk->prio);
-		spin_unlock(&lun->lock);
+		spin_unlock(&rlun->lock);
 
 		rlun->cur = NULL;
 	}
@@ -789,13 +782,15 @@ ssize_t pblk_sysfs_store(struct nvm_target *t, struct attribute *attr,
 
 void pblk_sysfs_init(struct nvm_target *t)
 {
-	if (sysfs_create_group(&t->kobj, &pblk_attr_group))
-		pr_warn("%s: failed to create sysfs group\n",
-			t->disk->disk_name);
+	//JAVIER
+	/* if (sysfs_create_group(&t->kobj, &pblk_attr_group)) */
+		/* pr_warn("%s: failed to create sysfs group\n", */
+			/* t->disk->disk_name); */
 }
 
 void pblk_sysfs_exit(struct nvm_target *t)
 {
-	sysfs_remove_group(&t->kobj, &pblk_attr_group);
+	//JAVIER
+	/* sysfs_remove_group(&t->kobj, &pblk_attr_group); */
 }
 

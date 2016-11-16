@@ -273,6 +273,7 @@ static int __pblk_submit_read(struct pblk *pblk, struct nvm_rq *rqd,
 			      unsigned int bio_init_idx, int flags, int nr_secs,
 			      int clone_read)
 {
+	struct nvm_tgt_dev *dev = pblk->dev;
 	int ret = NVM_IO_OK;
 
 	/* All sectors are to be read from the device */
@@ -325,7 +326,7 @@ static int __pblk_submit_read(struct pblk *pblk, struct nvm_rq *rqd,
 
 fail_ppa_free:
 	if ((nr_secs > 1) && (!(flags & PBLK_IOTYPE_GC)))
-		nvm_dev_dma_free(pblk->dev, rqd->ppa_list, rqd->dma_ppa_list);
+		nvm_dev_dma_free(dev->parent, rqd->ppa_list, rqd->dma_ppa_list);
 	return ret;
 }
 
@@ -373,6 +374,7 @@ out:
 
 int pblk_submit_read(struct pblk *pblk, struct bio *bio, unsigned long flags)
 {
+	struct nvm_tgt_dev *dev = pblk->dev;
 	int nr_secs = pblk_get_secs(bio);
 	unsigned int bio_init_idx;
 	struct nvm_rq *rqd;
@@ -399,7 +401,7 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio, unsigned long flags)
 	bio_init_idx = pblk_get_bi_idx(bio);
 
 	if (nr_secs > 1) {
-		rqd->ppa_list = nvm_dev_dma_alloc(pblk->dev, GFP_KERNEL,
+		rqd->ppa_list = nvm_dev_dma_alloc(dev->parent, GFP_KERNEL,
 						&rqd->dma_ppa_list);
 		if (!rqd->ppa_list) {
 			pr_err("pblk: not able to allocate ppa list\n");
@@ -503,6 +505,7 @@ int pblk_submit_read_gc(struct pblk *pblk, struct bio *bio,
 			unsigned int nr_secs, unsigned int nr_rec_secs,
 			unsigned long flags)
 {
+	struct nvm_tgt_dev *dev = pblk->dev;
 	struct pblk_r_ctx *r_ctx = nvm_rq_to_pdu(rqd);
 	unsigned int bio_init_idx;
 	unsigned long read_bitmap; /* Max 64 ppas per request */
@@ -520,7 +523,7 @@ int pblk_submit_read_gc(struct pblk *pblk, struct bio *bio,
 	bio_init_idx = pblk_get_bi_idx(bio);
 
 	if (nr_rec_secs > 1) {
-		rqd->ppa_list = nvm_dev_dma_alloc(pblk->dev, GFP_KERNEL,
+		rqd->ppa_list = nvm_dev_dma_alloc(dev->parent, GFP_KERNEL,
 						  &rqd->dma_ppa_list);
 		if (!rqd->ppa_list) {
 			pr_err("pblk: not able to allocate ppa list\n");
@@ -558,6 +561,7 @@ int pblk_submit_read_gc(struct pblk *pblk, struct bio *bio,
 
 void pblk_end_io_read(struct pblk *pblk, struct nvm_rq *rqd, uint8_t nr_secs)
 {
+	struct nvm_tgt_dev *dev = pblk->dev;
 	struct pblk_r_ctx *r_ctx = nvm_rq_to_pdu(rqd);
 	struct bio *bio = rqd->bio;
 	struct bio *orig_bio = r_ctx->orig_bio;
@@ -585,10 +589,11 @@ void pblk_end_io_read(struct pblk *pblk, struct nvm_rq *rqd, uint8_t nr_secs)
 		return;
 
 	if (nr_secs > 1)
-		nvm_dev_dma_free(pblk->dev, rqd->ppa_list, rqd->dma_ppa_list);
+		nvm_dev_dma_free(dev->parent, rqd->ppa_list, rqd->dma_ppa_list);
 
 	if (rqd->meta_list)
-		nvm_dev_dma_free(pblk->dev, rqd->meta_list, rqd->dma_meta_list);
+		nvm_dev_dma_free(dev->parent, rqd->meta_list,
+							rqd->dma_meta_list);
 
 	bio_put(bio);
 	if (orig_bio) {

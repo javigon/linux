@@ -155,7 +155,7 @@ void pblk_flush_writer(struct pblk *pblk)
 		return;
 
 	bio->bi_iter.bi_sector = 0; /* artificial bio */
-	bio_set_op_attrs(bio, REQ_OP_WRITE, WRITE_FLUSH);
+	bio_set_op_attrs(bio, REQ_OP_WRITE, REQ_OP_FLUSH);
 	bio->bi_private = &wait;
 	bio->bi_end_io = pblk_end_sync_bio;
 
@@ -227,12 +227,6 @@ struct ppa_addr pblk_get_lba_map(struct pblk *pblk, sector_t lba)
 	return ppa;
 }
 
-/* Put block back to media manager but do not free rblk structures */
-void pblk_retire_blk(struct pblk *pblk, struct pblk_block *rblk)
-{
-	nvm_put_blk(pblk->dev, rblk->parent);
-}
-
 static void pblk_init_rlpg(struct pblk *pblk, struct pblk_block *rblk,
 			   struct pblk_blk_rec_lpg *rlpg)
 {
@@ -280,25 +274,8 @@ out:
 	return rlpg;
 }
 
-struct nvm_block *__pblk_get_blk(struct pblk *pblk, struct pblk_lun *rlun)
-{
-	struct nvm_block *blk = NULL;
-
-	if (list_empty(&rlun->mgmt->free_list))
-		goto out;
-
-	blk = list_first_entry(&rlun->mgmt->free_list, struct nvm_block, list);
-
-	list_move_tail(&blk->list, &rlun->mgmt->used_list);
-	blk->state = NVM_BLK_ST_TGT;
-	pblk_rl_free_blks_dec(pblk, rlun);
-out:
-	return blk;
-}
-
 struct pblk_block *pblk_get_blk(struct pblk *pblk, struct pblk_lun *rlun)
 {
-	struct nvm_block *blk;
 	struct pblk_block *rblk;
 	struct pblk_blk_rec_lpg *rlpg;
 
@@ -306,17 +283,15 @@ struct pblk_block *pblk_get_blk(struct pblk *pblk, struct pblk_lun *rlun)
 	lockdep_assert_held(&rlun->lock);
 #endif
 
+	if (list_empty(&rlun->free_list))
+		goto err;
+
 	/* Blocks are erased when put */
-	blk = __pblk_get_blk(pblk, rlun);
-	if (!blk)
-		return NULL;
+	rblk = list_first_entry(&rlun->free_list, struct pblk_block, list);
+	rblk->state = NVM_BLK_ST_TGT;
+	pblk_rl_free_blks_dec(pblk, rlun);
 
-	rblk = pblk_get_rblk(rlun, blk->id);
-	blk->priv = rblk;
-
-	spin_lock(&rlun->lock_lists);
-	list_add_tail(&rblk->list, &rlun->open_list);
-	spin_unlock(&rlun->lock_lists);
+	list_move_tail(&rblk->list, &rlun->open_list);
 
 	rlpg = pblk_alloc_blk_meta(pblk, rblk, PBLK_BLK_ST_OPEN);
 	if (!rlpg)
@@ -326,6 +301,7 @@ struct pblk_block *pblk_get_blk(struct pblk *pblk, struct pblk_lun *rlun)
 
 fail_put_blk:
 	pblk_put_blk(pblk, rblk);
+err:
 	return NULL;
 }
 
@@ -363,7 +339,7 @@ void pblk_run_blk_ws(struct pblk *pblk, struct pblk_block *rblk,
 
 void pblk_end_close_blk_bio(struct pblk *pblk, struct nvm_rq *rqd, int run_gc)
 {
-	struct nvm_dev *dev = pblk->dev;
+	struct nvm_tgt_dev *dev = pblk->dev;
 	struct pblk_ctx *ctx = pblk_set_ctx(pblk, rqd);
 	struct pblk_compl_close_ctx *c_ctx = ctx->c_ctx;
 
@@ -372,7 +348,7 @@ void pblk_end_close_blk_bio(struct pblk *pblk, struct nvm_rq *rqd, int run_gc)
 	if (run_gc)
 		pblk_run_blk_ws(pblk, c_ctx->rblk, pblk_gc_queue);
 
-	nvm_free_rqd_ppalist(dev, rqd);
+	nvm_free_rqd_ppalist(dev->parent, rqd);
 	bio_put(rqd->bio);
 	kfree(rqd);
 }
@@ -380,6 +356,7 @@ void pblk_end_close_blk_bio(struct pblk *pblk, struct nvm_rq *rqd, int run_gc)
 static void pblk_end_w_pad(struct pblk *pblk, struct nvm_rq *rqd,
 			   struct pblk_ctx *ctx)
 {
+	struct nvm_tgt_dev *dev = pblk->dev;
 	struct pblk_compl_ctx *c_ctx = ctx->c_ctx;
 
 #ifdef CONFIG_NVM_DEBUG
@@ -387,7 +364,7 @@ static void pblk_end_w_pad(struct pblk *pblk, struct nvm_rq *rqd,
 #endif
 
 	if (c_ctx->nr_padded > 1)
-		nvm_dev_dma_free(pblk->dev, rqd->ppa_list, rqd->dma_ppa_list);
+		nvm_dev_dma_free(dev->parent, rqd->ppa_list, rqd->dma_ppa_list);
 
 	bio_put(rqd->bio);
 	pblk_free_rqd(pblk, rqd, WRITE);
@@ -445,7 +422,7 @@ int pblk_update_map_gc(struct pblk *pblk, sector_t laddr,
 	gp = &pblk->trans_map[laddr];
 
 	/* Prevent updated entries to be overwritten by GC */
-	if (gp->rblk && gc_rblk->parent->id != gp->rblk->parent->id)
+	if (gp->rblk && gc_rblk->id != gp->rblk->id)
 		goto out;
 
 	gp->ppa = ppa;
@@ -459,7 +436,8 @@ out:
 static int pblk_setup_pad_rq(struct pblk *pblk, struct pblk_block *rblk,
 			     struct nvm_rq *rqd, struct pblk_ctx *ctx)
 {
-	struct nvm_dev *dev = pblk->dev;
+	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_geo *geo = &dev->geo;
 	struct pblk_compl_ctx *c_ctx = ctx->c_ctx;
 	unsigned int valid_secs = c_ctx->nr_valid;
 	unsigned int padded_secs = c_ctx->nr_padded;
@@ -482,7 +460,7 @@ static int pblk_setup_pad_rq(struct pblk *pblk, struct pblk_block *rblk,
 		 * pages. This path is though useful for testing on QEMU
 		 */
 #ifdef CONFIG_NVM_DEBUG
-		BUG_ON(dev->sec_per_pl != 1);
+		BUG_ON(geo->sec_per_pl != 1);
 		BUG_ON(padded_secs != 0);
 #endif
 
@@ -523,7 +501,8 @@ out:
 static void pblk_pad_blk(struct pblk *pblk, struct pblk_block *rblk,
 			 int nr_free_secs)
 {
-	struct nvm_dev *dev = pblk->dev;
+	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_geo *geo = &dev->geo;
 	struct bio *bio;
 	struct nvm_rq *rqd;
 	struct pblk_ctx *ctx;
@@ -533,7 +512,7 @@ static void pblk_pad_blk(struct pblk *pblk, struct pblk_block *rblk,
 	int nr_secs, err;
 	DECLARE_COMPLETION_ONSTACK(wait);
 
-	pad_data = kzalloc(pblk->max_write_pgs * dev->sec_size, GFP_KERNEL);
+	pad_data = kzalloc(pblk->max_write_pgs * geo->sec_size, GFP_KERNEL);
 	if (!pad_data)
 		return;
 
@@ -549,7 +528,7 @@ static void pblk_pad_blk(struct pblk *pblk, struct pblk_block *rblk,
 		ctx = pblk_set_ctx(pblk, rqd);
 		c_ctx = ctx->c_ctx;
 
-		bio_len = nr_secs * dev->sec_size;
+		bio_len = nr_secs * geo->sec_size;
 		bio = bio_map_kern(dev->q, pad_data, bio_len, GFP_KERNEL);
 		if (!bio) {
 			pr_err("pblk: could not alloc tear down bio\n");
@@ -620,7 +599,7 @@ unsigned long pblk_nr_free_blks(struct pblk *pblk)
 	for (i = 0; i < pblk->nr_luns; i++) {
 		rlun = &pblk->luns[i];
 		spin_lock(&rlun->lock);
-		avail += rlun->mgmt->nr_free_blocks;
+		avail += rlun->nr_free_blocks;
 		spin_unlock(&rlun->lock);
 	}
 
@@ -645,10 +624,10 @@ void pblk_pad_open_blks(struct pblk *pblk)
 	LIST_HEAD(open_list);
 
 	pblk_for_each_lun(pblk, rlun, i) {
-		spin_lock(&rlun->lock_lists);
+		spin_lock(&rlun->lock);
 		list_cut_position(&open_list, &rlun->open_list,
 							rlun->open_list.prev);
-		spin_unlock(&rlun->lock_lists);
+		spin_unlock(&rlun->lock);
 
 		list_for_each_entry_safe(rblk, trblk, &open_list, list) {
 			nr_free_secs = pblk_nr_free_secs(pblk, rblk);
@@ -664,27 +643,27 @@ void pblk_pad_open_blks(struct pblk *pblk)
 				continue;
 			}
 
-			pr_debug("pblk: padding %d sectors in blk:%lu\n",
-						nr_free_secs, rblk->parent->id);
+			pr_debug("pblk: padding %d sectors in blk:%d\n",
+						nr_free_secs, rblk->id);
 
 			pblk_pad_blk(pblk, rblk, nr_free_secs);
 		}
 
-		spin_lock(&rlun->lock_lists);
+		spin_lock(&rlun->lock);
 		list_splice(&open_list, &rlun->open_list);
-		spin_unlock(&rlun->lock_lists);
+		spin_unlock(&rlun->lock);
 	}
 
 	/* Wait until padding completes and blocks are closed */
 	pblk_for_each_lun(pblk, rlun, i) {
 retry:
-		spin_lock(&rlun->lock_lists);
+		spin_lock(&rlun->lock);
 		if (!list_empty(&rlun->open_list)) {
-			spin_unlock(&rlun->lock_lists);
+			spin_unlock(&rlun->lock);
 			io_schedule();
 			goto retry;
 		}
-		spin_unlock(&rlun->lock_lists);
+		spin_unlock(&rlun->lock);
 	}
 }
 
@@ -704,61 +683,73 @@ void pblk_free_blks(struct pblk *pblk)
 	}
 }
 
-void __pblk_put_blk(struct pblk *pblk, struct pblk_block *rblk)
-{
-	struct nvm_block *blk = rblk->parent;
-	struct pblk_lun *rlun = rblk->rlun;
-
-	spin_lock(&rlun->lock);
-	if (blk->state & NVM_BLK_ST_TGT) {
-		list_move_tail(&blk->list, &rlun->mgmt->free_list);
-		pblk_rl_free_blks_inc(pblk, rlun);
-		blk->state = NVM_BLK_ST_FREE;
-	} else if (blk->state & NVM_BLK_ST_BAD) {
-		list_move_tail(&blk->list, &rlun->mgmt->bb_list);
-		blk->state = NVM_BLK_ST_BAD;
-	} else {
-		WARN_ON_ONCE(1);
-		pr_err("pblk: erroneous block type (%lu -> %u)\n",
-							blk->id, blk->state);
-		list_move_tail(&blk->list, &rlun->mgmt->bb_list);
-	}
-	spin_unlock(&rlun->lock);
-}
-
 void pblk_put_blk(struct pblk *pblk, struct pblk_block *rblk)
 {
 	struct pblk_lun *rlun = rblk->rlun;
 
-	__pblk_put_blk(pblk, rblk);
-
-	spin_lock(&rlun->lock_lists);
-	list_del(&rblk->list);
-	spin_unlock(&rlun->lock_lists);
+	spin_lock(&rlun->lock);
+	if (rblk->state & NVM_BLK_ST_TGT) {
+		list_move_tail(&rblk->list, &rlun->free_list);
+		pblk_rl_free_blks_inc(pblk, rlun);
+		rblk->state = NVM_BLK_ST_FREE;
+	} else if (rblk->state & NVM_BLK_ST_BAD) {
+		list_move_tail(&rblk->list, &rlun->bb_list);
+		rblk->state = NVM_BLK_ST_BAD;
+	} else {
+		WARN_ON_ONCE(1);
+		pr_err("pblk: erroneous block type (%d-> %u)\n",
+							rblk->id, rblk->state);
+		list_move_tail(&rblk->list, &rlun->bb_list);
+	}
+	spin_unlock(&rlun->lock);
 
 	pblk_free_blk_meta(pblk, rblk);
 }
 
+// TODO: JAVIER DO MORE TIGHT
+static struct pblk_lun *pblk_ppa_to_lun(struct pblk *pblk, struct ppa_addr p)
+{
+	struct pblk_lun *rlun = NULL;
+	int i;
+
+	for (i = 0; i < pblk->nr_luns; i++) {
+		if (pblk->luns[i].bppa.g.ch == p.g.ch &&
+				pblk->luns[i].bppa.g.lun == p.g.lun) {
+			rlun = &pblk->luns[i];
+			break;
+		}
+	}
+
+	return rlun;
+}
+
+void pblk_mark_bb(struct pblk *pblk, struct ppa_addr ppa)
+{
+	struct nvm_tgt_dev *dev = pblk->dev;
+	struct pblk_lun *rlun;
+	struct pblk_block *rblk;
+
+	rlun = pblk_ppa_to_lun(pblk, ppa);
+	rblk = &rlun->blocks[ppa.g.blk];
+	rblk->state = NVM_BLK_ST_BAD;
+
+	nvm_set_bb_tbl(dev->parent, &ppa, 1, NVM_BLK_T_GRWN_BAD);
+}
+
 void pblk_erase_blk(struct pblk *pblk, struct pblk_block *rblk)
 {
+	struct nvm_tgt_dev *dev = pblk->dev;
 	struct pblk_lun *rlun = rblk->rlun;
 	int flags = pblk_set_progr_mode(pblk, ERASE);
+	struct ppa_addr ppa = pblk_blk_ppa_to_gaddr(pblk->dev, rblk, 0);
 	int error;
 
 	down(&rlun->wr_sem);
-	error = nvm_erase_blk(pblk->dev, rblk->parent, flags);
+	error = nvm_erase_blk(dev, &ppa, flags);
 	up(&rlun->wr_sem);
 
 	if (error) {
-		struct ppa_addr ppa;
-
-		/* Mark block as bad and return it to media manager */
-		ppa = pblk_ppa_to_gaddr(pblk->dev, block_to_addr(pblk, rblk));
-
-		nvm_mark_blk(pblk->dev, ppa, NVM_BLK_ST_BAD);
-		nvm_set_bb_tbl(pblk->dev, &ppa, 1, NVM_BLK_T_GRWN_BAD);
-		/* pblk_retire_blk(pblk, rblk); */
-
+		pblk_mark_bb(pblk, ppa);
 		inc_stat(pblk, &pblk->erase_failed, 0);
 		print_ppa(&ppa, "erase", 0);
 	}

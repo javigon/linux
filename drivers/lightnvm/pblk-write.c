@@ -42,7 +42,7 @@ int pblk_write_setup_s(struct pblk *pblk, struct nvm_rq *rqd,
 	 * pages. This path is though useful for testing on QEMU
 	 */
 #ifdef CONFIG_NVM_DEBUG
-	BUG_ON(pblk->dev->sec_per_pl != 1);
+	BUG_ON(pblk->dev->geo.sec_per_pl != 1);
 #endif
 
 	return pblk_map_rr_page(pblk, c_ctx->sentry, &rqd->ppa_addr,
@@ -69,13 +69,15 @@ int pblk_write_setup_m(struct pblk *pblk, struct nvm_rq *rqd,
 int pblk_write_alloc_rq(struct pblk *pblk, struct nvm_rq *rqd,
 			struct pblk_ctx *ctx, unsigned int nr_secs)
 {
+	struct nvm_tgt_dev *dev = pblk->dev;
+
 	/* Setup write request */
 	rqd->opcode = NVM_OP_PWRITE;
 	rqd->ins = &pblk->instance;
 	rqd->nr_ppas = nr_secs;
 	rqd->flags = pblk_set_progr_mode(pblk, WRITE);
 
-	rqd->meta_list = nvm_dev_dma_alloc(pblk->dev, GFP_KERNEL,
+	rqd->meta_list = nvm_dev_dma_alloc(dev->parent, GFP_KERNEL,
 							&rqd->dma_meta_list);
 	if (!rqd->meta_list)
 		return -ENOMEM;
@@ -84,10 +86,11 @@ int pblk_write_alloc_rq(struct pblk *pblk, struct nvm_rq *rqd,
 		return 0;
 
 	/* TODO: Reuse same dma region for ppa_list and metadata */
-	rqd->ppa_list = nvm_dev_dma_alloc(pblk->dev, GFP_KERNEL,
+	rqd->ppa_list = nvm_dev_dma_alloc(dev->parent, GFP_KERNEL,
 							&rqd->dma_ppa_list);
 	if (!rqd->ppa_list) {
-		nvm_dev_dma_free(pblk->dev, rqd->meta_list, rqd->dma_meta_list);
+		nvm_dev_dma_free(dev->parent, rqd->meta_list,
+							rqd->dma_meta_list);
 		return -ENOMEM;
 	}
 
@@ -180,7 +183,7 @@ static int pblk_calc_secs_to_sync(struct pblk *pblk, unsigned long secs_avail,
 
 int pblk_submit_write(struct pblk *pblk)
 {
-	struct nvm_dev *dev = pblk->dev;
+	struct nvm_tgt_dev *dev = pblk->dev;
 	struct bio *bio;
 	struct nvm_rq *rqd;
 	struct pblk_ctx *ctx;
@@ -307,6 +310,7 @@ static void pblk_sync_buffer(struct pblk *pblk, struct pblk_block *rblk,
 static unsigned long pblk_end_w_bio(struct pblk *pblk, struct nvm_rq *rqd,
 				    struct pblk_ctx *ctx)
 {
+	struct nvm_tgt_dev *dev = pblk->dev;
 	struct pblk_compl_ctx *c_ctx = ctx->c_ctx;
 	struct bio *original_bio;
 	int nr_entries = c_ctx->nr_valid;
@@ -329,9 +333,9 @@ static unsigned long pblk_end_w_bio(struct pblk *pblk, struct nvm_rq *rqd,
 			w_ctx->bio = NULL;
 		}
 
-		if (rblk->rlun->parent->id != cur_lun) {
+		if (rblk->rlun->id != cur_lun) {
 			up(&rblk->rlun->wr_sem);
-			cur_lun = rblk->rlun->parent->id;
+			cur_lun = rblk->rlun->id;
 		}
 	}
 
@@ -342,10 +346,11 @@ static unsigned long pblk_end_w_bio(struct pblk *pblk, struct nvm_rq *rqd,
 	ret = pblk_rb_sync_advance(&pblk->rwb, nr_entries);
 
 	if (nr_entries > 1)
-		nvm_dev_dma_free(pblk->dev, rqd->ppa_list, rqd->dma_ppa_list);
+		nvm_dev_dma_free(dev->parent, rqd->ppa_list, rqd->dma_ppa_list);
 
 	if (rqd->meta_list)
-		nvm_dev_dma_free(pblk->dev, rqd->meta_list, rqd->dma_meta_list);
+		nvm_dev_dma_free(dev->parent, rqd->meta_list,
+							rqd->dma_meta_list);
 
 	bio_put(rqd->bio);
 	pblk_free_rqd(pblk, rqd, WRITE);
@@ -414,7 +419,6 @@ retry:
  */
 static void pblk_end_w_fail(struct pblk *pblk, struct nvm_rq *rqd)
 {
-	struct nvm_dev *dev = pblk->dev;
 	void *comp_bits = &rqd->ppa_status;
 	struct pblk_ctx *ctx = pblk_set_ctx(pblk, rqd);
 	struct pblk_compl_ctx *c_ctx = ctx->c_ctx;
@@ -482,8 +486,7 @@ static void pblk_end_w_fail(struct pblk *pblk, struct nvm_rq *rqd)
 		if (ppa_cmp_blk(ppa, prev_ppa))
 			continue;
 
-		/* Mark block as bad in the media manager */
-		nvm_mark_blk(dev, ppa, NVM_BLK_ST_BAD);
+		pblk_mark_bb(pblk, ppa);
 
 		prev_ppa.ppa = ppa.ppa;
 		pblk_run_recovery(pblk, w_ctx->ppa.rblk);
@@ -502,7 +505,7 @@ out:
 
 void pblk_end_io_write(struct pblk *pblk, struct nvm_rq *rqd)
 {
-	struct nvm_dev *dev = pblk->dev;
+	struct nvm_tgt_dev *dev = pblk->dev;
 	struct pblk_ctx *ctx;
 
 	if (rqd->error) {
