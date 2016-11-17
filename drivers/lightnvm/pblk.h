@@ -358,6 +358,8 @@ struct pblk {
 	struct nvm_tgt_dev *dev;
 	struct gendisk *disk;
 
+	struct kobject kobj;
+
 	int nr_luns;
 	struct pblk_lun *luns;
 
@@ -669,12 +671,8 @@ void pblk_rl_free_blks_dec(struct pblk *pblk, struct pblk_lun *rlun);
 /*
  * pblk sysfs
  */
-void pblk_sysfs_init(struct nvm_target *t);
-void pblk_sysfs_exit(struct nvm_target *t);
-ssize_t pblk_sysfs_show(struct nvm_target *t, struct attribute *attr,
-			char *buf);
-ssize_t pblk_sysfs_store(struct nvm_target *t, struct attribute *attr,
-			 const char *buf, size_t len);
+int pblk_sysfs_init(struct gendisk *tdisk);
+void pblk_sysfs_exit(struct pblk *pblk);
 
 static inline int nvm_addr_in_cache(struct ppa_addr gp)
 {

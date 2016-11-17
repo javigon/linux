@@ -488,6 +488,7 @@ static void pblk_free(struct pblk *pblk)
 	pblk_map_free(pblk);
 	pblk_writer_free(pblk);
 	pblk_rwb_free(pblk);
+	pblk_sysfs_exit(pblk);
 
 	kfree(pblk);
 }
@@ -623,11 +624,7 @@ static struct nvm_tgt_type tt_pblk = {
 	.init		= pblk_init,
 	.exit		= pblk_exit,
 
-	//TODO: JAVIER: REDO
-	/* .sysfs_init	= pblk_sysfs_init, */
-	/* .sysfs_exit	= pblk_sysfs_exit, */
-	/* .sysfs_show	= pblk_sysfs_show, */
-	/* .sysfs_store	= pblk_sysfs_store, */
+	.sysfs_init	= pblk_sysfs_init,
 };
 
 static void *pblk_init(struct nvm_tgt_dev *dev, struct gendisk *tdisk)

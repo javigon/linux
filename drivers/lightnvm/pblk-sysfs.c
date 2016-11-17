@@ -714,13 +714,10 @@ static struct attribute *pblk_attrs[] = {
 	NULL,
 };
 
-static const struct attribute_group pblk_attr_group = {
-	.attrs		= pblk_attrs,
-};
-
-ssize_t pblk_sysfs_show(struct nvm_target *t, struct attribute *attr, char *buf)
+static ssize_t pblk_sysfs_show(struct kobject *kobj, struct attribute *attr,
+			       char *buf)
 {
-	struct pblk *pblk = t->disk->private_data;
+	struct pblk *pblk = container_of(kobj, struct pblk, kobj);
 
 	if (strcmp(attr->name, "luns_active") == 0)
 		return pblk_sysfs_luns_active_show(pblk, buf);
@@ -751,10 +748,10 @@ ssize_t pblk_sysfs_show(struct nvm_target *t, struct attribute *attr, char *buf)
 	return 0;
 }
 
-ssize_t pblk_sysfs_store(struct nvm_target *t, struct attribute *attr,
-			 const char *buf, size_t len)
+static ssize_t pblk_sysfs_store(struct kobject *kobj, struct attribute *attr,
+			        const char *buf, size_t len)
 {
-	struct pblk *pblk = t->disk->private_data;
+	struct pblk *pblk = container_of(kobj, struct pblk, kobj);
 
 	if (strcmp(attr->name, "luns_active") == 0)
 		return pblk_sysfs_luns_active_store(pblk, buf, len);
@@ -780,17 +777,39 @@ ssize_t pblk_sysfs_store(struct nvm_target *t, struct attribute *attr,
 	return 0;
 }
 
-void pblk_sysfs_init(struct nvm_target *t)
+static const struct sysfs_ops pblk_sysfs_ops = {
+	.show = pblk_sysfs_show,
+	.store = pblk_sysfs_store,
+};
+
+static struct kobj_type pblk_ktype = {
+	.sysfs_ops	= &pblk_sysfs_ops,
+	.default_attrs	= pblk_attrs,
+};
+
+int pblk_sysfs_init(struct gendisk *tdisk)
 {
-	//JAVIER
-	/* if (sysfs_create_group(&t->kobj, &pblk_attr_group)) */
-		/* pr_warn("%s: failed to create sysfs group\n", */
-			/* t->disk->disk_name); */
+	struct pblk *pblk = tdisk->private_data;
+	struct device *parent_dev = disk_to_dev(pblk->disk);
+	int ret;
+
+	ret = kobject_init_and_add(&pblk->kobj, &pblk_ktype,
+					kobject_get(&parent_dev->kobj),
+					"%s", "lightnvm");
+	if (ret) {
+		pr_err("pblk: could not register %s/lightnvm - name in use\n",
+						tdisk->disk_name);
+		return ret;
+	}
+
+	kobject_uevent(&pblk->kobj, KOBJ_ADD);
+	return 0;
 }
 
-void pblk_sysfs_exit(struct nvm_target *t)
+void pblk_sysfs_exit(struct pblk *pblk)
 {
-	//JAVIER
-	/* sysfs_remove_group(&t->kobj, &pblk_attr_group); */
+	kobject_uevent(&pblk->kobj, KOBJ_REMOVE);
+	kobject_del(&pblk->kobj);
+	kobject_put(&pblk->kobj);
 }
 
