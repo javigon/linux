@@ -203,7 +203,7 @@ static int pblk_fill_partial_read_bio(struct pblk *pblk, struct bio *bio,
 
 #ifdef CONFIG_NVM_DEBUG
 	ppa_list = (rqd->nr_ppas > 1) ? rqd->ppa_list : &rqd->ppa_addr;
-	if (nvm_boundary_checks(pblk->dev, ppa_list, rqd->nr_ppas))
+	if (pblk_boundary_checks(pblk->dev, ppa_list, rqd->nr_ppas))
 		WARN_ON(1);
 #endif
 
@@ -283,7 +283,7 @@ static int __pblk_submit_read(struct pblk *pblk, struct nvm_rq *rqd,
 		struct ppa_addr *ppa_list;
 
 		ppa_list = (rqd->nr_ppas > 1) ? rqd->ppa_list : &rqd->ppa_addr;
-		if (nvm_boundary_checks(pblk->dev, ppa_list, rqd->nr_ppas))
+		if (pblk_boundary_checks(pblk->dev, ppa_list, rqd->nr_ppas))
 			WARN_ON(1);
 #endif
 

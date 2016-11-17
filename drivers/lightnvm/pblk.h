@@ -907,6 +907,51 @@ static inline struct ppa_addr pblk_blk_ppa_to_gaddr(struct nvm_tgt_dev *dev,
 	return p;
 }
 
+static inline int pblk_boundary_checks(struct nvm_tgt_dev *tgt_dev,
+				       struct ppa_addr *ppas, int nr_ppas)
+{
+	struct nvm_geo *geo = &tgt_dev->geo;
+	struct ppa_addr *ppa;
+	int i;
+
+	for (i = 0; i < nr_ppas; i++) {
+		ppa = &ppas[i];
+
+		if (ppa->g.ch < geo->nr_chnls &&
+				ppa->g.lun < geo->nr_luns &&
+				ppa->g.pl < geo->nr_planes &&
+				ppa->g.blk < geo->blks_per_lun &&
+				ppa->g.pg < geo->pgs_per_blk &&
+				ppa->g.sec < geo->sec_per_pg)
+			continue;
+
+#ifdef CONFIG_NVM_DEBUG
+		if (ppa->c.is_cached)
+			pr_err("nvm: ppa oob(cacheline:%llu)\n",
+							(u64)ppa->c.line);
+		else
+		pr_err("nvm: ppa oob(ch:%u,lun:%u,pl:%u,blk:%u,pg:%u,sec:%u\n)",
+				ppa->g.ch, ppa->g.lun, ppa->g.pl,
+				ppa->g.blk, ppa->g.pg, ppa->g.sec);
+#endif
+		return 1;
+	}
+	return 0;
+}
+
+static inline void print_ppa(struct ppa_addr *p, char *msg, int error)
+{
+	if (p->c.is_cached) {
+		pr_err("ppa: (%s: %x) cache line: %llu\n",
+				msg, error, (u64)p->c.line);
+	} else {
+		pr_err("ppa: (%s: %x):ch:%d,lun:%d,blk:%d,pg:%d,pl:%d,sec:%d\n",
+			msg, error,
+			p->g.ch, p->g.lun, p->g.blk,
+			p->g.pg, p->g.pl, p->g.sec);
+	}
+}
+
 static inline unsigned int pblk_get_bi_idx(struct bio *bio)
 {
 	return bio->bi_iter.bi_idx;

@@ -141,7 +141,7 @@ static int pblk_setup_rec_rq(struct pblk *pblk, struct nvm_rq *rqd,
 
 #ifdef CONFIG_NVM_DEBUG
 	ppa_list = (rqd->nr_ppas > 1) ? rqd->ppa_list : &rqd->ppa_addr;
-	if (nvm_boundary_checks(pblk->dev, rqd->ppa_list, rqd->nr_ppas))
+	if (pblk_boundary_checks(pblk->dev, rqd->ppa_list, rqd->nr_ppas))
 		WARN_ON(1);
 #endif
 out:
@@ -359,7 +359,7 @@ int pblk_recov_read(struct pblk *pblk, struct pblk_block *rblk,
 
 #ifdef CONFIG_NVM_DEBUG
 	ppa_list = (rqd->nr_ppas > 1) ? rqd->ppa_list : &rqd->ppa_addr;
-	if (nvm_boundary_checks(dev, ppa_list, rqd->nr_ppas))
+	if (pblk_boundary_checks(dev, ppa_list, rqd->nr_ppas))
 		WARN_ON(1);
 #endif
 
@@ -519,7 +519,7 @@ int pblk_recov_scan_blk(struct pblk *pblk, struct pblk_block *rblk)
 			pblk_update_map(pblk, lba_list[i], rblk, ppa);
 
 #ifdef CONFIG_NVM_DEBUG
-		if (nvm_boundary_checks(dev, &ppa, 1))
+		if (pblk_boundary_checks(dev, &ppa, 1))
 			WARN_ON(1);
 #endif
 		/* TODO: when not padding the whole block, mark as invalid */
@@ -646,7 +646,7 @@ void __pblk_close_rblk(struct pblk *pblk, struct pblk_block *rblk,
 
 #ifdef CONFIG_NVM_DEBUG
 	ppa_list = (rqd->nr_ppas > 1) ? rqd->ppa_list : &rqd->ppa_addr;
-	if (nvm_boundary_checks(dev, ppa_list, rqd->nr_ppas))
+	if (pblk_boundary_checks(dev, ppa_list, rqd->nr_ppas))
 		WARN_ON(1);
 
 	BUG_ON(rqd->nr_ppas != nr_rec_ppas);
@@ -755,7 +755,7 @@ void pblk_recov_blk_meta_sysfs(struct pblk *pblk, u64 value)
 		print_ppa(&rqd->ppa_list[i], "RECOVERY", i);
 
 	ppa_list = (rqd->nr_ppas > 1) ? rqd->ppa_list : &rqd->ppa_addr;
-	if (nvm_boundary_checks(dev, ppa_list, rqd->nr_ppas)) {
+	if (pblk_boundary_checks(dev, ppa_list, rqd->nr_ppas)) {
 		pr_err("pblk: corrupt ppa list\n");
 		return;
 	}

@@ -248,7 +248,7 @@ int pblk_map_page(struct pblk *pblk, struct pblk_block *rblk,
 	spin_unlock(&rblk->lock);
 
 #ifdef CONFIG_NVM_DEBUG
-	if (nvm_boundary_checks(pblk->dev, ppa_list, nr_secs))
+	if (pblk_boundary_checks(pblk->dev, ppa_list, nr_secs))
 		WARN_ON(1);
 #endif
 

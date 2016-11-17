@@ -139,7 +139,7 @@ static int pblk_setup_w_rq(struct pblk *pblk, struct nvm_rq *rqd,
 
 #ifdef CONFIG_NVM_DEBUG
 	ppa_list = (rqd->nr_ppas > 1) ? rqd->ppa_list : &rqd->ppa_addr;
-	if (nvm_boundary_checks(pblk->dev, ppa_list, rqd->nr_ppas))
+	if (pblk_boundary_checks(pblk->dev, ppa_list, rqd->nr_ppas))
 		WARN_ON(1);
 #endif
 
