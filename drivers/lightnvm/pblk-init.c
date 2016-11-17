@@ -383,6 +383,12 @@ static int pblk_luns_init(struct pblk *pblk, struct ppa_addr *luns)
 				/* max_write_ppas : nvm_max_phys_sects(dev); */
 	pblk->max_write_pgs = pblk->min_write_pgs;
 
+	/* TODO: Implement unbalanced LUN support */
+	if (geo->luns_per_chnl < 0) {
+		pr_err("pblk: unbalanced LUN config. not supported yet\n");
+		return -EINVAL;
+	}
+
 	if (pblk->max_write_pgs > PBLK_MAX_REQ_ADDRS) {
 		pr_err("pblk: device exposes too many sectors per write");
 		return -EINVAL;
@@ -411,16 +417,16 @@ static int pblk_luns_init(struct pblk *pblk, struct ppa_addr *luns)
 
 	/* 1:1 mapping */
 	for (i = 0; i < pblk->nr_luns; i++) {
-		/* Align lun list to the channel each lun belongs to */
-		//TODO: JAVIER: Stripe across LUNS
-		/* int ch = (lun_begin + i) % dev->nr_chnls; */
-		/* int lun_raw = (lun_begin + i) / dev->nr_chnls; */
-		/* int lunid = lun_raw + ch * dev->luns_per_chnl; */
+		/* Stripe across channels as much as we can*/
+		int ch = i % geo->nr_chnls;
+		int lun_raw = i / geo->nr_chnls;
+		int lunid = lun_raw + ch * geo->luns_per_chnl;
+		struct ppa_addr ppa = luns[lunid];
 
 		rlun = &pblk->luns[i];
 		rlun->pblk = pblk;
 		rlun->id = i;
-		pblk_set_lun_ppa(rlun, luns[i]);
+		pblk_set_lun_ppa(rlun, ppa);
 		rlun->blocks = vzalloc(sizeof(struct pblk_block) *
 							geo->blks_per_lun);
 		if (!rlun->blocks) {
