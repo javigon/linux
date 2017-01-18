@@ -430,7 +430,7 @@ static void rrpc_block_gc(struct work_struct *work)
 	ppa.g.lun = rlun->bppa.g.lun;
 	ppa.g.blk = rblk->id;
 
-	if (nvm_erase_blk(dev, &ppa, 0))
+	if (nvm_erase_blk_ppa(dev, &ppa, 0))
 		goto put_back;
 
 	rrpc_put_blk(rrpc, rblk);

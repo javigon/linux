@@ -525,7 +525,7 @@ static int nvme_nvm_submit_io(struct nvm_dev *dev, struct nvm_rq *rqd)
 	return 0;
 }
 
-static int nvme_nvm_erase_block(struct nvm_dev *dev, struct nvm_rq *rqd)
+static int nvme_nvm_erase_block_sync(struct nvm_dev *dev, struct nvm_rq *rqd)
 {
 	struct request_queue *q = dev->q;
 	struct nvme_ns *ns = q->queuedata;
@@ -538,6 +538,43 @@ static int nvme_nvm_erase_block(struct nvm_dev *dev, struct nvm_rq *rqd)
 	c.erase.control = cpu_to_le16(rqd->flags);
 
 	return nvme_submit_sync_cmd(q, (struct nvme_command *)&c, NULL, 0);
+}
+
+static int nvme_nvm_erase_block_async(struct nvm_dev *dev, struct nvm_rq *rqd)
+{
+	struct request_queue *q = dev->q;
+	struct nvme_ns *ns = q->queuedata;
+	struct request *rq;
+	struct nvme_nvm_command *cmd;
+
+	cmd = kzalloc(sizeof(struct nvme_nvm_command), GFP_KERNEL);
+	if (!cmd)
+		return -ENOMEM;
+
+	rq = nvme_alloc_request(q, (struct nvme_command *)cmd, 0, NVME_QID_ANY);
+	if (IS_ERR(rq)) {
+		kfree(cmd);
+		return -ENOMEM;
+	}
+	rq->cmd_flags &= ~REQ_FAILFAST_DRIVER;
+	rq->__data_len = 0;
+
+	nvme_nvm_rqtocmd(rq, rqd, ns, cmd);
+
+	rq->end_io_data = rqd;
+
+	blk_execute_rq_nowait(q, NULL, rq, 0, nvme_nvm_end_io);
+
+	return 0;
+}
+
+static int nvme_nvm_erase_block(struct nvm_dev *dev, struct nvm_rq *rqd,
+				int sync)
+{
+	if (sync == NVM_COMMAND_SYNC)
+		return nvme_nvm_erase_block_sync(dev, rqd);
+	else
+		return nvme_nvm_erase_block_async(dev, rqd);
 }
 
 static void *nvme_nvm_create_dma_pool(struct nvm_dev *nvmdev, char *name)

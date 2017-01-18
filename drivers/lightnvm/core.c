@@ -617,7 +617,23 @@ int nvm_submit_io(struct nvm_tgt_dev *tgt_dev, struct nvm_rq *rqd)
 }
 EXPORT_SYMBOL(nvm_submit_io);
 
-int nvm_erase_blk(struct nvm_tgt_dev *tgt_dev, struct ppa_addr *ppas, int flags)
+int nvm_erase_blk_rq(struct nvm_tgt_dev *tgt_dev, struct nvm_rq *rqd)
+{
+	struct nvm_dev *dev = tgt_dev->parent;
+
+	if (!dev->ops->erase_block)
+		return 0;
+
+	nvm_rq_tgt_to_dev(tgt_dev, rqd);
+	rqd->dev = tgt_dev;
+	rqd->bio = NULL;
+
+	return dev->ops->erase_block(dev, rqd, NVM_COMMAND_ASYNC);
+}
+EXPORT_SYMBOL(nvm_erase_blk_rq);
+
+int nvm_erase_blk_ppa(struct nvm_tgt_dev *tgt_dev, struct ppa_addr *ppas,
+		      int flags)
 {
 	struct nvm_dev *dev = tgt_dev->parent;
 	struct nvm_rq rqd;
@@ -625,8 +641,6 @@ int nvm_erase_blk(struct nvm_tgt_dev *tgt_dev, struct ppa_addr *ppas, int flags)
 
 	if (!dev->ops->erase_block)
 		return 0;
-
-	nvm_map_to_dev(tgt_dev, ppas);
 
 	memset(&rqd, 0, sizeof(struct nvm_rq));
 
@@ -638,13 +652,13 @@ int nvm_erase_blk(struct nvm_tgt_dev *tgt_dev, struct ppa_addr *ppas, int flags)
 
 	rqd.flags = flags;
 
-	ret = dev->ops->erase_block(dev, &rqd);
+	ret = dev->ops->erase_block(dev, &rqd, NVM_COMMAND_SYNC);
 
 	nvm_free_rqd_ppalist(dev, &rqd);
 
 	return ret;
 }
-EXPORT_SYMBOL(nvm_erase_blk);
+EXPORT_SYMBOL(nvm_erase_blk_ppa);
 
 int nvm_get_l2p_tbl(struct nvm_tgt_dev *tgt_dev, u64 slba, u32 nlb,
 		    nvm_l2p_update_fn *update_l2p, void *priv)
