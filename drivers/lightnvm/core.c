@@ -709,6 +709,14 @@ static void nvm_free_rqd_ppalist(struct nvm_tgt_dev *tgt_dev,
 	nvm_dev_dma_free(tgt_dev->parent, rqd->ppa_list, rqd->dma_ppa_list);
 }
 
+int nvm_get_chunk_log_page(struct nvm_tgt_dev *tgt_dev,
+			   struct nvm_chunk_log_page *log,
+			   unsigned long off, unsigned long len)
+{
+	struct nvm_dev *dev = tgt_dev->parent;
+
+	return dev->ops->get_chunk_log_page(tgt_dev->parent, log, off, len);
+}
 
 int nvm_set_tgt_bb_tbl(struct nvm_tgt_dev *tgt_dev, struct ppa_addr *ppas,
 		       int nr_ppas, int type)
@@ -881,6 +889,7 @@ static int nvm_core_init(struct nvm_dev *dev)
 	geo->sec_per_chk = dev_geo->clba;
 	geo->sec_per_lun = geo->sec_per_chk * geo->nr_chks;
 	geo->all_luns = geo->nr_luns * geo->nr_chnls;
+	geo->all_chunks = geo->all_luns * geo->nr_chks;
 
 	/* 1.2 spec device geometry values */
 	geo->dom = dev_geo->dom;
