@@ -162,6 +162,40 @@ static ssize_t pblk_sysfs_ppaf(struct pblk *pblk, char *page)
 	return sz;
 }
 
+static ssize_t pblk_sysfs_line_state_show(struct pblk *pblk, char *page)
+{
+	struct pblk_line_meta *lm = &pblk->lm;
+	struct pblk_line_mgmt *l_mg = &pblk->l_mg;
+	struct pblk_line *line;
+	int line_id = atomic_read(&l_mg->sysfs_line_state);
+	ssize_t sz = 0;
+	int i;
+
+	if (line_id < 0 || line_id >= l_mg->nr_lines)
+		return 0;
+
+	sz = snprintf(page, PAGE_SIZE,
+		"line\tchunk\tstate\ttype\twear-index\tslba\t\tcnlb\twp\n");
+
+	line = &pblk->lines[line_id];
+
+	for (i = 0; i < lm->blk_per_line; i++) {
+		struct pblk_chunk *chunk = &line->chks[i];
+
+		sz += snprintf(page + sz, PAGE_SIZE - sz,
+				"%d\t%d\t%d\t%d\t%d\t\t%llu\t\t%llu\t%llu\n",
+				line->id, i,
+				chunk->state,
+				chunk->type,
+				chunk->wi,
+				chunk->slba,
+				chunk->cnlb,
+				chunk->wp);
+	}
+
+	return sz;
+}
+
 static ssize_t pblk_sysfs_lines(struct pblk *pblk, char *page)
 {
 	struct nvm_tgt_dev *dev = pblk->dev;
@@ -411,6 +445,29 @@ static ssize_t pblk_sysfs_stats_debug(struct pblk *pblk, char *page)
 }
 #endif
 
+
+static ssize_t pblk_sysfs_line_state_store(struct pblk *pblk, const char *page,
+					   size_t len)
+{
+	struct pblk_line_mgmt *l_mg = &pblk->l_mg;
+	size_t c_len;
+	int line_id;
+
+	c_len = strcspn(page, "\n");
+	if (c_len >= len)
+		return -EINVAL;
+
+	if (kstrtouint(page, 0, &line_id))
+		return -EINVAL;
+
+	if (line_id < 0 || line_id >= l_mg->nr_lines)
+		return -EINVAL;
+
+	atomic_set(&l_mg->sysfs_line_state, line_id);
+
+	return len;
+}
+
 static ssize_t pblk_sysfs_gc_force(struct pblk *pblk, const char *page,
 				   size_t len)
 {
@@ -542,6 +599,11 @@ static struct attribute sys_lines_info_attr = {
 	.mode = 0444,
 };
 
+static struct attribute sys_line_state_attr = {
+	.name = "line_state",
+	.mode = 0644,
+};
+
 static struct attribute sys_gc_force = {
 	.name = "gc_force",
 	.mode = 0200,
@@ -585,6 +647,7 @@ static struct attribute *pblk_attrs[] = {
 	&sys_stats_ppaf_attr,
 	&sys_lines_attr,
 	&sys_lines_info_attr,
+	&sys_line_state_attr,
 	&sys_write_amp_mileage,
 	&sys_write_amp_trip,
 	&sys_padding_dist,
@@ -615,6 +678,8 @@ static ssize_t pblk_sysfs_show(struct kobject *kobj, struct attribute *attr,
 		return pblk_sysfs_lines(pblk, buf);
 	else if (strcmp(attr->name, "lines_info") == 0)
 		return pblk_sysfs_lines_info(pblk, buf);
+	else if (strcmp(attr->name, "line_state") == 0)
+		return pblk_sysfs_line_state_show(pblk, buf);
 	else if (strcmp(attr->name, "max_sec_per_write") == 0)
 		return pblk_sysfs_get_sec_per_write(pblk, buf);
 	else if (strcmp(attr->name, "write_amp_mileage") == 0)
@@ -641,6 +706,8 @@ static ssize_t pblk_sysfs_store(struct kobject *kobj, struct attribute *attr,
 		return pblk_sysfs_set_sec_per_write(pblk, buf, len);
 	else if (strcmp(attr->name, "write_amp_trip") == 0)
 		return pblk_sysfs_set_write_amp_trip(pblk, buf, len);
+	else if (strcmp(attr->name, "line_state") == 0)
+		return pblk_sysfs_line_state_store(pblk, buf, len);
 	else if (strcmp(attr->name, "padding_dist") == 0)
 		return pblk_sysfs_set_padding_dist(pblk, buf, len);
 	return 0;

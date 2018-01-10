@@ -273,6 +273,7 @@ enum {
 	NVM_CHK_ST_CLOSED =	1 << 1,
 	NVM_CHK_ST_OPEN =	1 << 2,
 	NVM_CHK_ST_OFFLINE =	1 << 3,
+	NVM_CHK_ST_HOST_USE =	1 << 7,
 
 	/* Chunk types */
 	NVM_CHK_TP_W_SEQ =	1 << 0,

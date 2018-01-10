@@ -201,6 +201,8 @@ struct pblk_rb {
 
 struct pblk_lun {
 	struct ppa_addr bppa;
+	struct ppa_addr chunk_bppa;
+
 	struct semaphore wr_sem;
 };
 
@@ -297,6 +299,7 @@ enum {
 	PBLK_LINETYPE_DATA = 2,
 
 	/* Line state */
+	PBLK_LINESTATE_NEW = 9,
 	PBLK_LINESTATE_FREE = 10,
 	PBLK_LINESTATE_OPEN = 11,
 	PBLK_LINESTATE_CLOSED = 12,
@@ -411,6 +414,15 @@ struct pblk_smeta {
 	struct line_smeta *buf;		/* smeta buffer in persistent format */
 };
 
+struct pblk_chunk {
+	int state;
+	int type;
+	int wi;
+	u64 slba;
+	u64 cnlb;
+	u64 wp;
+};
+
 struct pblk_line {
 	struct pblk *pblk;
 	unsigned int id;		/* Line number corresponds to the
@@ -424,6 +436,8 @@ struct pblk_line {
 	struct list_head list;		/* Free, GC lists */
 
 	unsigned long *lun_bitmap;	/* Bitmap for LUNs mapped in line */
+
+	struct pblk_chunk *chks;	/* Chunks forming line */
 
 	struct pblk_smeta *smeta;	/* Start metadata */
 	struct pblk_emeta *emeta;	/* End medatada */
@@ -511,6 +525,8 @@ struct pblk_line_mgmt {
 
 	unsigned long d_seq_nr;		/* Data line unique sequence number */
 	unsigned long l_seq_nr;		/* Log line unique sequence number */
+
+	atomic_t sysfs_line_state;	/* Line being monitored in sysfs */
 
 	spinlock_t free_lock;
 	spinlock_t close_lock;
@@ -741,6 +757,10 @@ void pblk_set_sec_per_write(struct pblk *pblk, int sec_per_write);
 int pblk_setup_w_rec_rq(struct pblk *pblk, struct nvm_rq *rqd,
 			struct pblk_c_ctx *c_ctx);
 void pblk_discard(struct pblk *pblk, struct bio *bio);
+struct nvm_chunk_log_page *pblk_chunk_get_info(struct pblk *pblk);
+struct nvm_chunk_log_page *pblk_chunk_get_off(struct pblk *pblk,
+					      struct nvm_chunk_log_page *lp,
+					      struct ppa_addr ppa);
 void pblk_log_write_err(struct pblk *pblk, struct nvm_rq *rqd);
 void pblk_log_read_err(struct pblk *pblk, struct nvm_rq *rqd);
 int pblk_submit_io(struct pblk *pblk, struct nvm_rq *rqd);
