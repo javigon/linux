@@ -16,25 +16,49 @@ enum {
 	NVM_IOTYPE_GC = 1,
 };
 
-#define NVM_BLK_BITS (16)
-#define NVM_PG_BITS  (16)
-#define NVM_SEC_BITS (8)
-#define NVM_PL_BITS  (8)
-#define NVM_LUN_BITS (8)
-#define NVM_CH_BITS  (7)
+enum {
+	NVM_OCSSD_SPEC_12 = 1,
+	NVM_OCSSD_SPEC_20 = 2,
+};
+
+/* 1.2 format */
+#define NVM_12_CH_BITS  (8)
+#define NVM_12_LUN_BITS (8)
+#define NVM_12_BLK_BITS (16)
+#define NVM_12_PG_BITS  (16)
+#define NVM_12_PL_BITS  (4)
+#define NVM_12_SEC_BITS (4)
+#define NVM_12_RESERVED (8)
+
+/* 2.0 format */
+#define NVM_20_CH_BITS  (8)
+#define NVM_20_LUN_BITS (8)
+#define NVM_20_CHK_BITS (16)
+#define NVM_20_SEC_BITS (24)
+#define NVM_20_RESERVED (8)
 
 struct ppa_addr {
 	/* Generic structure for all addresses */
 	union {
+		/* 1.2 device format */
 		struct {
-			u64 blk		: NVM_BLK_BITS;
-			u64 pg		: NVM_PG_BITS;
-			u64 sec		: NVM_SEC_BITS;
-			u64 pl		: NVM_PL_BITS;
-			u64 lun		: NVM_LUN_BITS;
-			u64 ch		: NVM_CH_BITS;
+			u64 ch		: NVM_12_CH_BITS;
+			u64 lun		: NVM_12_LUN_BITS;
+			u64 blk		: NVM_12_BLK_BITS;
+			u64 pg		: NVM_12_PG_BITS;
+			u64 pl		: NVM_12_PL_BITS;
+			u64 sec		: NVM_12_SEC_BITS;
 			u64 reserved	: 1;
 		} g;
+
+		/* 2.0 device format */
+		struct {
+			u64 ch		: NVM_20_CH_BITS;
+			u64 lun		: NVM_20_LUN_BITS;
+			u64 chk		: NVM_20_CHK_BITS;
+			u64 sec		: NVM_20_SEC_BITS;
+			u64 reserved	: NVM_20_RESERVED;
+		} m;
 
 		struct {
 			u64 line	: 63;
@@ -185,19 +209,47 @@ struct nvm_id_group {
 	u16	fpg_sz;
 };
 
-struct nvm_addr_format {
-	u8	ch_offset;
+struct nvm_addr_format_12 {
 	u8	ch_len;
-	u8	lun_offset;
 	u8	lun_len;
-	u8	pln_offset;
-	u8	pln_len;
-	u8	blk_offset;
 	u8	blk_len;
-	u8	pg_offset;
 	u8	pg_len;
-	u8	sect_offset;
-	u8	sect_len;
+	u8	pln_len;
+	u8	sec_len;
+
+	u8	ch_offset;
+	u8	lun_offset;
+	u8	blk_offset;
+	u8	pg_offset;
+	u8	pln_offset;
+	u8	sec_offset;
+
+	u64	ch_mask;
+	u64	lun_mask;
+	u64	blk_mask;
+	u64	pg_mask;
+	u64	pln_mask;
+	u64	sec_mask;
+};
+
+struct nvm_addr_format {
+	u8	ch_len;
+	u8	lun_len;
+	u8	chk_len;
+	u8	sec_len;
+	u8	rsv_len[2];
+
+	u8	ch_offset;
+	u8	lun_offset;
+	u8	chk_offset;
+	u8	sec_offset;
+	u8	rsv_off[2];
+
+	u64	ch_mask;
+	u64	lun_mask;
+	u64	chk_mask;
+	u64	sec_mask;
+	u64	rsv_mask[2];
 };
 
 struct nvm_id {
@@ -205,7 +257,9 @@ struct nvm_id {
 	u8	vmnt;
 	u32	cap;
 	u32	dom;
-	struct nvm_addr_format ppaf;
+
+	struct nvm_addr_format addrf;
+
 	struct nvm_id_group grp;
 } __packed;
 
@@ -272,9 +326,10 @@ enum {
 	NVM_BLK_ST_BAD =	0x8,	/* Bad block */
 };
 
-
 /* Device generic information */
 struct nvm_geo {
+	int version;
+
 	/* generic geometry */
 	int nr_chnls;
 	int all_luns; /* across channels */
@@ -297,7 +352,7 @@ struct nvm_geo {
 
 	int op;
 
-	struct nvm_addr_format ppaf;
+	struct nvm_addr_format addrf;
 
 	/* Legacy 1.2 specific geometry */
 	int plane_mode; /* drive device in single, double or quad mode */
@@ -359,12 +414,24 @@ static inline struct ppa_addr generic_to_dev_addr(struct nvm_tgt_dev *tgt_dev,
 	struct nvm_geo *geo = &tgt_dev->geo;
 	struct ppa_addr l;
 
-	l.ppa = ((u64)r.g.blk) << geo->ppaf.blk_offset;
-	l.ppa |= ((u64)r.g.pg) << geo->ppaf.pg_offset;
-	l.ppa |= ((u64)r.g.sec) << geo->ppaf.sect_offset;
-	l.ppa |= ((u64)r.g.pl) << geo->ppaf.pln_offset;
-	l.ppa |= ((u64)r.g.lun) << geo->ppaf.lun_offset;
-	l.ppa |= ((u64)r.g.ch) << geo->ppaf.ch_offset;
+	if (geo->version == NVM_OCSSD_SPEC_12) {
+		struct nvm_addr_format_12 *ppaf =
+				(struct nvm_addr_format_12 *)&geo->addrf;
+
+		l.ppa = ((u64)r.g.ch) << ppaf->ch_offset;
+		l.ppa |= ((u64)r.g.lun) << ppaf->lun_offset;
+		l.ppa |= ((u64)r.g.blk) << ppaf->blk_offset;
+		l.ppa |= ((u64)r.g.pg) << ppaf->pg_offset;
+		l.ppa |= ((u64)r.g.pl) << ppaf->pln_offset;
+		l.ppa |= ((u64)r.g.sec) << ppaf->sec_offset;
+	} else {
+		struct nvm_addr_format *lbaf = &geo->addrf;
+
+		l.ppa = ((u64)r.m.ch) << lbaf->ch_offset;
+		l.ppa |= ((u64)r.m.lun) << lbaf->lun_offset;
+		l.ppa |= ((u64)r.m.chk) << lbaf->chk_offset;
+		l.ppa |= ((u64)r.m.sec) << lbaf->sec_offset;
+	}
 
 	return l;
 }
@@ -376,21 +443,25 @@ static inline struct ppa_addr dev_to_generic_addr(struct nvm_tgt_dev *tgt_dev,
 	struct ppa_addr l;
 
 	l.ppa = 0;
-	/*
-	 * (r.ppa << X offset) & X len bitmask. X eq. blk, pg, etc.
-	 */
-	l.g.blk = (r.ppa >> geo->ppaf.blk_offset) &
-					(((1 << geo->ppaf.blk_len) - 1));
-	l.g.pg |= (r.ppa >> geo->ppaf.pg_offset) &
-					(((1 << geo->ppaf.pg_len) - 1));
-	l.g.sec |= (r.ppa >> geo->ppaf.sect_offset) &
-					(((1 << geo->ppaf.sect_len) - 1));
-	l.g.pl |= (r.ppa >> geo->ppaf.pln_offset) &
-					(((1 << geo->ppaf.pln_len) - 1));
-	l.g.lun |= (r.ppa >> geo->ppaf.lun_offset) &
-					(((1 << geo->ppaf.lun_len) - 1));
-	l.g.ch |= (r.ppa >> geo->ppaf.ch_offset) &
-					(((1 << geo->ppaf.ch_len) - 1));
+
+	if (geo->version == NVM_OCSSD_SPEC_12) {
+		struct nvm_addr_format_12 *ppaf =
+				(struct nvm_addr_format_12 *)&geo->addrf;
+
+		l.g.ch = (r.ppa & ppaf->ch_mask) >> ppaf->ch_offset;
+		l.g.lun = (r.ppa & ppaf->lun_mask) >> ppaf->lun_offset;
+		l.g.blk = (r.ppa & ppaf->blk_mask) >> ppaf->blk_offset;
+		l.g.pg = (r.ppa & ppaf->pg_mask) >> ppaf->pg_offset;
+		l.g.pl = (r.ppa & ppaf->pln_mask) >> ppaf->pln_offset;
+		l.g.sec = (r.ppa & ppaf->sec_mask) >> ppaf->sec_offset;
+	} else {
+		struct nvm_addr_format *lbaf = &geo->addrf;
+
+		l.m.ch = (r.ppa & lbaf->ch_mask) >> lbaf->ch_offset;
+		l.m.lun = (r.ppa & lbaf->lun_mask) >> lbaf->lun_offset;
+		l.m.chk = (r.ppa & lbaf->chk_mask) >> lbaf->chk_offset;
+		l.m.sec = (r.ppa & lbaf->sec_mask) >> lbaf->sec_offset;
+	}
 
 	return l;
 }

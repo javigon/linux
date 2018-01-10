@@ -550,26 +550,23 @@ struct pblk_line_meta {
 	unsigned int meta_distance;	/* Distance between data and metadata */
 };
 
-struct pblk_addr_format {
-	u64	ch_mask;
-	u64	lun_mask;
-	u64	pln_mask;
-	u64	blk_mask;
-	u64	pg_mask;
-	u64	sec_mask;
-	u8	ch_offset;
-	u8	lun_offset;
-	u8	pln_offset;
-	u8	blk_offset;
-	u8	pg_offset;
-	u8	sec_offset;
-};
-
 enum {
 	PBLK_STATE_RUNNING = 0,
 	PBLK_STATE_STOPPING = 1,
 	PBLK_STATE_RECOVERING = 2,
 	PBLK_STATE_STOPPED = 3,
+};
+
+/* Internal format to support not power-of-2 device formats (for now) */
+struct pblk_addr_format {
+	/* gen to dev */
+	int sec_stripe;
+	int ch_stripe;
+	int lun_stripe;
+
+	/* dev to gen */
+	int sec_lun_stripe;
+	int sec_ws_stripe;
 };
 
 struct pblk {
@@ -584,8 +581,9 @@ struct pblk {
 	struct pblk_line_mgmt l_mg;		/* Line management */
 	struct pblk_line_meta lm;		/* Line metadata */
 
-	int ppaf_bitsize;
-	struct pblk_addr_format ppaf;
+	struct nvm_addr_format addrf;	/* Aligned address format */
+	struct pblk_addr_format uaddrf;	/* Unaligned address format */
+	int addrf_len;
 
 	struct pblk_rb rwb;
 
@@ -940,6 +938,16 @@ static inline int pblk_line_vsc(struct pblk_line *line)
 	return le32_to_cpu(*line->vsc);
 }
 
+static inline int pblk_ppa_empty(struct ppa_addr ppa_addr)
+{
+	return (ppa_addr.ppa == ADDR_EMPTY);
+}
+
+static inline void pblk_ppa_set_empty(struct ppa_addr *ppa_addr)
+{
+	ppa_addr->ppa = ADDR_EMPTY;
+}
+
 #define NVM_MEM_PAGE_WRITE (8)
 
 static inline int pblk_pad_distance(struct pblk *pblk)
@@ -963,15 +971,43 @@ static inline int pblk_ppa_to_pos(struct nvm_geo *geo, struct ppa_addr p)
 static inline struct ppa_addr addr_to_gen_ppa(struct pblk *pblk, u64 paddr,
 					      u64 line_id)
 {
+	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_geo *geo = &dev->geo;
 	struct ppa_addr ppa;
 
-	ppa.ppa = 0;
-	ppa.g.blk = line_id;
-	ppa.g.pg = (paddr & pblk->ppaf.pg_mask) >> pblk->ppaf.pg_offset;
-	ppa.g.lun = (paddr & pblk->ppaf.lun_mask) >> pblk->ppaf.lun_offset;
-	ppa.g.ch = (paddr & pblk->ppaf.ch_mask) >> pblk->ppaf.ch_offset;
-	ppa.g.pl = (paddr & pblk->ppaf.pln_mask) >> pblk->ppaf.pln_offset;
-	ppa.g.sec = (paddr & pblk->ppaf.sec_mask) >> pblk->ppaf.sec_offset;
+	if (geo->version == NVM_OCSSD_SPEC_12) {
+		struct nvm_addr_format_12 *ppaf =
+				(struct nvm_addr_format_12 *)&pblk->addrf;
+
+		ppa.ppa = 0;
+		ppa.g.blk = line_id;
+		ppa.g.pg = (paddr & ppaf->pg_mask) >> ppaf->pg_offset;
+		ppa.g.lun = (paddr & ppaf->lun_mask) >> ppaf->lun_offset;
+		ppa.g.ch = (paddr & ppaf->ch_mask) >> ppaf->ch_offset;
+		ppa.g.pl = (paddr & ppaf->pln_mask) >> ppaf->pln_offset;
+		ppa.g.sec = (paddr & ppaf->sec_mask) >> ppaf->sec_offset;
+	} else {
+		struct pblk_addr_format *uaddrf = &pblk->uaddrf;
+		int secs, chnls, luns;
+
+		ppa.ppa = 0;
+
+		ppa.m.chk = line_id;
+
+		div_u64_rem(paddr, uaddrf->sec_stripe, &secs);
+		ppa.m.sec = secs;
+
+		sector_div(paddr, uaddrf->sec_stripe);
+		div_u64_rem(paddr, uaddrf->ch_stripe, &chnls);
+		ppa.m.ch = chnls;
+
+		sector_div(paddr, uaddrf->ch_stripe);
+		div_u64_rem(paddr, uaddrf->lun_stripe, &luns);
+		ppa.m.lun = luns;
+
+		sector_div(paddr, uaddrf->lun_stripe);
+		ppa.m.sec += uaddrf->sec_stripe * paddr;
+	}
 
 	return ppa;
 }
@@ -979,13 +1015,32 @@ static inline struct ppa_addr addr_to_gen_ppa(struct pblk *pblk, u64 paddr,
 static inline u64 pblk_dev_ppa_to_line_addr(struct pblk *pblk,
 							struct ppa_addr p)
 {
+	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_geo *geo = &dev->geo;
 	u64 paddr;
 
-	paddr = (u64)p.g.pg << pblk->ppaf.pg_offset;
-	paddr |= (u64)p.g.lun << pblk->ppaf.lun_offset;
-	paddr |= (u64)p.g.ch << pblk->ppaf.ch_offset;
-	paddr |= (u64)p.g.pl << pblk->ppaf.pln_offset;
-	paddr |= (u64)p.g.sec << pblk->ppaf.sec_offset;
+	if (geo->version == NVM_OCSSD_SPEC_12) {
+		struct nvm_addr_format_12 *ppaf =
+				(struct nvm_addr_format_12 *)&pblk->addrf;
+
+		paddr = (u64)p.g.ch << ppaf->ch_offset;
+		paddr |= (u64)p.g.lun << ppaf->lun_offset;
+		paddr |= (u64)p.g.pg << ppaf->pg_offset;
+		paddr |= (u64)p.g.pl << ppaf->pln_offset;
+		paddr |= (u64)p.g.sec << ppaf->sec_offset;
+	} else {
+		struct pblk_addr_format *uaddrf = &pblk->uaddrf;
+		u64 secs = (u64)p.m.sec;
+		int sec_stripe;
+
+		paddr = (u64)p.m.ch * uaddrf->sec_stripe;
+		paddr += (u64)p.m.lun * uaddrf->sec_lun_stripe;
+
+		div_u64_rem(secs, uaddrf->sec_stripe, &sec_stripe);
+		sector_div(secs, uaddrf->sec_stripe);
+		paddr += secs * uaddrf->sec_ws_stripe;
+		paddr += sec_stripe;
+	}
 
 	return paddr;
 }
@@ -1002,18 +1057,37 @@ static inline struct ppa_addr pblk_ppa32_to_ppa64(struct pblk *pblk, u32 ppa32)
 		ppa64.c.line = ppa32 & ((~0U) >> 1);
 		ppa64.c.is_cached = 1;
 	} else {
-		ppa64.g.blk = (ppa32 & pblk->ppaf.blk_mask) >>
-							pblk->ppaf.blk_offset;
-		ppa64.g.pg = (ppa32 & pblk->ppaf.pg_mask) >>
-							pblk->ppaf.pg_offset;
-		ppa64.g.lun = (ppa32 & pblk->ppaf.lun_mask) >>
-							pblk->ppaf.lun_offset;
-		ppa64.g.ch = (ppa32 & pblk->ppaf.ch_mask) >>
-							pblk->ppaf.ch_offset;
-		ppa64.g.pl = (ppa32 & pblk->ppaf.pln_mask) >>
-							pblk->ppaf.pln_offset;
-		ppa64.g.sec = (ppa32 & pblk->ppaf.sec_mask) >>
-							pblk->ppaf.sec_offset;
+		struct nvm_tgt_dev *dev = pblk->dev;
+		struct nvm_geo *geo = &dev->geo;
+
+		if (geo->version == NVM_OCSSD_SPEC_12) {
+			struct nvm_addr_format_12 *ppaf =
+				(struct nvm_addr_format_12 *)&pblk->addrf;
+
+			ppa64.g.ch = (ppa32 & ppaf->ch_mask) >>
+							ppaf->ch_offset;
+			ppa64.g.lun = (ppa32 & ppaf->lun_mask) >>
+							ppaf->lun_offset;
+			ppa64.g.blk = (ppa32 & ppaf->blk_mask) >>
+							ppaf->blk_offset;
+			ppa64.g.pg = (ppa32 & ppaf->pg_mask) >>
+							ppaf->pg_offset;
+			ppa64.g.pl = (ppa32 & ppaf->pln_mask) >>
+							ppaf->pln_offset;
+			ppa64.g.sec = (ppa32 & ppaf->sec_mask) >>
+							ppaf->sec_offset;
+		} else {
+			struct nvm_addr_format *lbaf = &pblk->addrf;
+
+			ppa64.m.ch = (ppa32 & lbaf->ch_mask) >>
+							lbaf->ch_offset;
+			ppa64.m.lun = (ppa32 & lbaf->lun_mask) >>
+							lbaf->lun_offset;
+			ppa64.m.chk = (ppa32 & lbaf->chk_mask) >>
+							lbaf->chk_offset;
+			ppa64.m.sec = (ppa32 & lbaf->sec_mask) >>
+							lbaf->sec_offset;
+		}
 	}
 
 	return ppa64;
@@ -1029,12 +1103,27 @@ static inline u32 pblk_ppa64_to_ppa32(struct pblk *pblk, struct ppa_addr ppa64)
 		ppa32 |= ppa64.c.line;
 		ppa32 |= 1U << 31;
 	} else {
-		ppa32 |= ppa64.g.blk << pblk->ppaf.blk_offset;
-		ppa32 |= ppa64.g.pg << pblk->ppaf.pg_offset;
-		ppa32 |= ppa64.g.lun << pblk->ppaf.lun_offset;
-		ppa32 |= ppa64.g.ch << pblk->ppaf.ch_offset;
-		ppa32 |= ppa64.g.pl << pblk->ppaf.pln_offset;
-		ppa32 |= ppa64.g.sec << pblk->ppaf.sec_offset;
+		struct nvm_tgt_dev *dev = pblk->dev;
+		struct nvm_geo *geo = &dev->geo;
+
+		if (geo->version == NVM_OCSSD_SPEC_12) {
+			struct nvm_addr_format_12 *ppaf =
+				(struct nvm_addr_format_12 *)&pblk->addrf;
+
+			ppa32 |= ppa64.g.ch << ppaf->ch_offset;
+			ppa32 |= ppa64.g.lun << ppaf->lun_offset;
+			ppa32 |= ppa64.g.blk << ppaf->blk_offset;
+			ppa32 |= ppa64.g.pg << ppaf->pg_offset;
+			ppa32 |= ppa64.g.pl << ppaf->pln_offset;
+			ppa32 |= ppa64.g.sec << ppaf->sec_offset;
+		} else {
+			struct nvm_addr_format *lbaf = &pblk->addrf;
+
+			ppa32 |= ppa64.m.ch << lbaf->ch_offset;
+			ppa32 |= ppa64.m.lun << lbaf->lun_offset;
+			ppa32 |= ppa64.m.chk << lbaf->chk_offset;
+			ppa32 |= ppa64.m.sec << lbaf->sec_offset;
+		}
 	}
 
 	return ppa32;
@@ -1045,7 +1134,7 @@ static inline struct ppa_addr pblk_trans_map_get(struct pblk *pblk,
 {
 	struct ppa_addr ppa;
 
-	if (pblk->ppaf_bitsize < 32) {
+	if (pblk->addrf_len < 32) {
 		u32 *map = (u32 *)pblk->trans_map;
 
 		ppa = pblk_ppa32_to_ppa64(pblk, map[lba]);
@@ -1061,7 +1150,7 @@ static inline struct ppa_addr pblk_trans_map_get(struct pblk *pblk,
 static inline void pblk_trans_map_set(struct pblk *pblk, sector_t lba,
 						struct ppa_addr ppa)
 {
-	if (pblk->ppaf_bitsize < 32) {
+	if (pblk->addrf_len < 32) {
 		u32 *map = (u32 *)pblk->trans_map;
 
 		map[lba] = pblk_ppa64_to_ppa32(pblk, ppa);
@@ -1070,16 +1159,6 @@ static inline void pblk_trans_map_set(struct pblk *pblk, sector_t lba,
 
 		map[lba] = ppa.ppa;
 	}
-}
-
-static inline int pblk_ppa_empty(struct ppa_addr ppa_addr)
-{
-	return (ppa_addr.ppa == ADDR_EMPTY);
-}
-
-static inline void pblk_ppa_set_empty(struct ppa_addr *ppa_addr)
-{
-	ppa_addr->ppa = ADDR_EMPTY;
 }
 
 static inline bool pblk_ppa_comp(struct ppa_addr lppa, struct ppa_addr rppa)
@@ -1184,16 +1263,21 @@ static inline int pblk_io_aligned(struct pblk *pblk, int nr_secs)
 }
 
 #ifdef CONFIG_NVM_DEBUG
-static inline void print_ppa(struct ppa_addr *p, char *msg, int error)
+static inline void print_ppa(struct nvm_geo *geo, struct ppa_addr *p,
+			     char *msg, int error)
 {
 	if (p->c.is_cached) {
 		pr_err("ppa: (%s: %x) cache line: %llu\n",
 				msg, error, (u64)p->c.line);
-	} else {
+	} else if (geo->version == NVM_OCSSD_SPEC_12) {
 		pr_err("ppa: (%s: %x):ch:%d,lun:%d,blk:%d,pg:%d,pl:%d,sec:%d\n",
 			msg, error,
 			p->g.ch, p->g.lun, p->g.blk,
 			p->g.pg, p->g.pl, p->g.sec);
+	} else {
+		pr_err("ppa: (%s: %x):ch:%d,lun:%d,chk:%d,sec:%d\n",
+			msg, error,
+			p->m.ch, p->m.lun, p->m.chk, p->m.sec);
 	}
 }
 
@@ -1203,13 +1287,13 @@ static inline void pblk_print_failed_rqd(struct pblk *pblk, struct nvm_rq *rqd,
 	int bit = -1;
 
 	if (rqd->nr_ppas ==  1) {
-		print_ppa(&rqd->ppa_addr, "rqd", error);
+		print_ppa(&pblk->dev->geo, &rqd->ppa_addr, "rqd", error);
 		return;
 	}
 
 	while ((bit = find_next_bit((void *)&rqd->ppa_status, rqd->nr_ppas,
 						bit + 1)) < rqd->nr_ppas) {
-		print_ppa(&rqd->ppa_list[bit], "rqd", error);
+		print_ppa(&pblk->dev->geo, &rqd->ppa_list[bit], "rqd", error);
 	}
 
 	pr_err("error:%d, ppa_status:%llx\n", error, rqd->ppa_status);
@@ -1225,16 +1309,25 @@ static inline int pblk_boundary_ppa_checks(struct nvm_tgt_dev *tgt_dev,
 	for (i = 0; i < nr_ppas; i++) {
 		ppa = &ppas[i];
 
-		if (!ppa->c.is_cached &&
-				ppa->g.ch < geo->nr_chnls &&
-				ppa->g.lun < geo->nr_luns &&
-				ppa->g.pl < geo->nr_planes &&
-				ppa->g.blk < geo->nr_chks &&
-				ppa->g.pg < geo->ws_per_chk &&
-				ppa->g.sec < geo->sec_per_pg)
-			continue;
+		if (geo->version == NVM_OCSSD_SPEC_12) {
+			if (!ppa->c.is_cached &&
+					ppa->g.ch < geo->nr_chnls &&
+					ppa->g.lun < geo->nr_luns &&
+					ppa->g.pl < geo->nr_planes &&
+					ppa->g.blk < geo->nr_chks &&
+					ppa->g.pg < geo->ws_per_chk &&
+					ppa->g.sec < geo->sec_per_pg)
+				continue;
+		} else {
+			if (!ppa->c.is_cached &&
+					ppa->m.ch < geo->nr_chnls &&
+					ppa->m.lun < geo->nr_luns &&
+					ppa->m.chk < geo->nr_chks &&
+					ppa->m.sec < geo->sec_per_chk)
+				continue;
+		}
 
-		print_ppa(ppa, "boundary", i);
+		print_ppa(geo, ppa, "boundary", i);
 
 		return 1;
 	}

@@ -855,7 +855,9 @@ static int nvm_core_init(struct nvm_dev *dev)
 	struct nvm_geo *geo = &dev->geo;
 	int ret;
 
-	memcpy(&geo->ppaf, &id->ppaf, sizeof(struct nvm_addr_format));
+	memcpy(&geo->addrf, &id->addrf, sizeof(struct nvm_addr_format));
+
+	geo->version = id->ver_id;
 
 	if (grp->mtype != 0) {
 		pr_err("nvm: memory type not supported\n");
@@ -935,8 +937,10 @@ static int nvm_init(struct nvm_dev *dev)
 	pr_debug("nvm: ver:%x nvm_vendor:%x\n",
 			dev->identity.ver_id, dev->identity.vmnt);
 
-	if (dev->identity.ver_id != 1) {
-		pr_err("nvm: device not supported by kernel.");
+	if (dev->identity.ver_id != NVM_OCSSD_SPEC_12 &&
+				dev->identity.ver_id != NVM_OCSSD_SPEC_20) {
+		pr_err("nvm: OCSSD revision not supported (%d)\n",
+							dev->identity.ver_id);
 		goto err;
 	}
 

@@ -154,7 +154,42 @@ struct nvme_nvm_id_group {
 	struct nvme_nvm_lp_tbl lptbl;
 } __packed;
 
-struct nvme_nvm_addr_format {
+struct nvme_nvm_geo_20 {
+	__le16			num_ch;
+	__le16			num_lun;
+	__le32			num_chnks;
+	__le32			clba;
+	__le32			csecs;
+	__le32			sos;
+	__u8			resv[44];
+};
+
+struct nvme_nvm_wrt_20 {
+	__le32			ws_min;
+	__le32			ws_opt;
+	__le32			mw_cunits;
+	__u8			resv[52];
+};
+
+struct nvme_nvm_perf_20 {
+	__le32			trdt;
+	__le32			trdm;
+	__le32			tprt;
+	__le32			tprm;
+	__le32			tbet;
+	__le32			tbem;
+	__u8			resv[40];
+};
+
+struct nvme_nvm_addr_format_20 {
+	__u8			ch_len;
+	__u8			lun_len;
+	__u8			chk_len;
+	__u8			sec_len;
+	__u8			res[4];
+} __packed;
+
+struct nvme_nvm_addr_format_12 {
 	__u8			ch_offset;
 	__u8			ch_len;
 	__u8			lun_offset;
@@ -165,9 +200,21 @@ struct nvme_nvm_addr_format {
 	__u8			blk_len;
 	__u8			pg_offset;
 	__u8			pg_len;
-	__u8			sect_offset;
-	__u8			sect_len;
+	__u8			sec_offset;
+	__u8			sec_len;
 	__u8			res[4];
+} __packed;
+
+struct nvme_nvm_id_20 {
+	__u8			major_ver_id;
+	__u8			minor_ver_id;
+	__u8			resv[6];
+	struct nvme_nvm_addr_format_20 lbaf;
+	__le32			mccap;
+	__u8			resv2[44];
+	struct nvme_nvm_geo_20	geo;
+	struct nvme_nvm_wrt_20	wrt;
+	struct nvme_nvm_perf_20	perf;
 } __packed;
 
 struct nvme_nvm_id {
@@ -177,7 +224,7 @@ struct nvme_nvm_id {
 	__u8			res;
 	__le32			cap;
 	__le32			dom;
-	struct nvme_nvm_addr_format ppaf;
+	struct nvme_nvm_addr_format_12 ppaf;
 	__u8			resv[228];
 	struct nvme_nvm_id_group groups[4];
 } __packed;
@@ -207,21 +254,54 @@ static inline void _nvme_nvm_check_size(void)
 	BUILD_BUG_ON(sizeof(struct nvme_nvm_setbbtbl) != 64);
 	BUILD_BUG_ON(sizeof(struct nvme_nvm_erase_blk) != 64);
 	BUILD_BUG_ON(sizeof(struct nvme_nvm_id_group) != 960);
-	BUILD_BUG_ON(sizeof(struct nvme_nvm_addr_format) != 16);
+	BUILD_BUG_ON(sizeof(struct nvme_nvm_addr_format_12) != 16);
 	BUILD_BUG_ON(sizeof(struct nvme_nvm_id) != NVME_IDENTIFY_DATA_SIZE);
 	BUILD_BUG_ON(sizeof(struct nvme_nvm_bb_tbl) != 64);
 }
 
-static int init_grps(struct nvm_id *nvm_id, struct nvme_nvm_id *nvme_nvm_id)
+static void nvme_nvm_set_addr_12(struct nvm_addr_format_12 *dst,
+				 struct nvme_nvm_addr_format_12 *src)
+{
+	dst->ch_len = src->ch_len;
+	dst->lun_len = src->lun_len;
+	dst->blk_len = src->blk_len;
+	dst->pg_len = src->pg_len;
+	dst->pln_len = src->pln_len;
+	dst->sec_len = src->sec_len;
+
+	dst->ch_offset = src->ch_offset;
+	dst->lun_offset = src->lun_offset;
+	dst->blk_offset = src->blk_offset;
+	dst->pg_offset = src->pg_offset;
+	dst->pln_offset = src->pln_offset;
+	dst->sec_offset = src->sec_offset;
+
+	dst->ch_mask = ((1ULL << dst->ch_len) - 1) << dst->ch_offset;
+	dst->lun_mask = ((1ULL << dst->lun_len) - 1) << dst->lun_offset;
+	dst->blk_mask = ((1ULL << dst->blk_len) - 1) << dst->blk_offset;
+	dst->pg_mask = ((1ULL << dst->pg_len) - 1) << dst->pg_offset;
+	dst->pln_mask = ((1ULL << dst->pln_len) - 1) << dst->pln_offset;
+	dst->sec_mask = ((1ULL << dst->sec_len) - 1) << dst->sec_offset;
+}
+
+static int nvme_nvm_identity_12(struct nvm_id *nvm_id,
+				struct nvme_nvm_id *id)
 {
 	struct nvme_nvm_id_group *src;
 	struct nvm_id_group *grp;
 	int sec_per_pg, sec_per_pl, pg_per_blk;
 
-	if (nvme_nvm_id->cgrps != 1)
+	if (id->cgrps != 1)
 		return -EINVAL;
 
-	src = &nvme_nvm_id->groups[0];
+	nvm_id->vmnt = id->vmnt;
+	nvm_id->cap = le32_to_cpu(id->cap);
+	nvm_id->dom = le32_to_cpu(id->dom);
+
+	nvme_nvm_set_addr_12((struct nvm_addr_format_12 *)&nvm_id->addrf,
+								&id->ppaf);
+
+	src = &id->groups[0];
 	grp = &nvm_id->grp;
 
 	grp->mtype = src->mtype;
@@ -270,6 +350,59 @@ static int init_grps(struct nvm_id *nvm_id, struct nvme_nvm_id *nvme_nvm_id)
 	return 0;
 }
 
+static void nvme_nvm_set_addr_20(struct nvm_addr_format *dst,
+				 struct nvme_nvm_addr_format_20 *src)
+{
+	dst->ch_len = src->ch_len;
+	dst->lun_len = src->lun_len;
+	dst->chk_len = src->chk_len;
+	dst->sec_len = src->sec_len;
+
+	dst->sec_offset = 0;
+	dst->chk_offset = dst->sec_len;
+	dst->lun_offset = dst->chk_offset + dst->chk_len;
+	dst->ch_offset = dst->lun_offset + dst->lun_len;
+
+	dst->ch_mask = ((1ULL << dst->ch_len) - 1) << dst->ch_offset;
+	dst->lun_mask = ((1ULL << dst->lun_len) - 1) << dst->lun_offset;
+	dst->chk_mask = ((1ULL << dst->chk_len) - 1) << dst->chk_offset;
+	dst->sec_mask = ((1ULL << dst->sec_len) - 1) << dst->sec_offset;
+}
+
+static int nvme_nvm_identity_20(struct nvm_id *nvm_id,
+				struct nvme_nvm_id *nvme_nvm_id)
+{
+	struct nvme_nvm_id_20 *id = (struct nvme_nvm_id_20 *)nvme_nvm_id;
+	struct nvm_id_group *grp = &nvm_id->grp;
+
+	nvme_nvm_set_addr_20(&nvm_id->addrf, &id->lbaf);
+
+	grp->num_ch = le16_to_cpu(id->geo.num_ch);
+	grp->num_lun = le16_to_cpu(id->geo.num_lun);
+
+	grp->num_chk = le32_to_cpu(id->geo.num_chnks);
+	grp->csecs = le32_to_cpu(id->geo.csecs);
+	grp->sos = le32_to_cpu(id->geo.sos);
+
+	grp->ws_min = le32_to_cpu(id->wrt.ws_min);
+	grp->ws_opt = le32_to_cpu(id->wrt.ws_opt);
+	grp->ws_seq = NVM_IO_SNGL_ACCESS;
+
+	grp->clba = le32_to_cpu(id->geo.clba);
+	grp->ws_per_chk = grp->clba / grp->ws_min;
+
+	grp->mccap = le32_to_cpu(id->mccap);
+
+	grp->trdt = le32_to_cpu(id->perf.trdt);
+	grp->trdm = le32_to_cpu(id->perf.trdm);
+	grp->tprt = le32_to_cpu(id->perf.tprt);
+	grp->tprm = le32_to_cpu(id->perf.tprm);
+	grp->tbet = le32_to_cpu(id->perf.tbet);
+	grp->tbem = le32_to_cpu(id->perf.tbem);
+
+	return 0;
+}
+
 static int nvme_nvm_identity(struct nvm_dev *nvmdev, struct nvm_id *nvm_id)
 {
 	struct nvme_ns *ns = nvmdev->q->queuedata;
@@ -293,13 +426,21 @@ static int nvme_nvm_identity(struct nvm_dev *nvmdev, struct nvm_id *nvm_id)
 	}
 
 	nvm_id->ver_id = nvme_nvm_id->ver_id;
-	nvm_id->vmnt = nvme_nvm_id->vmnt;
-	nvm_id->cap = le32_to_cpu(nvme_nvm_id->cap);
-	nvm_id->dom = le32_to_cpu(nvme_nvm_id->dom);
-	memcpy(&nvm_id->ppaf, &nvme_nvm_id->ppaf,
-					sizeof(struct nvm_addr_format));
+	switch (nvm_id->ver_id) {
+	case NVM_OCSSD_SPEC_12:
+		ret = nvme_nvm_identity_12(nvm_id, nvme_nvm_id);
+		break;
+	case NVM_OCSSD_SPEC_20:
+		ret = nvme_nvm_identity_20(nvm_id, nvme_nvm_id);
+		break;
+	default:
+		dev_err(ns->ctrl->device,
+				"OCSSD revision not supported (%d)\n",
+				nvm_id->ver_id);
+		ret = -EINVAL;
+		break;
+	}
 
-	ret = init_grps(nvm_id, nvme_nvm_id);
 out:
 	kfree(nvme_nvm_id);
 	return ret;
@@ -775,14 +916,28 @@ static ssize_t nvm_dev_attr_show(struct device *dev,
 	} else if (strcmp(attr->name, "media_manager") == 0) {
 		return scnprintf(page, PAGE_SIZE, "%s\n", "gennvm");
 	} else if (strcmp(attr->name, "ppa_format") == 0) {
-		return scnprintf(page, PAGE_SIZE,
-			"0x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x\n",
-			id->ppaf.ch_offset, id->ppaf.ch_len,
-			id->ppaf.lun_offset, id->ppaf.lun_len,
-			id->ppaf.pln_offset, id->ppaf.pln_len,
-			id->ppaf.blk_offset, id->ppaf.blk_len,
-			id->ppaf.pg_offset, id->ppaf.pg_len,
-			id->ppaf.sect_offset, id->ppaf.sect_len);
+		if (id->ver_id == NVM_OCSSD_SPEC_12) {
+			struct nvm_addr_format_12 *ppaf =
+				(struct nvm_addr_format_12 *)&id->addrf;
+
+			return scnprintf(page, PAGE_SIZE,
+				"0x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x\n",
+				ppaf->ch_offset, ppaf->ch_len,
+				ppaf->lun_offset, ppaf->lun_len,
+				ppaf->pln_offset, ppaf->pln_len,
+				ppaf->blk_offset, ppaf->blk_len,
+				ppaf->pg_offset, ppaf->pg_len,
+				ppaf->sec_offset, ppaf->sec_len);
+		} else {
+			struct nvm_addr_format *lbaf = &id->addrf;
+
+			return scnprintf(page, PAGE_SIZE,
+				"0x%02x%02x%02x%02x%02x%02x%02x%02x\n",
+				lbaf->ch_offset, lbaf->ch_len,
+				lbaf->lun_offset, lbaf->lun_len,
+				lbaf->chk_offset, lbaf->chk_len,
+				lbaf->sec_offset, lbaf->sec_len);
+		}
 	} else if (strcmp(attr->name, "media_type") == 0) {	/* u8 */
 		return scnprintf(page, PAGE_SIZE, "%u\n", grp->mtype);
 	} else if (strcmp(attr->name, "flash_media_type") == 0) {
