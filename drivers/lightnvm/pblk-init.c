@@ -20,6 +20,8 @@
 
 #include "pblk.h"
 
+#include <trace/events/pblk.h>
+
 static struct kmem_cache *pblk_ws_cache, *pblk_rec_cache, *pblk_g_rq_cache,
 				*pblk_w_rq_cache;
 static DECLARE_RWSEM(pblk_lock);
@@ -715,6 +717,9 @@ static int pblk_setup_line_meta_12(struct pblk *pblk, struct pblk_line *line,
 		chunk->cnlb = geo->c.clba;
 		chunk->wp = 0;
 
+		trace_pblk_chunk_state(pblk_disk_name(pblk), &rlun->bppa,
+					chunk->state);
+
 		if (!(chunk->state & NVM_CHK_ST_OFFLINE))
 			continue;
 
@@ -749,6 +754,9 @@ static int pblk_setup_line_meta_20(struct pblk *pblk, struct pblk_line *line,
 		chunk->slba = le64_to_cpu(chunk_log_page->slba);
 		chunk->cnlb = le64_to_cpu(chunk_log_page->cnlb);
 		chunk->wp = le64_to_cpu(chunk_log_page->wp);
+
+		trace_pblk_chunk_state(pblk_disk_name(pblk), &ppa,
+					chunk->state);
 
 		if (!(chunk->state & NVM_CHK_ST_OFFLINE))
 			continue;
