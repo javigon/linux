@@ -20,6 +20,8 @@
 
 #include "pblk.h"
 
+#include <trace/events/pblk.h>
+
 static struct kmem_cache *pblk_ws_cache, *pblk_rec_cache, *pblk_g_rq_cache,
 				*pblk_w_rq_cache;
 static DECLARE_RWSEM(pblk_lock);
@@ -702,17 +704,23 @@ static int pblk_setup_line_meta_12(struct pblk *pblk, struct pblk_line *line,
 		 * In 1.2 spec. chunk state is not persisted by the device. Thus
 		 * some of the values are reset each time pblk is instantiated.
 		 */
-		chunk->state = NVM_CHK_ST_HOST_USE;
+		if (lun_bb_log[line->id] == NVM_BLK_T_FREE)
+			chunk->state =  NVM_CHK_ST_HOST_USE;
+		else
+			chunk->state = NVM_CHK_ST_OFFLINE;
+
 		chunk->type = NVM_CHK_TP_W_SEQ;
 		chunk->wi = 0;
 		chunk->slba = -1;
 		chunk->cnlb = geo->sec_per_chk;
 		chunk->wp = 0;
 
-		if (lun_bb_log[line->id] == NVM_BLK_T_FREE)
+		trace_pblk_chunk_state(pblk_disk_name(pblk), &rlun->bppa,
+					chunk->state);
+
+		if (!(chunk->state & NVM_CHK_ST_OFFLINE))
 			continue;
 
-		chunk->state = NVM_CHK_ST_OFFLINE;
 		set_bit(pblk_ppa_to_pos(geo, rlun->bppa), line->blk_bitmap);
 		nr_bad_chks++;
 	}
@@ -744,6 +752,9 @@ static int pblk_setup_line_meta_20(struct pblk *pblk, struct pblk_line *line,
 		chunk->slba = le64_to_cpu(chunk_log_page->slba);
 		chunk->cnlb = le64_to_cpu(chunk_log_page->cnlb);
 		chunk->wp = le64_to_cpu(chunk_log_page->wp);
+
+		trace_pblk_chunk_state(pblk_disk_name(pblk), &ppa,
+					chunk->state);
 
 		if (!(chunk->state & NVM_CHK_ST_OFFLINE))
 			continue;
