@@ -217,7 +217,7 @@ struct nvme_nvm_id_20 {
 	struct nvme_nvm_perf_20	perf;
 } __packed;
 
-struct nvme_nvm_id {
+struct nvme_nvm_id_12 {
 	__u8			ver_id;
 	__u8			vmnt;
 	__u8			cgrps;
@@ -227,6 +227,12 @@ struct nvme_nvm_id {
 	struct nvme_nvm_addr_format_12 ppaf;
 	__u8			resv[228];
 	struct nvme_nvm_id_group groups[4];
+} __packed;
+
+/* Generic identification structure */
+struct nvme_nvm_id {
+	__u8			ver_id;
+	__u8			resv[4095];
 } __packed;
 
 struct nvme_nvm_bb_tbl {
@@ -284,68 +290,76 @@ static void nvme_nvm_set_addr_12(struct nvm_addr_format_12 *dst,
 	dst->sec_mask = ((1ULL << dst->sec_len) - 1) << dst->sec_offset;
 }
 
-static int nvme_nvm_identity_12(struct nvm_id *nvm_id,
-				struct nvme_nvm_id *id)
+static int nvme_nvm_identity_12(struct nvme_nvm_id *gen_id,
+				struct nvm_dev_geo *dev_geo)
 {
+	struct nvme_nvm_id_12 *id = (struct nvme_nvm_id_12 *)gen_id;
 	struct nvme_nvm_id_group *src;
-	struct nvm_id_group *grp;
 	int sec_per_pg, sec_per_pl, pg_per_blk;
 
 	if (id->cgrps != 1)
 		return -EINVAL;
 
-	nvm_id->vmnt = id->vmnt;
-	nvm_id->cap = le32_to_cpu(id->cap);
-	nvm_id->dom = le32_to_cpu(id->dom);
-
-	nvme_nvm_set_addr_12((struct nvm_addr_format_12 *)&nvm_id->addrf,
+	nvme_nvm_set_addr_12((struct nvm_addr_format_12 *)&dev_geo->addrf,
 								&id->ppaf);
 
 	src = &id->groups[0];
-	grp = &nvm_id->grp;
 
-	grp->mtype = src->mtype;
-	grp->fmtype = src->fmtype;
-
-	grp->num_ch = src->num_ch;
-	grp->num_lun = src->num_lun;
-
-	grp->num_chk = le16_to_cpu(src->num_chk);
-	grp->csecs = le16_to_cpu(src->csecs);
-	grp->sos = le16_to_cpu(src->sos);
-
-	pg_per_blk = le16_to_cpu(src->num_pg);
-	sec_per_pg = le16_to_cpu(src->fpg_sz) / grp->csecs;
-	sec_per_pl = sec_per_pg * src->num_pln;
-	grp->clba = sec_per_pl * pg_per_blk;
-	grp->ws_per_chk = pg_per_blk;
-
-	grp->mpos = le32_to_cpu(src->mpos);
-	grp->cpar = le16_to_cpu(src->cpar);
-	grp->mccap = le32_to_cpu(src->mccap);
-
-	grp->ws_opt = grp->ws_min = sec_per_pg;
-	grp->ws_seq = NVM_IO_SNGL_ACCESS;
-
-	if (grp->mpos & 0x020202) {
-		grp->ws_seq = NVM_IO_DUAL_ACCESS;
-		grp->ws_opt <<= 1;
-	} else if (grp->mpos & 0x040404) {
-		grp->ws_seq = NVM_IO_QUAD_ACCESS;
-		grp->ws_opt <<= 2;
+	if (src->mtype != 0) {
+		pr_err("nvm: memory type not supported\n");
+		return -EINVAL;
 	}
 
-	grp->trdt = le32_to_cpu(src->trdt);
-	grp->trdm = le32_to_cpu(src->trdm);
-	grp->tprt = le32_to_cpu(src->tprt);
-	grp->tprm = le32_to_cpu(src->tprm);
-	grp->tbet = le32_to_cpu(src->tbet);
-	grp->tbem = le32_to_cpu(src->tbem);
+	/* 1.2 spec. only reports a single version id - unfold */
+	dev_geo->major_ver_id = 1;
+	dev_geo->minor_ver_id = 2;
+
+	dev_geo->num_ch = src->num_ch;
+	dev_geo->num_lun = src->num_lun;
+	dev_geo->num_chk = le16_to_cpu(src->num_chk);
+	dev_geo->csecs = le16_to_cpu(src->csecs);
+	dev_geo->sos = le16_to_cpu(src->sos);
+
+	pg_per_blk = le16_to_cpu(src->num_pg);
+	sec_per_pg = le16_to_cpu(src->fpg_sz) / dev_geo->csecs;
+	sec_per_pl = sec_per_pg * src->num_pln;
+	dev_geo->clba = sec_per_pl * pg_per_blk;
+
+	dev_geo->ws_opt = dev_geo->ws_min = sec_per_pg;
+	dev_geo->ws_seq = NVM_IO_SNGL_ACCESS;
+	dev_geo->ws_per_chk = pg_per_blk;
+
+	dev_geo->mccap = le32_to_cpu(src->mccap);
+
+	dev_geo->trdt = le32_to_cpu(src->trdt);
+	dev_geo->trdm = le32_to_cpu(src->trdm);
+	dev_geo->tprt = le32_to_cpu(src->tprt);
+	dev_geo->tprm = le32_to_cpu(src->tprm);
+	dev_geo->tbet = le32_to_cpu(src->tbet);
+	dev_geo->tbem = le32_to_cpu(src->tbem);
 
 	/* 1.2 compatibility */
-	grp->num_pln = src->num_pln;
-	grp->num_pg = le16_to_cpu(src->num_pg);
-	grp->fpg_sz = le16_to_cpu(src->fpg_sz);
+	dev_geo->vmnt = id->vmnt;
+	dev_geo->cap = le32_to_cpu(id->cap);
+	dev_geo->dom = le32_to_cpu(id->dom);
+
+	dev_geo->mtype = src->mtype;
+	dev_geo->fmtype = src->fmtype;
+
+	dev_geo->cpar = le16_to_cpu(src->cpar);
+	dev_geo->mpos = le32_to_cpu(src->mpos);
+
+	if (dev_geo->mpos & 0x020202) {
+		dev_geo->ws_seq = NVM_IO_DUAL_ACCESS;
+		dev_geo->ws_opt <<= 1;
+	} else if (dev_geo->mpos & 0x040404) {
+		dev_geo->ws_seq = NVM_IO_QUAD_ACCESS;
+		dev_geo->ws_opt <<= 2;
+	}
+
+	dev_geo->num_pln = src->num_pln;
+	dev_geo->num_pg = le16_to_cpu(src->num_pg);
+	dev_geo->fpg_sz = le16_to_cpu(src->fpg_sz);
 
 	return 0;
 }
@@ -369,41 +383,47 @@ static void nvme_nvm_set_addr_20(struct nvm_addr_format *dst,
 	dst->sec_mask = ((1ULL << dst->sec_len) - 1) << dst->sec_offset;
 }
 
-static int nvme_nvm_identity_20(struct nvm_id *nvm_id,
-				struct nvme_nvm_id *nvme_nvm_id)
+static int nvme_nvm_identity_20(struct nvme_nvm_id *gen_id,
+				struct nvm_dev_geo *dev_geo)
 {
-	struct nvme_nvm_id_20 *id = (struct nvme_nvm_id_20 *)nvme_nvm_id;
-	struct nvm_id_group *grp = &nvm_id->grp;
+	struct nvme_nvm_id_20 *id = (struct nvme_nvm_id_20 *)gen_id;
 
-	nvme_nvm_set_addr_20(&nvm_id->addrf, &id->lbaf);
+	dev_geo->major_ver_id = id->major_ver_id;
+	dev_geo->minor_ver_id = id->minor_ver_id;
 
-	grp->num_ch = le16_to_cpu(id->geo.num_ch);
-	grp->num_lun = le16_to_cpu(id->geo.num_lun);
+	if (!(dev_geo->major_ver_id == 2 && dev_geo->minor_ver_id == 0)) {
+		pr_err("nvm: OCSSD version not supported (v%d.%d)\n",
+				dev_geo->major_ver_id, dev_geo->minor_ver_id);
+		return -EINVAL;
+	}
 
-	grp->num_chk = le32_to_cpu(id->geo.num_chnks);
-	grp->csecs = le32_to_cpu(id->geo.csecs);
-	grp->sos = le32_to_cpu(id->geo.sos);
+	nvme_nvm_set_addr_20(&dev_geo->addrf, &id->lbaf);
 
-	grp->ws_min = le32_to_cpu(id->wrt.ws_min);
-	grp->ws_opt = le32_to_cpu(id->wrt.ws_opt);
-	grp->ws_seq = NVM_IO_SNGL_ACCESS;
+	dev_geo->num_ch = le16_to_cpu(id->geo.num_ch);
+	dev_geo->num_lun = le16_to_cpu(id->geo.num_lun);
+	dev_geo->num_chk = le32_to_cpu(id->geo.num_chnks);
+	dev_geo->clba = le32_to_cpu(id->geo.clba);
+	dev_geo->csecs = le32_to_cpu(id->geo.csecs);
+	dev_geo->sos = le32_to_cpu(id->geo.sos);
 
-	grp->clba = le32_to_cpu(id->geo.clba);
-	grp->ws_per_chk = grp->clba / grp->ws_min;
+	dev_geo->ws_min = le32_to_cpu(id->wrt.ws_min);
+	dev_geo->ws_opt = le32_to_cpu(id->wrt.ws_opt);
+	dev_geo->ws_seq = NVM_IO_SNGL_ACCESS;
+	dev_geo->ws_per_chk = dev_geo->clba / dev_geo->ws_min;
 
-	grp->mccap = le32_to_cpu(id->mccap);
+	dev_geo->mccap = le32_to_cpu(id->mccap);
 
-	grp->trdt = le32_to_cpu(id->perf.trdt);
-	grp->trdm = le32_to_cpu(id->perf.trdm);
-	grp->tprt = le32_to_cpu(id->perf.tprt);
-	grp->tprm = le32_to_cpu(id->perf.tprm);
-	grp->tbet = le32_to_cpu(id->perf.tbet);
-	grp->tbem = le32_to_cpu(id->perf.tbem);
+	dev_geo->trdt = le32_to_cpu(id->perf.trdt);
+	dev_geo->trdm = le32_to_cpu(id->perf.trdm);
+	dev_geo->tprt = le32_to_cpu(id->perf.tprt);
+	dev_geo->tprm = le32_to_cpu(id->perf.tprm);
+	dev_geo->tbet = le32_to_cpu(id->perf.tbet);
+	dev_geo->tbem = le32_to_cpu(id->perf.tbem);
 
 	return 0;
 }
 
-static int nvme_nvm_identity(struct nvm_dev *nvmdev, struct nvm_id *nvm_id)
+static int nvme_nvm_identity(struct nvm_dev *nvmdev)
 {
 	struct nvme_ns *ns = nvmdev->q->queuedata;
 	struct nvme_nvm_id *nvme_nvm_id;
@@ -425,18 +445,17 @@ static int nvme_nvm_identity(struct nvm_dev *nvmdev, struct nvm_id *nvm_id)
 		goto out;
 	}
 
-	nvm_id->ver_id = nvme_nvm_id->ver_id;
-	switch (nvm_id->ver_id) {
-	case NVM_OCSSD_SPEC_12:
-		ret = nvme_nvm_identity_12(nvm_id, nvme_nvm_id);
+	switch (nvme_nvm_id->ver_id) {
+	case 1:
+		ret = nvme_nvm_identity_12(nvme_nvm_id, &nvmdev->dev_geo);
 		break;
-	case NVM_OCSSD_SPEC_20:
-		ret = nvme_nvm_identity_20(nvm_id, nvme_nvm_id);
+	case 2:
+		ret = nvme_nvm_identity_20(nvme_nvm_id, &nvmdev->dev_geo);
 		break;
 	default:
 		dev_err(ns->ctrl->device,
 				"OCSSD revision not supported (%d)\n",
-				nvm_id->ver_id);
+				nvme_nvm_id->ver_id);
 		ret = -EINVAL;
 		break;
 	}
@@ -888,95 +907,102 @@ void nvme_nvm_unregister(struct nvme_ns *ns)
 	nvm_unregister(ns->ndev);
 }
 
-static ssize_t nvm_dev_attr_show(struct device *dev,
-				 struct device_attribute *dattr, char *page)
+static ssize_t nvm_dev_attr_show_ppaf(struct nvm_addr_format_12 *ppaf,
+					 char *page)
 {
-	struct nvme_ns *ns = nvme_get_ns_from_dev(dev);
-	struct nvm_dev *ndev = ns->ndev;
-	struct nvm_id *id;
-	struct nvm_id_group *grp;
-	struct attribute *attr;
-
-	if (!ndev)
-		return 0;
-
-	id = &ndev->identity;
-	grp = &id->grp;
-	attr = &dattr->attr;
-
-	if (strcmp(attr->name, "version") == 0) {
-		return scnprintf(page, PAGE_SIZE, "%u\n", id->ver_id);
-	} else if (strcmp(attr->name, "vendor_opcode") == 0) {
-		return scnprintf(page, PAGE_SIZE, "%u\n", id->vmnt);
-	} else if (strcmp(attr->name, "capabilities") == 0) {
-		return scnprintf(page, PAGE_SIZE, "%u\n", id->cap);
-	} else if (strcmp(attr->name, "device_mode") == 0) {
-		return scnprintf(page, PAGE_SIZE, "%u\n", id->dom);
-	/* kept for compatibility */
-	} else if (strcmp(attr->name, "media_manager") == 0) {
-		return scnprintf(page, PAGE_SIZE, "%s\n", "gennvm");
-	} else if (strcmp(attr->name, "ppa_format") == 0) {
-		if (id->ver_id == NVM_OCSSD_SPEC_12) {
-			struct nvm_addr_format_12 *ppaf =
-				(struct nvm_addr_format_12 *)&id->addrf;
-
-			return scnprintf(page, PAGE_SIZE,
-				"0x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x\n",
+	return scnprintf(page, PAGE_SIZE,
+		"0x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x\n",
 				ppaf->ch_offset, ppaf->ch_len,
 				ppaf->lun_offset, ppaf->lun_len,
 				ppaf->pln_offset, ppaf->pln_len,
 				ppaf->blk_offset, ppaf->blk_len,
 				ppaf->pg_offset, ppaf->pg_len,
 				ppaf->sec_offset, ppaf->sec_len);
-		} else {
-			struct nvm_addr_format *lbaf = &id->addrf;
+}
 
-			return scnprintf(page, PAGE_SIZE,
-				"0x%02x%02x%02x%02x%02x%02x%02x%02x\n",
+static ssize_t nvm_dev_attr_show_lbaf(struct nvm_addr_format *lbaf,
+					 char *page)
+{
+	return scnprintf(page, PAGE_SIZE,
+		"0x%02x%02x%02x%02x%02x%02x%02x%02x\n",
 				lbaf->ch_offset, lbaf->ch_len,
 				lbaf->lun_offset, lbaf->lun_len,
 				lbaf->chk_offset, lbaf->chk_len,
 				lbaf->sec_offset, lbaf->sec_len);
-		}
-	} else if (strcmp(attr->name, "media_type") == 0) {	/* u8 */
-		return scnprintf(page, PAGE_SIZE, "%u\n", grp->mtype);
-	} else if (strcmp(attr->name, "flash_media_type") == 0) {
-		return scnprintf(page, PAGE_SIZE, "%u\n", grp->fmtype);
+}
+
+static ssize_t nvm_dev_attr_show(struct device *dev,
+				 struct device_attribute *dattr, char *page)
+{
+	struct nvme_ns *ns = nvme_get_ns_from_dev(dev);
+	struct nvm_dev *ndev = ns->ndev;
+	struct nvm_dev_geo *dev_geo = &ndev->dev_geo;
+	struct attribute *attr;
+
+	if (!ndev)
+		return 0;
+
+	attr = &dattr->attr;
+
+	if (strcmp(attr->name, "version") == 0) {
+		return scnprintf(page, PAGE_SIZE, "%u.%u\n",
+						dev_geo->major_ver_id,
+						dev_geo->minor_ver_id);
+	} else if (strcmp(attr->name, "ppa_format") == 0) {
+		if (dev_geo->major_ver_id == 1)
+			return nvm_dev_attr_show_ppaf((void *)&dev_geo->addrf,
+									page);
+		else
+			return nvm_dev_attr_show_lbaf((void *)&dev_geo->addrf,
+									page);
 	} else if (strcmp(attr->name, "num_channels") == 0) {
-		return scnprintf(page, PAGE_SIZE, "%u\n", grp->num_ch);
+		return scnprintf(page, PAGE_SIZE, "%u\n", dev_geo->num_ch);
 	} else if (strcmp(attr->name, "num_luns") == 0) {
-		return scnprintf(page, PAGE_SIZE, "%u\n", grp->num_lun);
-	} else if (strcmp(attr->name, "num_planes") == 0) {
-		return scnprintf(page, PAGE_SIZE, "%u\n", grp->num_pln);
+		return scnprintf(page, PAGE_SIZE, "%u\n", dev_geo->num_lun);
 	} else if (strcmp(attr->name, "num_blocks") == 0) {	/* u16 */
-		return scnprintf(page, PAGE_SIZE, "%u\n", grp->num_chk);
-	} else if (strcmp(attr->name, "num_pages") == 0) {
-		return scnprintf(page, PAGE_SIZE, "%u\n", grp->num_pg);
-	} else if (strcmp(attr->name, "page_size") == 0) {
-		return scnprintf(page, PAGE_SIZE, "%u\n", grp->fpg_sz);
+		return scnprintf(page, PAGE_SIZE, "%u\n", dev_geo->num_chk);
 	} else if (strcmp(attr->name, "hw_sector_size") == 0) {
-		return scnprintf(page, PAGE_SIZE, "%u\n", grp->csecs);
+		return scnprintf(page, PAGE_SIZE, "%u\n", dev_geo->csecs);
 	} else if (strcmp(attr->name, "oob_sector_size") == 0) {/* u32 */
-		return scnprintf(page, PAGE_SIZE, "%u\n", grp->sos);
+		return scnprintf(page, PAGE_SIZE, "%u\n", dev_geo->sos);
 	} else if (strcmp(attr->name, "read_typ") == 0) {
-		return scnprintf(page, PAGE_SIZE, "%u\n", grp->trdt);
+		return scnprintf(page, PAGE_SIZE, "%u\n", dev_geo->trdt);
 	} else if (strcmp(attr->name, "read_max") == 0) {
-		return scnprintf(page, PAGE_SIZE, "%u\n", grp->trdm);
+		return scnprintf(page, PAGE_SIZE, "%u\n", dev_geo->trdm);
 	} else if (strcmp(attr->name, "prog_typ") == 0) {
-		return scnprintf(page, PAGE_SIZE, "%u\n", grp->tprt);
+		return scnprintf(page, PAGE_SIZE, "%u\n", dev_geo->tprt);
 	} else if (strcmp(attr->name, "prog_max") == 0) {
-		return scnprintf(page, PAGE_SIZE, "%u\n", grp->tprm);
+		return scnprintf(page, PAGE_SIZE, "%u\n", dev_geo->tprm);
 	} else if (strcmp(attr->name, "erase_typ") == 0) {
-		return scnprintf(page, PAGE_SIZE, "%u\n", grp->tbet);
+		return scnprintf(page, PAGE_SIZE, "%u\n", dev_geo->tbet);
 	} else if (strcmp(attr->name, "erase_max") == 0) {
-		return scnprintf(page, PAGE_SIZE, "%u\n", grp->tbem);
-	} else if (strcmp(attr->name, "multiplane_modes") == 0) {
-		return scnprintf(page, PAGE_SIZE, "0x%08x\n", grp->mpos);
+		return scnprintf(page, PAGE_SIZE, "%u\n", dev_geo->tbem);
 	} else if (strcmp(attr->name, "media_capabilities") == 0) {
-		return scnprintf(page, PAGE_SIZE, "0x%08x\n", grp->mccap);
+		return scnprintf(page, PAGE_SIZE, "0x%08x\n", dev_geo->mccap);
 	} else if (strcmp(attr->name, "max_phys_secs") == 0) {
 		return scnprintf(page, PAGE_SIZE, "%u\n",
-				ndev->ops->max_phys_sect);
+						ndev->ops->max_phys_sect);
+	/* 1.2 compatibility */
+	} else if (strcmp(attr->name, "media_manager") == 0) {
+		return scnprintf(page, PAGE_SIZE, "%s\n", "gennvm");
+	} else if (strcmp(attr->name, "vendor_opcode") == 0) {
+		return scnprintf(page, PAGE_SIZE, "%u\n", dev_geo->vmnt);
+	} else if (strcmp(attr->name, "capabilities") == 0) {
+		return scnprintf(page, PAGE_SIZE, "%u\n", dev_geo->cap);
+	} else if (strcmp(attr->name, "device_mode") == 0) {
+		return scnprintf(page, PAGE_SIZE, "%u\n", dev_geo->dom);
+	} else if (strcmp(attr->name, "media_type") == 0) {	/* u8 */
+		return scnprintf(page, PAGE_SIZE, "%u\n", dev_geo->mtype);
+	} else if (strcmp(attr->name, "flash_media_type") == 0) {
+		return scnprintf(page, PAGE_SIZE, "%u\n", dev_geo->fmtype);
+	} else if (strcmp(attr->name, "multiplane_modes") == 0) {
+		return scnprintf(page, PAGE_SIZE, "0x%08x\n", dev_geo->mpos);
+	} else if (strcmp(attr->name, "num_planes") == 0) {
+		return scnprintf(page, PAGE_SIZE, "%u\n", dev_geo->num_pln);
+	} else if (strcmp(attr->name, "num_pages") == 0) {
+		return scnprintf(page, PAGE_SIZE, "%u\n", dev_geo->num_pg);
+	} else if (strcmp(attr->name, "page_size") == 0) {
+		return scnprintf(page, PAGE_SIZE, "%u\n", dev_geo->fpg_sz);
 	} else {
 		return scnprintf(page,
 				 PAGE_SIZE,
@@ -989,20 +1015,11 @@ static ssize_t nvm_dev_attr_show(struct device *dev,
 	DEVICE_ATTR(_name, S_IRUGO, nvm_dev_attr_show, NULL)
 
 static NVM_DEV_ATTR_RO(version);
-static NVM_DEV_ATTR_RO(vendor_opcode);
-static NVM_DEV_ATTR_RO(capabilities);
-static NVM_DEV_ATTR_RO(device_mode);
 static NVM_DEV_ATTR_RO(ppa_format);
-static NVM_DEV_ATTR_RO(media_manager);
 
-static NVM_DEV_ATTR_RO(media_type);
-static NVM_DEV_ATTR_RO(flash_media_type);
 static NVM_DEV_ATTR_RO(num_channels);
 static NVM_DEV_ATTR_RO(num_luns);
-static NVM_DEV_ATTR_RO(num_planes);
 static NVM_DEV_ATTR_RO(num_blocks);
-static NVM_DEV_ATTR_RO(num_pages);
-static NVM_DEV_ATTR_RO(page_size);
 static NVM_DEV_ATTR_RO(hw_sector_size);
 static NVM_DEV_ATTR_RO(oob_sector_size);
 static NVM_DEV_ATTR_RO(read_typ);
@@ -1011,26 +1028,28 @@ static NVM_DEV_ATTR_RO(prog_typ);
 static NVM_DEV_ATTR_RO(prog_max);
 static NVM_DEV_ATTR_RO(erase_typ);
 static NVM_DEV_ATTR_RO(erase_max);
-static NVM_DEV_ATTR_RO(multiplane_modes);
 static NVM_DEV_ATTR_RO(media_capabilities);
 static NVM_DEV_ATTR_RO(max_phys_secs);
 
-static struct attribute *nvm_dev_attrs[] = {
-	&dev_attr_version.attr,
-	&dev_attr_vendor_opcode.attr,
-	&dev_attr_capabilities.attr,
-	&dev_attr_device_mode.attr,
-	&dev_attr_media_manager.attr,
+/* 1.2 compatibility */
+static NVM_DEV_ATTR_RO(media_manager);
+static NVM_DEV_ATTR_RO(vendor_opcode);
+static NVM_DEV_ATTR_RO(capabilities);
+static NVM_DEV_ATTR_RO(device_mode);
+static NVM_DEV_ATTR_RO(media_type);
+static NVM_DEV_ATTR_RO(flash_media_type);
+static NVM_DEV_ATTR_RO(multiplane_modes);
+static NVM_DEV_ATTR_RO(num_planes);
+static NVM_DEV_ATTR_RO(num_pages);
+static NVM_DEV_ATTR_RO(page_size);
 
+static struct attribute *nvm_dev_attrs_20[] = {
+	&dev_attr_version.attr,
 	&dev_attr_ppa_format.attr,
-	&dev_attr_media_type.attr,
-	&dev_attr_flash_media_type.attr,
+
 	&dev_attr_num_channels.attr,
 	&dev_attr_num_luns.attr,
-	&dev_attr_num_planes.attr,
 	&dev_attr_num_blocks.attr,
-	&dev_attr_num_pages.attr,
-	&dev_attr_page_size.attr,
 	&dev_attr_hw_sector_size.attr,
 	&dev_attr_oob_sector_size.attr,
 	&dev_attr_read_typ.attr,
@@ -1039,25 +1058,79 @@ static struct attribute *nvm_dev_attrs[] = {
 	&dev_attr_prog_max.attr,
 	&dev_attr_erase_typ.attr,
 	&dev_attr_erase_max.attr,
-	&dev_attr_multiplane_modes.attr,
 	&dev_attr_media_capabilities.attr,
 	&dev_attr_max_phys_secs.attr,
+
 	NULL,
 };
 
-static const struct attribute_group nvm_dev_attr_group = {
+static struct attribute *nvm_dev_attrs_12[] = {
+	&dev_attr_version.attr,
+	&dev_attr_ppa_format.attr,
+
+	&dev_attr_num_channels.attr,
+	&dev_attr_num_luns.attr,
+	&dev_attr_num_blocks.attr,
+	&dev_attr_hw_sector_size.attr,
+	&dev_attr_oob_sector_size.attr,
+	&dev_attr_read_typ.attr,
+	&dev_attr_read_max.attr,
+	&dev_attr_prog_typ.attr,
+	&dev_attr_prog_max.attr,
+	&dev_attr_erase_typ.attr,
+	&dev_attr_erase_max.attr,
+	&dev_attr_media_capabilities.attr,
+	&dev_attr_max_phys_secs.attr,
+
+	/* 1.2 compatibility */
+	&dev_attr_media_manager.attr,
+	&dev_attr_vendor_opcode.attr,
+	&dev_attr_capabilities.attr,
+	&dev_attr_device_mode.attr,
+	&dev_attr_media_type.attr,
+	&dev_attr_flash_media_type.attr,
+	&dev_attr_multiplane_modes.attr,
+	&dev_attr_num_planes.attr,
+	&dev_attr_num_pages.attr,
+	&dev_attr_page_size.attr,
+
+	NULL,
+};
+
+static const struct attribute_group nvm_dev_attr_group_12 = {
 	.name		= "lightnvm",
-	.attrs		= nvm_dev_attrs,
+	.attrs		= nvm_dev_attrs_12,
+};
+
+static const struct attribute_group nvm_dev_attr_group_20 = {
+	.name		= "lightnvm",
+	.attrs		= nvm_dev_attrs_20,
 };
 
 int nvme_nvm_register_sysfs(struct nvme_ns *ns)
 {
-	return sysfs_create_group(&disk_to_dev(ns->disk)->kobj,
-					&nvm_dev_attr_group);
+	struct nvm_dev *ndev = ns->ndev;
+	struct nvm_dev_geo *dev_geo = &ndev->dev_geo;
+
+	if (dev_geo->major_ver_id == 1)
+		return sysfs_create_group(&disk_to_dev(ns->disk)->kobj,
+							&nvm_dev_attr_group_12);
+	else if (dev_geo->major_ver_id == 2)
+		return sysfs_create_group(&disk_to_dev(ns->disk)->kobj,
+							&nvm_dev_attr_group_20);
+	else
+		return -EINVAL;
 }
 
 void nvme_nvm_unregister_sysfs(struct nvme_ns *ns)
 {
-	sysfs_remove_group(&disk_to_dev(ns->disk)->kobj,
-					&nvm_dev_attr_group);
+	struct nvm_dev *ndev = ns->ndev;
+	struct nvm_dev_geo *dev_geo = &ndev->dev_geo;
+
+	if (dev_geo->major_ver_id == 1)
+		return sysfs_remove_group(&disk_to_dev(ns->disk)->kobj,
+							&nvm_dev_attr_group_12);
+	else if (dev_geo->major_ver_id == 2)
+		return sysfs_remove_group(&disk_to_dev(ns->disk)->kobj,
+							&nvm_dev_attr_group_20);
 }

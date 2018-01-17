@@ -225,8 +225,6 @@ static struct nvm_tgt_dev *nvm_create_tgt_dev(struct nvm_dev *dev,
 	tgt_dev->q = dev->q;
 	tgt_dev->map = dev_map;
 	tgt_dev->luns = luns;
-	memcpy(&tgt_dev->identity, &dev->identity, sizeof(struct nvm_id));
-
 	tgt_dev->parent = dev;
 
 	return tgt_dev;
@@ -850,40 +848,42 @@ EXPORT_SYMBOL(nvm_get_tgt_bb_tbl);
 
 static int nvm_core_init(struct nvm_dev *dev)
 {
-	struct nvm_id *id = &dev->identity;
-	struct nvm_id_group *grp = &id->grp;
+	struct nvm_dev_geo *dev_geo = &dev->dev_geo;
 	struct nvm_geo *geo = &dev->geo;
 	int ret;
 
-	memcpy(&geo->addrf, &id->addrf, sizeof(struct nvm_addr_format));
+	memcpy(&geo->addrf, &dev_geo->addrf, sizeof(struct nvm_addr_format));
 
-	geo->version = id->ver_id;
-
-	if (grp->mtype != 0) {
-		pr_err("nvm: memory type not supported\n");
-		return -EINVAL;
+	if (dev_geo->major_ver_id == 1 && dev_geo->minor_ver_id == 2) {
+		geo->version = NVM_OCSSD_SPEC_12;
+	} else if (dev_geo->major_ver_id == 2 && dev_geo->minor_ver_id == 0) {
+		geo->version = NVM_OCSSD_SPEC_20;
+	} else {
+		pr_err("nvm: OCSSD version not supported (v%d.%d)\n",
+				dev_geo->major_ver_id, dev_geo->minor_ver_id);
 	}
 
 	/* Whole device values */
-	geo->nr_chnls = grp->num_ch;
-	geo->nr_luns = grp->num_lun;
+	geo->nr_chnls = dev_geo->num_ch;
+	geo->nr_luns = dev_geo->num_lun;
 
 	/* Generic device geometry values */
-	geo->ws_min = grp->ws_min;
-	geo->ws_opt = grp->ws_opt;
-	geo->ws_seq = grp->ws_seq;
-	geo->ws_per_chk = grp->ws_per_chk;
-	geo->nr_chks = grp->num_chk;
-	geo->sec_size = grp->csecs;
-	geo->oob_size = grp->sos;
-	geo->mccap = grp->mccap;
+	geo->ws_min = dev_geo->ws_min;
+	geo->ws_opt = dev_geo->ws_opt;
+	geo->ws_seq = dev_geo->ws_seq;
+	geo->ws_per_chk = dev_geo->ws_per_chk;
+	geo->nr_chks = dev_geo->num_chk;
+	geo->sec_size = dev_geo->csecs;
+	geo->oob_size = dev_geo->sos;
+	geo->mccap = dev_geo->mccap;
 	geo->max_rq_size = dev->ops->max_phys_sect * geo->sec_size;
 
-	geo->sec_per_chk = grp->clba;
+	geo->sec_per_chk = dev_geo->clba;
 	geo->sec_per_lun = geo->sec_per_chk * geo->nr_chks;
 	geo->all_luns = geo->nr_luns * geo->nr_chnls;
 
 	/* 1.2 spec device geometry values */
+	geo->dom = dev_geo->dom;
 	geo->plane_mode = 1 << geo->ws_seq;
 	geo->nr_planes = geo->ws_opt / geo->ws_min;
 	geo->sec_per_pg = geo->ws_min;
@@ -929,18 +929,8 @@ static int nvm_init(struct nvm_dev *dev)
 	struct nvm_geo *geo = &dev->geo;
 	int ret = -EINVAL;
 
-	if (dev->ops->identity(dev, &dev->identity)) {
+	if (dev->ops->identity(dev)) {
 		pr_err("nvm: device could not be identified\n");
-		goto err;
-	}
-
-	pr_debug("nvm: ver:%x nvm_vendor:%x\n",
-			dev->identity.ver_id, dev->identity.vmnt);
-
-	if (dev->identity.ver_id != NVM_OCSSD_SPEC_12 &&
-				dev->identity.ver_id != NVM_OCSSD_SPEC_20) {
-		pr_err("nvm: OCSSD revision not supported (%d)\n",
-							dev->identity.ver_id);
 		goto err;
 	}
 

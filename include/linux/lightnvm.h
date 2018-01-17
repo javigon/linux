@@ -17,8 +17,8 @@ enum {
 };
 
 enum {
-	NVM_OCSSD_SPEC_12 = 1,
-	NVM_OCSSD_SPEC_20 = 2,
+	NVM_OCSSD_SPEC_12 = 12,
+	NVM_OCSSD_SPEC_20 = 20,
 };
 
 /* 1.2 format */
@@ -70,11 +70,10 @@ struct ppa_addr {
 };
 
 struct nvm_rq;
-struct nvm_id;
 struct nvm_dev;
 struct nvm_tgt_dev;
 
-typedef int (nvm_id_fn)(struct nvm_dev *, struct nvm_id *);
+typedef int (nvm_id_fn)(struct nvm_dev *);
 typedef int (nvm_op_bb_tbl_fn)(struct nvm_dev *, struct ppa_addr, u8 *);
 typedef int (nvm_op_set_bb_fn)(struct nvm_dev *, struct ppa_addr *, int, int);
 typedef int (nvm_submit_io_fn)(struct nvm_dev *, struct nvm_rq *);
@@ -178,37 +177,6 @@ struct nvm_id_lp_tbl {
 	struct nvm_id_lp_mlc mlc;
 };
 
-struct nvm_id_group {
-	u8	mtype;
-	u8	fmtype;
-	u8	num_ch;
-	u8	num_lun;
-	u16	num_chk;
-	u16	clba;
-	u16	csecs;
-	u16	sos;
-
-	u16	ws_min;
-	u16	ws_opt;
-	u16	ws_seq;
-	u16	ws_per_chk;
-
-	u32	trdt;
-	u32	trdm;
-	u32	tprt;
-	u32	tprm;
-	u32	tbet;
-	u32	tbem;
-	u32	mpos;
-	u32	mccap;
-	u16	cpar;
-
-	/* 1.2 compatibility */
-	u8	num_pln;
-	u16	num_pg;
-	u16	fpg_sz;
-};
-
 struct nvm_addr_format_12 {
 	u8	ch_len;
 	u8	lun_len;
@@ -252,16 +220,47 @@ struct nvm_addr_format {
 	u64	rsv_mask[2];
 };
 
-struct nvm_id {
-	u8	ver_id;
+struct nvm_dev_geo {
+	u8	major_ver_id;
+	u8	minor_ver_id;
+
+	u8	num_ch;
+	u8	num_lun;
+	u16	num_chk;
+	u16	clba;
+	u16	csecs;
+	u16	sos;
+
+	u16	ws_min;
+	u16	ws_opt;
+	u16	ws_seq;
+	u16	ws_per_chk;
+
+	u32	trdt;
+	u32	trdm;
+	u32	tprt;
+	u32	tprm;
+	u32	tbet;
+	u32	tbem;
+	u32	mccap;
+
+	struct nvm_addr_format addrf;
+
+	/* 1.2 compatibility */
 	u8	vmnt;
 	u32	cap;
 	u32	dom;
 
-	struct nvm_addr_format addrf;
+	u8	mtype;
+	u8	fmtype;
 
-	struct nvm_id_group grp;
-} __packed;
+	u16	cpar;
+	u32	mpos;
+
+	u8	num_pln;
+	u16	num_pg;
+	u16	fpg_sz;
+};
 
 struct nvm_target {
 	struct list_head list;
@@ -357,8 +356,11 @@ struct nvm_geo {
 	/* Legacy 1.2 specific geometry */
 	int plane_mode; /* drive device in single, double or quad mode */
 	int nr_planes;
+
 	int sec_per_pg; /* only sectors for a single page */
 	int sec_per_pl; /* all sectors across planes */
+
+	int dom;        /* Device Operating Mode*/
 };
 
 /* sub-device structure */
@@ -371,7 +373,6 @@ struct nvm_tgt_dev {
 
 	sector_t total_secs;
 
-	struct nvm_id identity;
 	struct request_queue *q;
 
 	struct nvm_dev *parent;
@@ -391,7 +392,7 @@ struct nvm_dev {
 	unsigned long *lun_map;
 	void *dma_pool;
 
-	struct nvm_id identity;
+	struct nvm_dev_geo dev_geo;
 
 	/* Backend device */
 	struct request_queue *q;
