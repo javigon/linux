@@ -103,7 +103,40 @@ static void pblk_l2p_free(struct pblk *pblk)
 	vfree(pblk->trans_map);
 }
 
-static int pblk_l2p_init(struct pblk *pblk)
+static int pblk_l2p_recover(struct pblk *pblk, bool factory_init)
+{
+	struct pblk_line *line = NULL;
+
+	if (factory_init) {
+		pblk_setup_uuid(pblk);
+	} else {
+		line = pblk_recov_l2p(pblk);
+		if (IS_ERR(line)) {
+			pr_err("pblk: could not recover l2p table\n");
+			return -EFAULT;
+		}
+	}
+
+#ifdef CONFIG_NVM_DEBUG
+	pr_info("pblk init: L2P CRC: %x\n", pblk_l2p_crc(pblk));
+#endif
+
+	/* Free full lines directly as GC has not been started yet */
+	pblk_gc_free_full_lines(pblk);
+
+	if (!line) {
+		/* Configure next line for user data */
+		line = pblk_line_get_first_data(pblk);
+		if (!line) {
+			pr_err("pblk: line list corrupted\n");
+			return -EFAULT;
+		}
+	}
+
+	return 0;
+}
+
+static int pblk_l2p_init(struct pblk *pblk, bool factory_init)
 {
 	sector_t i;
 	struct ppa_addr ppa;
@@ -119,7 +152,7 @@ static int pblk_l2p_init(struct pblk *pblk)
 	for (i = 0; i < pblk->rl.nr_secs; i++)
 		pblk_trans_map_set(pblk, i, ppa);
 
-	return 0;
+	return pblk_l2p_recover(pblk, factory_init);
 }
 
 static void pblk_rwb_free(struct pblk *pblk)
@@ -583,38 +616,6 @@ static int pblk_luns_init(struct pblk *pblk, struct ppa_addr *luns)
 	}
 
 	return 0;
-}
-
-static int pblk_lines_recover(struct pblk *pblk, int flags)
-{
-	struct pblk_line *line = NULL;
-	int ret = 0;
-
-	if (!(flags & NVM_TARGET_FACTORY)) {
-		line = pblk_recov_l2p(pblk);
-		if (IS_ERR(line)) {
-			pr_err("pblk: could not recover l2p table\n");
-			ret = -EFAULT;
-		}
-	}
-
-#ifdef CONFIG_NVM_DEBUG
-	pr_info("pblk init: L2P CRC: %x\n", pblk_l2p_crc(pblk));
-#endif
-
-	/* Free full lines directly as GC has not been started yet */
-	pblk_gc_free_full_lines(pblk);
-
-	if (!line) {
-		/* Configure next line for user data */
-		line = pblk_line_get_first_data(pblk);
-		if (!line) {
-			pr_err("pblk: line list corrupted\n");
-			ret = -EFAULT;
-		}
-	}
-
-	return ret;
 }
 
 /* See comment over struct line_emeta definition */
@@ -1166,9 +1167,6 @@ static void *pblk_init(struct nvm_tgt_dev *dev, struct gendisk *tdisk,
 	spin_lock_init(&pblk->trans_lock);
 	spin_lock_init(&pblk->lock);
 
-	if (flags & NVM_TARGET_FACTORY)
-		pblk_setup_uuid(pblk);
-
 #ifdef CONFIG_NVM_DEBUG
 	atomic_long_set(&pblk->inflight_writes, 0);
 	atomic_long_set(&pblk->padded_writes, 0);
@@ -1224,16 +1222,10 @@ static void *pblk_init(struct nvm_tgt_dev *dev, struct gendisk *tdisk,
 		goto fail_free_lines;
 	}
 
-	ret = pblk_l2p_init(pblk);
+	ret = pblk_l2p_init(pblk, flags & NVM_TARGET_FACTORY);
 	if (ret) {
 		pr_err("pblk: could not initialize maps\n");
 		goto fail_free_rwb;
-	}
-
-	ret = pblk_lines_recover(pblk, flags);
-	if (ret) {
-		pr_err("pblk: could not configure lines\n");
-		goto fail_free_l2p;
 	}
 
 	ret = pblk_writer_init(pblk);
