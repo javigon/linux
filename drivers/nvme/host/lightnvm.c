@@ -1009,8 +1009,14 @@ static ssize_t nvm_dev_attr_show(struct device *dev,
 		return scnprintf(page, PAGE_SIZE, "%u\n", dev_geo->num_ch);
 	} else if (strcmp(attr->name, "num_luns") == 0) {
 		return scnprintf(page, PAGE_SIZE, "%u\n", dev_geo->num_lun);
-	} else if (strcmp(attr->name, "num_blocks") == 0) {	/* u16 */
+	} else if (strcmp(attr->name, "num_chunks") == 0) {	/* u16 */
 		return scnprintf(page, PAGE_SIZE, "%u\n", dev_geo->num_chk);
+	} else if (strcmp(attr->name, "ws_min") == 0) {
+		return scnprintf(page, PAGE_SIZE, "%u\n", dev_geo->ws_min);
+	} else if (strcmp(attr->name, "ws_opt") == 0) {
+		return scnprintf(page, PAGE_SIZE, "%u\n", dev_geo->ws_opt);
+	} else if (strcmp(attr->name, "ws_seq") == 0) {
+		return scnprintf(page, PAGE_SIZE, "%u\n", dev_geo->ws_seq);
 	} else if (strcmp(attr->name, "hw_sector_size") == 0) {
 		return scnprintf(page, PAGE_SIZE, "%u\n", dev_geo->csecs);
 	} else if (strcmp(attr->name, "oob_sector_size") == 0) {/* u32 */
@@ -1069,9 +1075,12 @@ static NVM_DEV_ATTR_RO(ppa_format);
 
 static NVM_DEV_ATTR_RO(num_channels);
 static NVM_DEV_ATTR_RO(num_luns);
-static NVM_DEV_ATTR_RO(num_blocks);
+static NVM_DEV_ATTR_RO(num_chunks);
 static NVM_DEV_ATTR_RO(hw_sector_size);
 static NVM_DEV_ATTR_RO(oob_sector_size);
+static NVM_DEV_ATTR_RO(ws_min);
+static NVM_DEV_ATTR_RO(ws_opt);
+static NVM_DEV_ATTR_RO(ws_seq);
 static NVM_DEV_ATTR_RO(read_typ);
 static NVM_DEV_ATTR_RO(read_max);
 static NVM_DEV_ATTR_RO(prog_typ);
@@ -1099,9 +1108,14 @@ static struct attribute *nvm_dev_attrs_20[] = {
 
 	&dev_attr_num_channels.attr,
 	&dev_attr_num_luns.attr,
-	&dev_attr_num_blocks.attr,
+	&dev_attr_num_chunks.attr,
 	&dev_attr_hw_sector_size.attr,
 	&dev_attr_oob_sector_size.attr,
+
+	&dev_attr_ws_min.attr,
+	&dev_attr_ws_opt.attr,
+	&dev_attr_ws_seq.attr,
+
 	&dev_attr_read_typ.attr,
 	&dev_attr_read_max.attr,
 	&dev_attr_prog_typ.attr,
@@ -1120,15 +1134,21 @@ static struct attribute *nvm_dev_attrs_12[] = {
 
 	&dev_attr_num_channels.attr,
 	&dev_attr_num_luns.attr,
-	&dev_attr_num_blocks.attr,
+	&dev_attr_num_chunks.attr,
 	&dev_attr_hw_sector_size.attr,
 	&dev_attr_oob_sector_size.attr,
+
+	&dev_attr_ws_min.attr,
+	&dev_attr_ws_opt.attr,
+	&dev_attr_ws_seq.attr,
+
 	&dev_attr_read_typ.attr,
 	&dev_attr_read_max.attr,
 	&dev_attr_prog_typ.attr,
 	&dev_attr_prog_max.attr,
 	&dev_attr_erase_typ.attr,
 	&dev_attr_erase_max.attr,
+
 	&dev_attr_media_capabilities.attr,
 	&dev_attr_max_phys_secs.attr,
 
