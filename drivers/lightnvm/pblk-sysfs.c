@@ -115,11 +115,11 @@ static ssize_t pblk_sysfs_ppaf(struct pblk *pblk, char *page)
 	struct nvm_geo *geo = &dev->geo;
 	ssize_t sz = 0;
 
-	if (geo->version == NVM_OCSSD_SPEC_12) {
+	if (geo->c.version == NVM_OCSSD_SPEC_12) {
 		struct nvm_addr_format_12 *ppaf =
 				(struct nvm_addr_format_12 *)&pblk->addrf;
 		struct nvm_addr_format_12 *geo_ppaf =
-				(struct nvm_addr_format_12 *)&geo->addrf;
+				(struct nvm_addr_format_12 *)&geo->c.addrf;
 
 		sz = snprintf(page, PAGE_SIZE,
 			"pblk:(s:%d)ch:%d/%d,lun:%d/%d,blk:%d/%d,pg:%d/%d,pl:%d/%d,sec:%d/%d\n",
@@ -141,7 +141,7 @@ static ssize_t pblk_sysfs_ppaf(struct pblk *pblk, char *page)
 			geo_ppaf->sec_offset, geo_ppaf->sec_len);
 	} else {
 		struct nvm_addr_format *ppaf = &pblk->addrf;
-		struct nvm_addr_format *geo_ppaf = &geo->addrf;
+		struct nvm_addr_format *geo_ppaf = &geo->c.addrf;
 
 		sz = snprintf(page, PAGE_SIZE,
 			"pblk:(s:%d)ch:%d/%d,lun:%d/%d,chk:%d/%d/sec:%d/%d\n",
@@ -347,7 +347,7 @@ static ssize_t pblk_sysfs_lines_info(struct pblk *pblk, char *page)
 				"blk_line:%d, sec_line:%d, sec_blk:%d\n",
 					lm->blk_per_line,
 					lm->sec_per_line,
-					geo->sec_per_chk);
+					geo->c.clba);
 
 	return sz;
 }

@@ -975,7 +975,7 @@ static inline int pblk_pad_distance(struct pblk *pblk)
 	struct nvm_tgt_dev *dev = pblk->dev;
 	struct nvm_geo *geo = &dev->geo;
 
-	return NVM_MEM_PAGE_WRITE * geo->all_luns * geo->sec_per_pl;
+	return NVM_MEM_PAGE_WRITE * geo->all_luns * geo->c.ws_opt;
 }
 
 static inline int pblk_ppa_to_line(struct ppa_addr p)
@@ -995,7 +995,7 @@ static inline struct ppa_addr addr_to_gen_ppa(struct pblk *pblk, u64 paddr,
 	struct nvm_geo *geo = &dev->geo;
 	struct ppa_addr ppa;
 
-	if (geo->version == NVM_OCSSD_SPEC_12) {
+	if (geo->c.version == NVM_OCSSD_SPEC_12) {
 		struct nvm_addr_format_12 *ppaf =
 				(struct nvm_addr_format_12 *)&pblk->addrf;
 
@@ -1039,7 +1039,7 @@ static inline u64 pblk_dev_ppa_to_line_addr(struct pblk *pblk,
 	struct nvm_geo *geo = &dev->geo;
 	u64 paddr;
 
-	if (geo->version == NVM_OCSSD_SPEC_12) {
+	if (geo->c.version == NVM_OCSSD_SPEC_12) {
 		struct nvm_addr_format_12 *ppaf =
 				(struct nvm_addr_format_12 *)&pblk->addrf;
 
@@ -1080,7 +1080,7 @@ static inline struct ppa_addr pblk_ppa32_to_ppa64(struct pblk *pblk, u32 ppa32)
 		struct nvm_tgt_dev *dev = pblk->dev;
 		struct nvm_geo *geo = &dev->geo;
 
-		if (geo->version == NVM_OCSSD_SPEC_12) {
+		if (geo->c.version == NVM_OCSSD_SPEC_12) {
 			struct nvm_addr_format_12 *ppaf =
 				(struct nvm_addr_format_12 *)&pblk->addrf;
 
@@ -1126,7 +1126,7 @@ static inline u32 pblk_ppa64_to_ppa32(struct pblk *pblk, struct ppa_addr ppa64)
 		struct nvm_tgt_dev *dev = pblk->dev;
 		struct nvm_geo *geo = &dev->geo;
 
-		if (geo->version == NVM_OCSSD_SPEC_12) {
+		if (geo->c.version == NVM_OCSSD_SPEC_12) {
 			struct nvm_addr_format_12 *ppaf =
 				(struct nvm_addr_format_12 *)&pblk->addrf;
 
@@ -1251,7 +1251,7 @@ static inline int pblk_set_progr_mode(struct pblk *pblk, int type)
 	struct nvm_geo *geo = &dev->geo;
 	int flags;
 
-	flags = geo->plane_mode >> 1;
+	flags = geo->c.pln_mode >> 1;
 
 	if (type == PBLK_WRITE)
 		flags |= NVM_IO_SCRAMBLE_ENABLE;
@@ -1272,7 +1272,7 @@ static inline int pblk_set_read_mode(struct pblk *pblk, int type)
 
 	flags = NVM_IO_SUSPEND | NVM_IO_SCRAMBLE_ENABLE;
 	if (type == PBLK_READ_SEQUENTIAL)
-		flags |= geo->plane_mode >> 1;
+		flags |= geo->c.pln_mode >> 1;
 
 	return flags;
 }
@@ -1289,7 +1289,7 @@ static inline void print_ppa(struct nvm_geo *geo, struct ppa_addr *p,
 	if (p->c.is_cached) {
 		pr_err("ppa: (%s: %x) cache line: %llu\n",
 				msg, error, (u64)p->c.line);
-	} else if (geo->version == NVM_OCSSD_SPEC_12) {
+	} else if (geo->c.version == NVM_OCSSD_SPEC_12) {
 		pr_err("ppa: (%s: %x):ch:%d,lun:%d,blk:%d,pg:%d,pl:%d,sec:%d\n",
 			msg, error,
 			p->g.ch, p->g.lun, p->g.blk,
@@ -1329,21 +1329,21 @@ static inline int pblk_boundary_ppa_checks(struct nvm_tgt_dev *tgt_dev,
 	for (i = 0; i < nr_ppas; i++) {
 		ppa = &ppas[i];
 
-		if (geo->version == NVM_OCSSD_SPEC_12) {
+		if (geo->c.version == NVM_OCSSD_SPEC_12) {
 			if (!ppa->c.is_cached &&
 					ppa->g.ch < geo->nr_chnls &&
 					ppa->g.lun < geo->nr_luns &&
-					ppa->g.pl < geo->nr_planes &&
-					ppa->g.blk < geo->nr_chks &&
-					ppa->g.pg < geo->ws_per_chk &&
-					ppa->g.sec < geo->sec_per_pg)
+					ppa->g.pl < geo->c.num_pln &&
+					ppa->g.blk < geo->c.num_chk &&
+					ppa->g.pg < geo->c.ws_per_chk &&
+					ppa->g.sec < geo->c.ws_min)
 				continue;
 		} else {
 			if (!ppa->c.is_cached &&
 					ppa->m.ch < geo->nr_chnls &&
 					ppa->m.lun < geo->nr_luns &&
-					ppa->m.chk < geo->nr_chks &&
-					ppa->m.sec < geo->sec_per_chk)
+					ppa->m.chk < geo->c.num_chk &&
+					ppa->m.sec < geo->c.clba)
 				continue;
 		}
 

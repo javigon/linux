@@ -225,30 +225,35 @@ struct nvm_addr_format {
 	u64	rsv_mask[2];
 };
 
-struct nvm_dev_geo {
-	u8	major_ver_id;
-	u8	minor_ver_id;
+/* Device common geometry */
+struct nvm_common_geo {
+	/* kernel short version */
+	u8	version;
 
-	u8	num_ch;
-	u8	num_lun;
-	u16	num_chk;
-	u16	clba;
-	u16	csecs;
-	u16	sos;
+	/* chunk geometry */
+	u16	num_chk;	/* chunks per lun */
+	u16	clba;		/* sectors per chunk */
+	u16	csecs;		/* sector size */
+	u16	sos;		/* out-of-band area size */
 
-	u16	ws_min;
-	u16	ws_opt;
-	u16	ws_seq;
-	u16	ws_per_chk;
+	/* write constrains */
+	u32	ws_min;		/* minimun write size */
+	u32	ws_opt;		/* optimal write size */
+	u32	mw_cunits;	/* distance required for successful read */
+	u16	ws_per_chk;	//TOGO
 
-	u32	trdt;
-	u32	trdm;
-	u32	tprt;
-	u32	tprm;
-	u32	tbet;
-	u32	tbem;
+	/* device capabilities */
 	u32	mccap;
 
+	/* device timings */
+	u32	trdt;		/* Avg. Tread (ns) */
+	u32	trdm;		/* Max Tread (ns) */
+	u32	tprt;		/* Avg. Tprog (ns) */
+	u32	tprm;		/* Max Tprog (ns) */
+	u32	tbet;		/* Avg. Terase (ns) */
+	u32	tbem;		/* Max Terase (ns) */
+
+	/* generic address format */
 	struct nvm_addr_format addrf;
 
 	/* 1.2 compatibility */
@@ -263,8 +268,25 @@ struct nvm_dev_geo {
 	u32	mpos;
 
 	u8	num_pln;
+	u8	pln_mode;
 	u16	num_pg;
 	u16	fpg_sz;
+};
+
+/* Device identified geometry */
+struct nvm_dev_geo {
+	/* device reported version */
+	u8	major_ver_id;
+	u8	minor_ver_id;
+
+	/* full device geometry */
+	u8	num_ch;
+	u8	num_lun;
+
+	/* calculated values */
+	u16	all_luns;
+
+	struct nvm_common_geo c;
 };
 
 enum {
@@ -354,43 +376,26 @@ enum {
 	NVM_BLK_ST_BAD =	0x8,	/* Bad block */
 };
 
-/* Device generic information */
+/* Instance geometry */
 struct nvm_geo {
-	int version;
-
-	/* generic geometry */
+	/* instance specific geometry */
 	int nr_chnls;
-	int nr_luns; /* per channel */
-	int nr_chks; /* per lun */
-	int all_luns; /* across channels */
-	int all_chunks; /*across channels */
+	int nr_luns;		/* per channel */
 
-	int sec_size;
-	int oob_size;
-	int mccap;
+	int max_rq_size;
+	int op;
+
+	/* common geometry */
+	struct nvm_common_geo c;
+
+	/* calculated values */
+	int all_luns;		/* across channels */
+	int all_chunks;		/* across channels */
+
+	sector_t total_secs;	/* across channels */
 
 	int sec_per_chk;
 	int sec_per_lun;
-
-	int ws_min;
-	int ws_opt;
-	int ws_seq;
-	int ws_per_chk;
-
-	int max_rq_size;
-
-	int op;
-
-	struct nvm_addr_format addrf;
-
-	/* Legacy 1.2 specific geometry */
-	int plane_mode; /* drive device in single, double or quad mode */
-	int nr_planes;
-
-	int sec_per_pg; /* only sectors for a single page */
-	int sec_per_pl; /* all sectors across planes */
-
-	int dom;        /* Device Operating Mode*/
 };
 
 /* sub-device structure */
@@ -400,8 +405,6 @@ struct nvm_tgt_dev {
 
 	/* Base ppas for target LUNs */
 	struct ppa_addr *luns;
-
-	sector_t total_secs;
 
 	struct request_queue *q;
 
@@ -415,14 +418,10 @@ struct nvm_dev {
 	struct list_head devices;
 
 	/* Device information */
-	struct nvm_geo geo;
-
-	unsigned long total_secs;
+	struct nvm_dev_geo dev_geo;
 
 	unsigned long *lun_map;
 	void *dma_pool;
-
-	struct nvm_dev_geo dev_geo;
 
 	/* Backend device */
 	struct request_queue *q;
@@ -445,9 +444,9 @@ static inline struct ppa_addr generic_to_dev_addr(struct nvm_tgt_dev *tgt_dev,
 	struct nvm_geo *geo = &tgt_dev->geo;
 	struct ppa_addr l;
 
-	if (geo->version == NVM_OCSSD_SPEC_12) {
+	if (geo->c.version == NVM_OCSSD_SPEC_12) {
 		struct nvm_addr_format_12 *ppaf =
-				(struct nvm_addr_format_12 *)&geo->addrf;
+				(struct nvm_addr_format_12 *)&geo->c.addrf;
 
 		l.ppa = ((u64)r.g.ch) << ppaf->ch_offset;
 		l.ppa |= ((u64)r.g.lun) << ppaf->lun_offset;
@@ -456,7 +455,7 @@ static inline struct ppa_addr generic_to_dev_addr(struct nvm_tgt_dev *tgt_dev,
 		l.ppa |= ((u64)r.g.pl) << ppaf->pln_offset;
 		l.ppa |= ((u64)r.g.sec) << ppaf->sec_offset;
 	} else {
-		struct nvm_addr_format *lbaf = &geo->addrf;
+		struct nvm_addr_format *lbaf = &geo->c.addrf;
 
 		l.ppa = ((u64)r.m.ch) << lbaf->ch_offset;
 		l.ppa |= ((u64)r.m.lun) << lbaf->lun_offset;
@@ -475,9 +474,9 @@ static inline struct ppa_addr dev_to_generic_addr(struct nvm_tgt_dev *tgt_dev,
 
 	l.ppa = 0;
 
-	if (geo->version == NVM_OCSSD_SPEC_12) {
+	if (geo->c.version == NVM_OCSSD_SPEC_12) {
 		struct nvm_addr_format_12 *ppaf =
-				(struct nvm_addr_format_12 *)&geo->addrf;
+				(struct nvm_addr_format_12 *)&geo->c.addrf;
 
 		l.g.ch = (r.ppa & ppaf->ch_mask) >> ppaf->ch_offset;
 		l.g.lun = (r.ppa & ppaf->lun_mask) >> ppaf->lun_offset;
@@ -486,7 +485,7 @@ static inline struct ppa_addr dev_to_generic_addr(struct nvm_tgt_dev *tgt_dev,
 		l.g.pl = (r.ppa & ppaf->pln_mask) >> ppaf->pln_offset;
 		l.g.sec = (r.ppa & ppaf->sec_mask) >> ppaf->sec_offset;
 	} else {
-		struct nvm_addr_format *lbaf = &geo->addrf;
+		struct nvm_addr_format *lbaf = &geo->c.addrf;
 
 		l.m.ch = (r.ppa & lbaf->ch_mask) >> lbaf->ch_offset;
 		l.m.lun = (r.ppa & lbaf->lun_mask) >> lbaf->lun_offset;
