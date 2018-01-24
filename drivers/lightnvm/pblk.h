@@ -968,14 +968,12 @@ static inline void pblk_ppa_set_empty(struct ppa_addr *ppa_addr)
 	ppa_addr->ppa = ADDR_EMPTY;
 }
 
-#define NVM_MEM_PAGE_WRITE (8)
-
 static inline int pblk_pad_distance(struct pblk *pblk)
 {
 	struct nvm_tgt_dev *dev = pblk->dev;
 	struct nvm_geo *geo = &dev->geo;
 
-	return NVM_MEM_PAGE_WRITE * geo->all_luns * geo->c.ws_opt;
+	return geo->c.mw_cunits * geo->all_luns * geo->c.ws_opt;
 }
 
 static inline int pblk_ppa_to_line(struct ppa_addr p)

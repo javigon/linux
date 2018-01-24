@@ -335,6 +335,9 @@ static int nvme_nvm_identity_12(struct nvme_nvm_id *gen_id,
 	dev_geo->c.ws_opt = dev_geo->c.ws_min = sec_per_pg;
 	dev_geo->c.ws_per_chk = pg_per_blk;
 
+	/* MLC memories should be under 8 pages between upper and lower page */
+	dev_geo->c.mw_cunits = 8;
+
 	dev_geo->c.mccap = le32_to_cpu(src->mccap);
 
 	dev_geo->c.trdt = le32_to_cpu(src->trdt);
@@ -417,6 +420,7 @@ static int nvme_nvm_identity_20(struct nvme_nvm_id *gen_id,
 
 	dev_geo->c.ws_min = le32_to_cpu(id->wrt.ws_min);
 	dev_geo->c.ws_opt = le32_to_cpu(id->wrt.ws_opt);
+	dev_geo->c.mw_cunits = le32_to_cpu(id->wrt.mw_cunits);
 	dev_geo->c.ws_per_chk = dev_geo->c.clba / dev_geo->c.ws_min;
 
 	dev_geo->c.mccap = le32_to_cpu(id->mccap);
@@ -1021,6 +1025,8 @@ static ssize_t nvm_dev_attr_show(struct device *dev,
 		return scnprintf(page, PAGE_SIZE, "%u\n", dev_geo->c.ws_min);
 	} else if (strcmp(attr->name, "ws_opt") == 0) {
 		return scnprintf(page, PAGE_SIZE, "%u\n", dev_geo->c.ws_opt);
+	} else if (strcmp(attr->name, "mw_cunits") == 0) {
+		return scnprintf(page, PAGE_SIZE, "%u\n", dev_geo->c.mw_cunits);
 	} else if (strcmp(attr->name, "hw_sector_size") == 0) {
 		return scnprintf(page, PAGE_SIZE, "%u\n", dev_geo->c.csecs);
 	} else if (strcmp(attr->name, "oob_sector_size") == 0) {/* u32 */
@@ -1084,6 +1090,7 @@ static NVM_DEV_ATTR_RO(hw_sector_size);
 static NVM_DEV_ATTR_RO(oob_sector_size);
 static NVM_DEV_ATTR_RO(ws_min);
 static NVM_DEV_ATTR_RO(ws_opt);
+static NVM_DEV_ATTR_RO(mw_cunits);
 static NVM_DEV_ATTR_RO(read_typ);
 static NVM_DEV_ATTR_RO(read_max);
 static NVM_DEV_ATTR_RO(prog_typ);
@@ -1117,6 +1124,7 @@ static struct attribute *nvm_dev_attrs_20[] = {
 
 	&dev_attr_ws_min.attr,
 	&dev_attr_ws_opt.attr,
+	&dev_attr_mw_cunits.attr,
 
 	&dev_attr_read_typ.attr,
 	&dev_attr_read_max.attr,
@@ -1142,6 +1150,7 @@ static struct attribute *nvm_dev_attrs_12[] = {
 
 	&dev_attr_ws_min.attr,
 	&dev_attr_ws_opt.attr,
+	&dev_attr_mw_cunits.attr,
 
 	&dev_attr_read_typ.attr,
 	&dev_attr_read_max.attr,

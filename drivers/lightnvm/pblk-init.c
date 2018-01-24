@@ -355,8 +355,7 @@ static int pblk_core_init(struct pblk *pblk)
 	atomic_long_set(&pblk->nr_flush, 0);
 	pblk->nr_flush_rst = 0;
 
-	pblk->pgs_in_buffer = NVM_MEM_PAGE_WRITE *
-						geo->c.ws_opt * geo->all_luns;
+	pblk->pgs_in_buffer = geo->c.mw_cunits * geo->c.ws_opt * geo->all_luns;
 
 	pblk->min_write_pgs = geo->c.ws_opt * (geo->c.csecs / PAGE_SIZE);
 	max_write_ppas = pblk->min_write_pgs * geo->all_luns;
