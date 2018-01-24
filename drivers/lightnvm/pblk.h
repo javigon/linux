@@ -1251,6 +1251,9 @@ static inline int pblk_set_progr_mode(struct pblk *pblk, int type)
 	struct nvm_geo *geo = &dev->geo;
 	int flags;
 
+	if (geo->c.version == NVM_OCSSD_SPEC_20)
+		return 0;
+
 	flags = geo->c.pln_mode >> 1;
 
 	if (type == PBLK_WRITE)
@@ -1269,6 +1272,9 @@ static inline int pblk_set_read_mode(struct pblk *pblk, int type)
 	struct nvm_tgt_dev *dev = pblk->dev;
 	struct nvm_geo *geo = &dev->geo;
 	int flags;
+
+	if (geo->c.version == NVM_OCSSD_SPEC_20)
+		return 0;
 
 	flags = NVM_IO_SUSPEND | NVM_IO_SCRAMBLE_ENABLE;
 	if (type == PBLK_READ_SEQUENTIAL)
