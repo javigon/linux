@@ -1216,17 +1216,10 @@ static void *pblk_init(struct nvm_tgt_dev *dev, struct gendisk *tdisk,
 		goto fail_free_luns;
 	}
 
-	pblk->pad_dist = kzalloc((pblk->min_write_pgs - 1) * sizeof(atomic64_t),
-				 GFP_KERNEL);
-	if (!pblk->pad_dist) {
-		ret = -ENOMEM;
-		goto fail_free_core;
-	}
-
 	ret = pblk_lines_init(pblk);
 	if (ret) {
 		pr_err("pblk: could not initialize lines\n");
-		goto fail_free_pad_dist;
+		goto fail_free_core;
 	}
 
 	ret = pblk_rwb_init(pblk);
@@ -1286,8 +1279,6 @@ fail_free_rwb:
 	pblk_rwb_free(pblk);
 fail_free_lines:
 	pblk_lines_free(pblk);
-fail_free_pad_dist:
-	kfree(pblk->pad_dist);
 fail_free_core:
 	pblk_core_free(pblk);
 fail_free_luns:
