@@ -1063,9 +1063,9 @@ static int pblk_lines_init(struct pblk *pblk)
 	return 0;
 
 fail_free_lines:
-	kfree(pblk->lines);
 	while (--i >= 0)
 		pblk_line_meta_free(&pblk->lines[i]);
+	kfree(pblk->lines);
 fail_free_chunk_log:
 	kfree(chunk_log);
 fail_free_meta:
