@@ -16,12 +16,21 @@ enum {
 	NVM_IOTYPE_GC = 1,
 };
 
-#define NVM_BLK_BITS (16)
-#define NVM_PG_BITS  (16)
-#define NVM_SEC_BITS (8)
-#define NVM_PL_BITS  (8)
-#define NVM_LUN_BITS (8)
-#define NVM_CH_BITS  (7)
+/* 1.2 format */
+#define NVM_12_CH_BITS  (7)
+#define NVM_12_LUN_BITS (8)
+#define NVM_12_BLK_BITS (16)
+#define NVM_12_PG_BITS  (16)
+#define NVM_12_PL_BITS  (8)
+#define NVM_12_SEC_BITS (8)
+#define NVM_12_RESERVED (1)
+
+/* 2.0 format */
+#define NVM_20_CH_BITS  (8)
+#define NVM_20_LUN_BITS (8)
+#define NVM_20_CHK_BITS (16)
+#define NVM_20_SEC_BITS (24)
+#define NVM_20_RESERVED (8)
 
 enum {
 	NVM_OCSSD_SPEC_12 = 12,
@@ -31,15 +40,25 @@ enum {
 struct ppa_addr {
 	/* Generic structure for all addresses */
 	union {
+		/* 1.2 device format */
 		struct {
-			u64 blk		: NVM_BLK_BITS;
-			u64 pg		: NVM_PG_BITS;
-			u64 sec		: NVM_SEC_BITS;
-			u64 pl		: NVM_PL_BITS;
-			u64 lun		: NVM_LUN_BITS;
-			u64 ch		: NVM_CH_BITS;
-			u64 reserved	: 1;
+			u64 ch		: NVM_12_CH_BITS;
+			u64 lun		: NVM_12_LUN_BITS;
+			u64 blk		: NVM_12_BLK_BITS;
+			u64 pg		: NVM_12_PG_BITS;
+			u64 pl		: NVM_12_PL_BITS;
+			u64 sec		: NVM_12_SEC_BITS;
+			u64 reserved	: NVM_12_RESERVED;
 		} g;
+
+		/* 2.0 device format */
+		struct {
+			u64 ch		: NVM_20_CH_BITS;
+			u64 lun		: NVM_20_LUN_BITS;
+			u64 chk		: NVM_20_CHK_BITS;
+			u64 sec		: NVM_20_SEC_BITS;
+			u64 reserved	: NVM_20_RESERVED;
+		} m;
 
 		struct {
 			u64 line	: 63;
