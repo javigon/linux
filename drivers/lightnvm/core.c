@@ -299,7 +299,7 @@ static int __nvm_config_simple(struct nvm_dev *dev,
 
 	if (s->lun_begin == -1 && s->lun_end == -1) {
 		s->lun_begin = 0;
-		s->lun_end = dev_geo->num_lun - 1;
+		s->lun_end = dev_geo->all_luns - 1;
 	}
 
 	return nvm_config_check_luns(dev_geo, s->lun_begin, s->lun_end);
@@ -312,7 +312,7 @@ static int __nvm_config_extended(struct nvm_dev *dev,
 
 	if (e->lun_begin == 0xFFFF && e->lun_end == 0xFFFF) {
 		e->lun_begin = 0;
-		e->lun_end = dev_geo->num_lun - 1;
+		e->lun_end = dev_geo->all_luns - 1;
 	}
 
 	/* op not set falls into target's default */
