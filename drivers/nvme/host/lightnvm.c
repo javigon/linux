@@ -199,34 +199,34 @@ struct nvme_nvm_id20 {
 
 	struct nvme_nvm_id20_addrf lbaf;
 
-	__u32			mccap;
+	__le32			mccap;
 	__u8			resv2[12];
 
 	__u8			wit;
 	__u8			resv3[31];
 
 	/* Geometry */
-	__u16			num_grp;
-	__u16			num_pu;
-	__u32			num_chk;
-	__u32			clba;
+	__le16			num_grp;
+	__le16			num_pu;
+	__le32			num_chk;
+	__le32			clba;
 	__u8			resv4[52];
 
 	/* Write data requirements */
-	__u32			ws_min;
-	__u32			ws_opt;
-	__u32			mw_cunits;
-	__u32			maxoc;
-	__u32			maxocpu;
+	__le32			ws_min;
+	__le32			ws_opt;
+	__le32			mw_cunits;
+	__le32			maxoc;
+	__le32			maxocpu;
 	__u8			resv5[44];
 
 	/* Performance related metrics */
-	__u32			trdt;
-	__u32			trdm;
-	__u32			twrt;
-	__u32			twrm;
-	__u32			tcrst;
-	__u32			tcrsm;
+	__le32			trdt;
+	__le32			trdm;
+	__le32			twrt;
+	__le32			twrm;
+	__le32			tcrst;
+	__le32			tcrsm;
 	__u8			resv6[40];
 
 	/* Reserved area */
