@@ -926,7 +926,7 @@ static int nvm_init(struct nvm_dev *dev)
 	struct nvm_geo *geo = &dev->geo;
 	int ret = -EINVAL;
 
-	if (dev->ops->identity(dev, &dev->identity)) {
+	if (dev->ops->identity(dev)) {
 		pr_err("nvm: device could not be identified\n");
 		goto err;
 	}
