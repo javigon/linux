@@ -113,26 +113,31 @@ static ssize_t pblk_sysfs_ppaf(struct pblk *pblk, char *page)
 {
 	struct nvm_tgt_dev *dev = pblk->dev;
 	struct nvm_geo *geo = &dev->geo;
+	struct nvm_addr_format_12 *ppaf;
+	struct nvm_addr_format_12 *geo_ppaf;
 	ssize_t sz = 0;
 
-	sz = snprintf(page, PAGE_SIZE - sz,
-		"g:(b:%d)blk:%d/%d,pg:%d/%d,lun:%d/%d,ch:%d/%d,pl:%d/%d,sec:%d/%d\n",
-		pblk->ppaf_bitsize,
-		pblk->ppaf.blk_offset, geo->ppaf.blk_len,
-		pblk->ppaf.pg_offset, geo->ppaf.pg_len,
-		pblk->ppaf.lun_offset, geo->ppaf.lun_len,
-		pblk->ppaf.ch_offset, geo->ppaf.ch_len,
-		pblk->ppaf.pln_offset, geo->ppaf.pln_len,
-		pblk->ppaf.sec_offset, geo->ppaf.sect_len);
+	ppaf = (struct nvm_addr_format_12 *)&pblk->addrf;
+	geo_ppaf = (struct nvm_addr_format_12 *)&geo->c.addrf;
+
+	sz = snprintf(page, PAGE_SIZE,
+		"pblk:(s:%d)ch:%d/%d,lun:%d/%d,blk:%d/%d,pg:%d/%d,pl:%d/%d,sec:%d/%d\n",
+			pblk->addrf_len,
+			ppaf->ch_offset, ppaf->ch_len,
+			ppaf->lun_offset, ppaf->lun_len,
+			ppaf->blk_offset, ppaf->blk_len,
+			ppaf->pg_offset, ppaf->pg_len,
+			ppaf->pln_offset, ppaf->pln_len,
+			ppaf->sec_offset, ppaf->sec_len);
 
 	sz += snprintf(page + sz, PAGE_SIZE - sz,
-		"d:blk:%d/%d,pg:%d/%d,lun:%d/%d,ch:%d/%d,pl:%d/%d,sec:%d/%d\n",
-		geo->ppaf.blk_offset, geo->ppaf.blk_len,
-		geo->ppaf.pg_offset, geo->ppaf.pg_len,
-		geo->ppaf.lun_offset, geo->ppaf.lun_len,
-		geo->ppaf.ch_offset, geo->ppaf.ch_len,
-		geo->ppaf.pln_offset, geo->ppaf.pln_len,
-		geo->ppaf.sect_offset, geo->ppaf.sect_len);
+		"device:ch:%d/%d,lun:%d/%d,blk:%d/%d,pg:%d/%d,pl:%d/%d,sec:%d/%d\n",
+			geo_ppaf->ch_offset, geo_ppaf->ch_len,
+			geo_ppaf->lun_offset, geo_ppaf->lun_len,
+			geo_ppaf->blk_offset, geo_ppaf->blk_len,
+			geo_ppaf->pg_offset, geo_ppaf->pg_len,
+			geo_ppaf->pln_offset, geo_ppaf->pln_len,
+			geo_ppaf->sec_offset, geo_ppaf->sec_len);
 
 	return sz;
 }
@@ -288,7 +293,7 @@ static ssize_t pblk_sysfs_lines_info(struct pblk *pblk, char *page)
 				"blk_line:%d, sec_line:%d, sec_blk:%d\n",
 					lm->blk_per_line,
 					lm->sec_per_line,
-					geo->sec_per_chk);
+					geo->c.clba);
 
 	return sz;
 }
