@@ -994,8 +994,24 @@ static ssize_t nvm_dev_attr_show(struct device *dev,
 		return scnprintf(page, PAGE_SIZE, "%u.%u\n",
 						dev_geo->major_ver_id,
 						dev_geo->minor_ver_id);
-	} else if (strcmp(attr->name, "capabilities") == 0) {
-		return scnprintf(page, PAGE_SIZE, "%u\n", dev_geo->c.cap);
+	} else if (strcmp(attr->name, "media_capabilities") == 0) {
+		return scnprintf(page, PAGE_SIZE, "%u\n", dev_geo->c.mccap);
+	} else if (strcmp(attr->name, "ws_min") == 0) {
+		return scnprintf(page, PAGE_SIZE, "%u\n", dev_geo->c.ws_min);
+	} else if (strcmp(attr->name, "ws_opt") == 0) {
+		return scnprintf(page, PAGE_SIZE, "%u\n", dev_geo->c.ws_opt);
+	} else if (strcmp(attr->name, "mw_cunits") == 0) {
+		return scnprintf(page, PAGE_SIZE, "%u\n", dev_geo->c.mw_cunits);
+	} else if (strcmp(attr->name, "maxoc") == 0) {
+		return scnprintf(page, PAGE_SIZE, "%u\n", dev_geo->c.maxoc);
+	} else if (strcmp(attr->name, "maxocpu") == 0) {
+		return scnprintf(page, PAGE_SIZE, "%u\n", dev_geo->c.maxocpu);
+	} else if (strcmp(attr->name, "clba") == 0) {
+		return scnprintf(page, PAGE_SIZE, "%u\n", dev_geo->c.clba);
+	} else if (strcmp(attr->name, "csecs") == 0) {
+		return scnprintf(page, PAGE_SIZE, "%u\n", dev_geo->c.csecs);
+	} else if (strcmp(attr->name, "sos") == 0) {
+		return scnprintf(page, PAGE_SIZE, "%u\n", dev_geo->c.sos);
 	} else if (strcmp(attr->name, "read_typ") == 0) {
 		return scnprintf(page, PAGE_SIZE, "%u\n", dev_geo->c.trdt);
 	} else if (strcmp(attr->name, "read_max") == 0) {
@@ -1021,6 +1037,17 @@ static ssize_t nvm_dev_attr_show_ppaf(struct nvm_addr_format_12 *ppaf,
 				ppaf->sec_offset, ppaf->sec_len);
 }
 
+static ssize_t nvm_dev_attr_show_lbaf(struct nvm_addr_format *lbaf,
+					 char *page)
+{
+	return scnprintf(page, PAGE_SIZE,
+		"0x%02x%02x%02x%02x%02x%02x%02x%02x\n",
+				lbaf->ch_offset, lbaf->ch_len,
+				lbaf->lun_offset, lbaf->lun_len,
+				lbaf->chk_offset, lbaf->chk_len,
+				lbaf->sec_offset, lbaf->sec_len);
+}
+
 static ssize_t nvm_dev_attr_show_12(struct device *dev,
 		struct device_attribute *dattr, char *page)
 {
@@ -1038,6 +1065,8 @@ static ssize_t nvm_dev_attr_show_12(struct device *dev,
 		return scnprintf(page, PAGE_SIZE, "%u\n", dev_geo->c.vmnt);
 	} else if (strcmp(attr->name, "device_mode") == 0) {
 		return scnprintf(page, PAGE_SIZE, "%u\n", dev_geo->c.dom);
+	} else if (strcmp(attr->name, "capabilities") == 0) {
+		return scnprintf(page, PAGE_SIZE, "%u\n", dev_geo->c.cap);
 	/* kept for compatibility */
 	} else if (strcmp(attr->name, "media_manager") == 0) {
 		return scnprintf(page, PAGE_SIZE, "%s\n", "gennvm");
@@ -1100,18 +1129,12 @@ static ssize_t nvm_dev_attr_show_20(struct device *dev,
 
 	if (strcmp(attr->name, "groups") == 0) {
 		return scnprintf(page, PAGE_SIZE, "%u\n", dev_geo->num_ch);
+	} else if (strcmp(attr->name, "lba_format") == 0) {
+		return nvm_dev_attr_show_lbaf((void *)&dev_geo->c.addrf, page);
 	} else if (strcmp(attr->name, "punits") == 0) {
 		return scnprintf(page, PAGE_SIZE, "%u\n", dev_geo->num_lun);
 	} else if (strcmp(attr->name, "chunks") == 0) {
 		return scnprintf(page, PAGE_SIZE, "%u\n", dev_geo->c.num_chk);
-	} else if (strcmp(attr->name, "clba") == 0) {
-		return scnprintf(page, PAGE_SIZE, "%u\n", dev_geo->c.clba);
-	} else if (strcmp(attr->name, "ws_min") == 0) {
-		return scnprintf(page, PAGE_SIZE, "%u\n", dev_geo->c.ws_min);
-	} else if (strcmp(attr->name, "ws_opt") == 0) {
-		return scnprintf(page, PAGE_SIZE, "%u\n", dev_geo->c.ws_opt);
-	} else if (strcmp(attr->name, "mw_cunits") == 0) {
-		return scnprintf(page, PAGE_SIZE, "%u\n", dev_geo->c.mw_cunits);
 	} else if (strcmp(attr->name, "write_typ") == 0) {
 		return scnprintf(page, PAGE_SIZE, "%u\n", dev_geo->c.tprt);
 	} else if (strcmp(attr->name, "write_max") == 0) {
@@ -1138,12 +1161,23 @@ static ssize_t nvm_dev_attr_show_20(struct device *dev,
 static NVM_DEV_ATTR_RO(version);
 static NVM_DEV_ATTR_RO(capabilities);
 
+static NVM_DEV_ATTR_RO(ws_min);
+static NVM_DEV_ATTR_RO(ws_opt);
+static NVM_DEV_ATTR_RO(mw_cunits);
+static NVM_DEV_ATTR_RO(maxoc);
+static NVM_DEV_ATTR_RO(maxocpu);
+
+static NVM_DEV_ATTR_RO(clba);
+static NVM_DEV_ATTR_RO(csecs);
+static NVM_DEV_ATTR_RO(sos);
+
 static NVM_DEV_ATTR_RO(read_typ);
 static NVM_DEV_ATTR_RO(read_max);
 
 /* 1.2 values */
 static NVM_DEV_ATTR_12_RO(vendor_opcode);
 static NVM_DEV_ATTR_12_RO(device_mode);
+static NVM_DEV_ATTR_12_RO(capabilities);
 static NVM_DEV_ATTR_12_RO(ppa_format);
 static NVM_DEV_ATTR_12_RO(media_manager);
 static NVM_DEV_ATTR_12_RO(media_type);
@@ -1202,12 +1236,9 @@ static const struct attribute_group nvm_dev_attr_group_12 = {
 
 /* 2.0 values */
 static NVM_DEV_ATTR_20_RO(groups);
+static NVM_DEV_ATTR_20_RO(lba_format);
 static NVM_DEV_ATTR_20_RO(punits);
 static NVM_DEV_ATTR_20_RO(chunks);
-static NVM_DEV_ATTR_20_RO(clba);
-static NVM_DEV_ATTR_20_RO(ws_min);
-static NVM_DEV_ATTR_20_RO(ws_opt);
-static NVM_DEV_ATTR_20_RO(mw_cunits);
 static NVM_DEV_ATTR_20_RO(write_typ);
 static NVM_DEV_ATTR_20_RO(write_max);
 static NVM_DEV_ATTR_20_RO(reset_typ);
