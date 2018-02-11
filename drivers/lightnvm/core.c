@@ -43,6 +43,8 @@ struct nvm_ch_map {
 struct nvm_dev_map {
 	struct nvm_ch_map *chnls;
 	int nr_chnls;
+	int bch;
+	int blun;
 };
 
 static struct nvm_target *nvm_find_target(struct nvm_dev *dev, const char *name)
@@ -170,6 +172,9 @@ static struct nvm_tgt_dev *nvm_create_tgt_dev(struct nvm_dev *dev,
 								GFP_KERNEL);
 	if (!dev_map->chnls)
 		goto err_chnls;
+
+	dev_map->bch = bch;
+	dev_map->blun = blun;
 
 	luns = kcalloc(nr_luns, sizeof(struct ppa_addr), GFP_KERNEL);
 	if (!luns)
@@ -561,6 +566,19 @@ static void nvm_unregister_map(struct nvm_dev *dev)
 	kfree(rmap);
 }
 
+static unsigned long nvm_log_off_tgt_to_dev(struct nvm_tgt_dev *tgt_dev)
+{
+	struct nvm_dev_map *dev_map = tgt_dev->map;
+	struct nvm_geo *geo = &tgt_dev->geo;
+	int lun_off;
+	unsigned long off;
+
+	lun_off = dev_map->blun + dev_map->bch * geo->num_lun;
+	off = lun_off * geo->c.num_chk * sizeof(struct nvm_chunk_log_page);
+
+	return off;
+}
+
 static void nvm_map_to_dev(struct nvm_tgt_dev *tgt_dev, struct ppa_addr *p)
 {
 	struct nvm_dev_map *dev_map = tgt_dev->map;
@@ -720,6 +738,16 @@ static void nvm_free_rqd_ppalist(struct nvm_tgt_dev *tgt_dev,
 	nvm_dev_dma_free(tgt_dev->parent, rqd->ppa_list, rqd->dma_ppa_list);
 }
 
+int nvm_get_chunk_log_page(struct nvm_tgt_dev *tgt_dev,
+			   struct nvm_chunk_log_page *log,
+			   unsigned long off, unsigned long len)
+{
+	struct nvm_dev *dev = tgt_dev->parent;
+
+	off += nvm_log_off_tgt_to_dev(tgt_dev);
+
+	return dev->ops->get_chunk_log_page(tgt_dev->parent, log, off, len);
+}
 
 int nvm_set_tgt_bb_tbl(struct nvm_tgt_dev *tgt_dev, struct ppa_addr *ppas,
 		       int nr_ppas, int type)

@@ -35,6 +35,10 @@ enum nvme_nvm_admin_opcode {
 	nvme_nvm_admin_set_bb_tbl	= 0xf1,
 };
 
+enum nvme_nvm_log_page {
+	NVME_NVM_LOG_REPORT_CHUNK	= 0xCA,
+};
+
 struct nvme_nvm_ph_rw {
 	__u8			opcode;
 	__u8			flags;
@@ -553,6 +557,50 @@ static int nvme_nvm_set_bb_tbl(struct nvm_dev *nvmdev, struct ppa_addr *ppas,
 	return ret;
 }
 
+static int nvme_nvm_get_chunk_log_page(struct nvm_dev *nvmdev,
+				       struct nvm_chunk_log_page *log,
+				       unsigned long off,
+				       unsigned long total_len)
+{
+	struct nvme_ns *ns = nvmdev->q->queuedata;
+	struct nvme_command c = { };
+	unsigned long offset = off, left = total_len;
+	unsigned long len, len_dwords;
+	void *buf = log;
+	int ret;
+
+	/* The offset needs to be dword-aligned */
+	if (offset & 0x3)
+		return -EINVAL;
+
+	do {
+		/* Send 256KB at a time */
+		len = (1 << 18) > left ? left : (1 << 18);
+		len_dwords = (len >> 2) - 1;
+
+		c.get_log_page.opcode = nvme_admin_get_log_page;
+		c.get_log_page.nsid = cpu_to_le32(ns->head->ns_id);
+		c.get_log_page.lid = NVME_NVM_LOG_REPORT_CHUNK;
+		c.get_log_page.lpol = cpu_to_le32(offset & 0xffffffff);
+		c.get_log_page.lpou = cpu_to_le32(offset >> 32);
+		c.get_log_page.numdl = cpu_to_le16(len_dwords & 0xffff);
+		c.get_log_page.numdu = cpu_to_le16(len_dwords >> 16);
+
+		ret = nvme_submit_sync_cmd(ns->ctrl->admin_q, &c, buf, len);
+		if (ret) {
+			dev_err(ns->ctrl->device,
+				"get chunk log page failed (%d)\n", ret);
+			break;
+		}
+
+		buf += len;
+		offset += len;
+		left -= len;
+	} while (left);
+
+	return ret;
+}
+
 static inline void nvme_nvm_rqtocmd(struct nvm_rq *rqd, struct nvme_ns *ns,
 				    struct nvme_nvm_command *c)
 {
@@ -683,6 +731,8 @@ static struct nvm_dev_ops nvme_nvm_dev_ops = {
 
 	.get_bb_tbl		= nvme_nvm_get_bb_tbl,
 	.set_bb_tbl		= nvme_nvm_set_bb_tbl,
+
+	.get_chunk_log_page	= nvme_nvm_get_chunk_log_page,
 
 	.submit_io		= nvme_nvm_submit_io,
 	.submit_io_sync		= nvme_nvm_submit_io_sync,
