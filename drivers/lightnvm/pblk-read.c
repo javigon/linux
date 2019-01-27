@@ -529,13 +529,35 @@ static int read_ppalist_rq_gc(struct pblk *pblk, struct nvm_rq *rqd,
 	int valid_secs = 0;
 	int i;
 
-	pblk_lookup_l2p_rand(pblk, ppa_list_l2p, lba_list, nr_secs);
-
+	spin_lock(&pblk->trans_lock);
 	for (i = 0; i < nr_secs; i++) {
 		if (lba_list[i] == ADDR_EMPTY)
 			continue;
 
+		ppa_list_l2p[i] = pblk_trans_map_get(pblk, lba_list[i]);
 		ppa_gc = addr_to_gen_ppa(pblk, paddr_list_gc[i], line->id);
+
+		/* Obtain ppa from cache if the sector has been synced to the
+		   device but the L2P has not been updated yet */
+		if(pblk_addr_in_cache(ppa_list_l2p[i])) {
+			struct pblk_rb *rb = &pblk->rwb;
+			struct pblk_rb_entry *entry;
+			struct pblk_w_ctx *w_ctx;
+			u64 pos = pblk_addr_to_cacheline(ppa_list_l2p[i]);
+
+#ifdef CONFIG_NVM_PBLK_DEBUG
+			/* Ensure that the access will not cause an overflow */
+			BUG_ON(pos >= rb->nr_entries);
+#endif
+
+			entry = &rb->entries[pos];
+			w_ctx = &entry->w_ctx;
+			if (pblk_ppa_comp(w_ctx->ppa, ppa_gc)) {
+				rqd->ppa_list[valid_secs++] = ppa_gc;
+				continue;
+			}
+		}
+
 		if (!pblk_ppa_comp(ppa_list_l2p[i], ppa_gc)) {
 			paddr_list_gc[i] = lba_list[i] = ADDR_EMPTY;
 			continue;
@@ -543,6 +565,7 @@ static int read_ppalist_rq_gc(struct pblk *pblk, struct nvm_rq *rqd,
 
 		rqd->ppa_list[valid_secs++] = ppa_list_l2p[i];
 	}
+	spin_unlock(&pblk->trans_lock);
 
 #ifdef CONFIG_NVM_PBLK_DEBUG
 	atomic_long_add(valid_secs, &pblk->inflight_reads);
