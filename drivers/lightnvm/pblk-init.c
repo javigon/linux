@@ -48,30 +48,24 @@ static struct pblk_global_caches pblk_caches = {
 struct bio_set pblk_bio_set;
 
 static int pblk_rw_io(struct request_queue *q, struct pblk *pblk,
-			  struct bio *bio)
+			  struct bio **bio)
 {
-	int ret;
-
 	/* Read requests must be <= 256kb due to NVMe's 64 bit completion bitmap
 	 * constraint. Writes can be of arbitrary size.
 	 */
-	if (bio_data_dir(bio) == READ) {
-		blk_queue_split(q, &bio);
-		ret = pblk_submit_read(pblk, bio);
-		if (ret == NVM_IO_DONE && bio_flagged(bio, BIO_CLONED))
-			bio_put(bio);
-
-		return ret;
+	if (bio_data_dir(*bio) == READ) {
+		blk_queue_split(q, bio);
+		return pblk_submit_read(pblk, *bio);
 	}
 
 	/* Prevent deadlock in the case of a modest LUN configuration and large
 	 * user I/Os. Unless stalled, the rate limiter leaves at least 256KB
 	 * available for user I/O.
 	 */
-	if (pblk_get_secs(bio) > pblk_rl_max_io(&pblk->rl))
-		blk_queue_split(q, &bio);
+	if (pblk_get_secs(*bio) > pblk_rl_max_io(&pblk->rl))
+		blk_queue_split(q, bio);
 
-	return pblk_write_to_cache(pblk, bio, PBLK_IOTYPE_USER);
+	return pblk_write_to_cache(pblk, *bio, PBLK_IOTYPE_USER);
 }
 
 static blk_qc_t pblk_make_rq(struct request_queue *q, struct bio *bio)
@@ -86,7 +80,7 @@ static blk_qc_t pblk_make_rq(struct request_queue *q, struct bio *bio)
 		}
 	}
 
-	switch (pblk_rw_io(q, pblk, bio)) {
+	switch (pblk_rw_io(q, pblk, &bio)) {
 	case NVM_IO_ERR:
 		bio_io_error(bio);
 		break;
