@@ -240,3 +240,16 @@ out:
 	kfree(data);
 	return ret;
 }
+
+int bpf_prog_test_run_xdsp(struct bpf_prog *prog, const union bpf_attr *kattr,
+			   union bpf_attr __user *uattr)
+{
+	u32 size = kattr->test.data_size_in;
+	u32 repeat = kattr->test.repeat;
+	void *data;
+	int ret;
+
+	/* TODO IMPLEMENT TEST */
+
+	return 0;
+}

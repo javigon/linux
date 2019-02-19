@@ -168,6 +168,7 @@ enum bpf_prog_type {
 	BPF_PROG_TYPE_LIRC_MODE2,
 	BPF_PROG_TYPE_SK_REUSEPORT,
 	BPF_PROG_TYPE_FLOW_DISSECTOR,
+	BPF_PROG_TYPE_XDSP,
 };
 
 enum bpf_attach_type {
@@ -189,6 +190,8 @@ enum bpf_attach_type {
 	BPF_CGROUP_UDP6_SENDMSG,
 	BPF_LIRC_MODE2,
 	BPF_FLOW_DISSECTOR,
+	/* Block Types */
+	BPF_BLK_MAKE_RQ,
 	__MAX_BPF_ATTACH_TYPE
 };
 

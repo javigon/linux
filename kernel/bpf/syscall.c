@@ -1406,6 +1406,10 @@ static void bpf_prog_load_fixup_attach_type(union bpf_attr *attr)
 			attr->expected_attach_type =
 				BPF_CGROUP_INET_SOCK_CREATE;
 		break;
+	case BPF_PROG_TYPE_XDSP:
+		/* TODO: Javier: Need to do this better */
+		if (!attr->expected_attach_type)
+			attr->expected_attach_type = BPF_BLK_MAKE_RQ;
 	}
 }
 
@@ -1431,6 +1435,13 @@ bpf_prog_load_check_attach_type(enum bpf_prog_type prog_type,
 		case BPF_CGROUP_INET6_CONNECT:
 		case BPF_CGROUP_UDP4_SENDMSG:
 		case BPF_CGROUP_UDP6_SENDMSG:
+			return 0;
+		default:
+			return -EINVAL;
+		}
+	case BPF_PROG_TYPE_XDSP:
+		switch (expected_attach_type) {
+		case BPF_BLK_MAKE_RQ:
 			return 0;
 		default:
 			return -EINVAL;
@@ -1473,8 +1484,10 @@ static int bpf_prog_load(union bpf_attr *attr, union bpf_attr __user *uattr)
 
 	if (attr->insn_cnt == 0 || attr->insn_cnt > BPF_MAXINSNS)
 		return -E2BIG;
+
 	if (type != BPF_PROG_TYPE_SOCKET_FILTER &&
 	    type != BPF_PROG_TYPE_CGROUP_SKB &&
+	    type != BPF_PROG_TYPE_XDSP &&
 	    !capable(CAP_SYS_ADMIN))
 		return -EPERM;
 
@@ -1739,6 +1752,9 @@ static int bpf_prog_attach(const union bpf_attr *attr)
 		break;
 	case BPF_FLOW_DISSECTOR:
 		ptype = BPF_PROG_TYPE_FLOW_DISSECTOR;
+		break;
+	case BPF_BLK_MAKE_RQ:
+		ptype = BPF_PROG_TYPE_XDSP;
 		break;
 	default:
 		return -EINVAL;

@@ -6093,6 +6093,29 @@ static bool __is_valid_xdp_access(int off, int size)
 	return true;
 }
 
+static const struct bpf_func_proto *
+xdsp_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
+{
+	return bpf_base_func_proto(func_id);
+}
+
+static bool xdsp_is_valid_access(int off, int size,
+				 enum bpf_access_type type,
+				 const struct bpf_prog *prog,
+				 struct bpf_insn_access_aux *info)
+{
+	return __is_valid_xdp_access(off, size);
+}
+
+const struct bpf_prog_ops xdsp_prog_ops = {
+	.test_run		= bpf_prog_test_run_xdsp,
+};
+
+const struct bpf_verifier_ops xdsp_verifier_ops = {
+	.get_func_proto		= xdsp_func_proto,
+	.is_valid_access	= xdsp_is_valid_access,
+};
+
 static bool xdp_is_valid_access(int off, int size,
 				enum bpf_access_type type,
 				const struct bpf_prog *prog,

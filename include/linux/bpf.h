@@ -397,6 +397,8 @@ int bpf_prog_test_run_xdp(struct bpf_prog *prog, const union bpf_attr *kattr,
 			  union bpf_attr __user *uattr);
 int bpf_prog_test_run_skb(struct bpf_prog *prog, const union bpf_attr *kattr,
 			  union bpf_attr __user *uattr);
+int bpf_prog_test_run_xdsp(struct bpf_prog *prog, const union bpf_attr *kattr,
+			  union bpf_attr __user *uattr);
 
 /* an array of programs to be executed under rcu_lock.
  *
