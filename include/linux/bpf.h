@@ -465,6 +465,8 @@ _out:							\
 #define BPF_PROG_RUN_ARRAY_CHECK(array, ctx, func)	\
 	__BPF_PROG_RUN_ARRAY(array, ctx, func, true)
 
+#define BPF_PROG_RUN(prog, ctx)  (*(prog)->bpf_func)(ctx, (prog)->insnsi)
+
 #ifdef CONFIG_BPF_SYSCALL
 DECLARE_PER_CPU(int, bpf_prog_active);
 
