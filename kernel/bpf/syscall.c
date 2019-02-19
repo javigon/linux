@@ -24,6 +24,7 @@
 #include <linux/fs.h>
 #include <linux/license.h>
 #include <linux/filter.h>
+#include <linux/blkdev.h>
 #include <linux/version.h>
 #include <linux/kernel.h>
 #include <linux/idr.h>
@@ -1779,6 +1780,9 @@ static int bpf_prog_attach(const union bpf_attr *attr)
 		break;
 	case BPF_PROG_TYPE_FLOW_DISSECTOR:
 		ret = skb_flow_dissector_bpf_prog_attach(attr, prog);
+		break;
+	case BPF_PROG_TYPE_XDSP:
+		ret = blk_bpf_prog_attach(attr, prog);
 		break;
 	default:
 		ret = cgroup_bpf_prog_attach(attr, ptype, prog);

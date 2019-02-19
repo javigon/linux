@@ -867,6 +867,66 @@ out:
 	return ret;
 }
 
+// TODO: Refactor original in filter
+#define BPF_PROG_RUN_BLK(filter, ctx)  (*(filter)->bpf_func)(ctx, (filter)->insnsi)
+
+/* TODO:
+ *	- What locking mechanism do we need here?
+ *	- Implement bpf replacement if program already deployed
+ *	- Implement program checks
+ **/
+static int blk_bpf_attach(struct request_queue *q, struct bpf_prog *prog,
+		      enum bpf_attach_type type, u32 flags)
+{
+	int ret = 0;
+
+	rcu_assign_pointer(q->xdsp_prog, prog);
+
+	return ret;
+}
+
+/**
+ * blk_bpf_prog_attach - attach a bpf program in the block layer
+ *
+ * For now only implement a single entry point on generic_make_request().
+ */
+int blk_bpf_prog_attach(const union bpf_attr *attr, struct bpf_prog *prog)
+{
+	struct block_device *bdev;
+	struct file *file;
+	struct inode *inode;
+	int ret;
+
+	file = fget(attr->target_fd);
+	if (!file)
+		return -EBADF;
+
+	inode = file->f_mapping->host;
+	bdev = inode->i_bdev;
+
+	ret = blk_bpf_attach(bdev->bd_queue, prog, attr->attach_type,
+						attr->attach_flags);
+	fput(file);
+
+	// TOGO
+	printk(KERN_CRIT "XDSP: eBPF attached (BPF_BLK_MAKE_RQ)\n");
+
+	return ret;
+}
+EXPORT_SYMBOL(blk_bpf_prog_attach);
+
+static int blk_bpf_run_xdsp(struct request_queue *q, struct bio *bio)
+{
+	struct bpf_prog *xdsp_prog;
+	struct xdsp_buff xdsp;
+
+	xdsp_prog = rcu_dereference(q->xdsp_prog);
+	if (!xdsp_prog)
+		return 0;
+
+	return BPF_PROG_RUN_BLK(xdsp_prog, &xdsp);
+}
+
 static noinline_for_stack bool
 generic_make_request_checks(struct bio *bio)
 {
@@ -1013,6 +1073,14 @@ blk_qc_t generic_make_request(struct bio *bio)
 	blk_mq_req_flags_t flags = 0;
 	struct request_queue *q = bio->bi_disk->queue;
 	blk_qc_t ret = BLK_QC_T_NONE;
+
+	switch(blk_bpf_run_xdsp(q, bio)) {
+	case 1:
+		bio_io_error(bio);
+		return ret;
+	default:
+		break;
+	}
 
 	if (bio->bi_opf & REQ_NOWAIT)
 		flags = BLK_MQ_REQ_NOWAIT;

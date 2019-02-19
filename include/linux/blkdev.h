@@ -27,6 +27,7 @@
 #include <linux/percpu-refcount.h>
 #include <linux/scatterlist.h>
 #include <linux/blkzoned.h>
+#include <uapi/linux/bpf.h>
 
 struct module;
 struct scsi_ioctl_command;
@@ -570,6 +571,19 @@ struct request_queue {
 
 #define BLK_MAX_WRITE_HINTS	5
 	u64			write_hints[BLK_MAX_WRITE_HINTS];
+
+#define XDSP_BLK_MAKE_RQ	0
+	struct bpf_prog __rcu	*xdsp_prog;
+};
+
+/* TODO: Generalize? */
+struct xdsp_buff {
+	void *data;
+	void *data_end;
+	void *data_meta;
+	void *data_hard_start;
+	unsigned long handle;
+	struct xdp_rxq_info *rxq;
 };
 
 #define QUEUE_FLAG_STOPPED	1	/* queue is stopped */
@@ -814,6 +828,8 @@ static inline void rq_flush_dcache_pages(struct request *rq)
 
 extern int blk_register_queue(struct gendisk *disk);
 extern void blk_unregister_queue(struct gendisk *disk);
+extern int blk_bpf_prog_attach(const union bpf_attr *attr,
+			       struct bpf_prog *prog);
 extern blk_qc_t generic_make_request(struct bio *bio);
 extern blk_qc_t direct_make_request(struct bio *bio);
 extern void blk_rq_init(struct request_queue *q, struct request *rq);
