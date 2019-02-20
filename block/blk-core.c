@@ -924,6 +924,12 @@ static int blk_bpf_run_xdsp(struct request_queue *q, struct bio *bio)
 	if (!xdsp_prog)
 		return 0;
 
+	/* Only interested in bio metadata for now */
+	xdsp.data = bio;
+	xdsp.data_hard_start = bio;
+	xdsp.data_end = bio + sizeof(struct bio);
+	xdsp.data_meta = NULL;
+
 	return BPF_PROG_RUN_BLK(xdsp_prog, &xdsp);
 }
 
