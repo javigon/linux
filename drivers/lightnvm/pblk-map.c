@@ -80,6 +80,7 @@ static int pblk_map_page_data(struct pblk *pblk, unsigned long slba,
 				lba_list[paddr] = cpu_to_le64(w_ctx->lba);
 			} else {
 				__le64 lba = cpu_to_le64(slba + i);
+
 				meta->lba = lba_list[paddr] = lba;
 			}
 			if (lba_list[paddr] != addr_empty)

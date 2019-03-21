@@ -2019,6 +2019,24 @@ void pblk_up_rq(struct pblk *pblk, unsigned long *lun_bitmap)
 	}
 }
 
+void pblk_update_map_test(struct pblk *pblk, sector_t lba, struct ppa_addr ppa)
+{
+	struct ppa_addr ppa_l2p;
+
+	/* logic error: lba out-of-bounds. Ignore update */
+	if (!(lba < pblk->rl.nr_secs)) {
+		WARN(1, "pblk: corrupted L2P map request\n");
+		return;
+	}
+
+	ppa_l2p = pblk_trans_map_get(pblk, lba);
+
+	if (!pblk_ppa_empty(ppa_l2p))
+		pblk_map_invalidate(pblk, ppa_l2p);
+
+	pblk_trans_map_set(pblk, lba, ppa);
+}
+
 void pblk_update_map(struct pblk *pblk, sector_t lba, struct ppa_addr ppa)
 {
 	struct ppa_addr ppa_l2p;

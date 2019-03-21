@@ -111,10 +111,10 @@ struct pblk_c_ctx {
 	struct list_head list;		/* Head for out-of-order completion */
 
 	unsigned long *lun_bitmap;	/* Luns used on current request */
+	u64 lba;
 	unsigned int sentry;
 	unsigned int nr_valid;
 	unsigned int nr_padded;
-	bool rwb;
 };
 
 /* read context */
@@ -855,6 +855,7 @@ void pblk_map_invalidate(struct pblk *pblk, struct ppa_addr ppa);
 void __pblk_map_invalidate(struct pblk *pblk, struct pblk_line *line,
 			   u64 paddr);
 void pblk_update_map(struct pblk *pblk, sector_t lba, struct ppa_addr ppa);
+void pblk_update_map_test(struct pblk *pblk, sector_t lba, struct ppa_addr ppa);
 void pblk_update_map_cache(struct pblk *pblk, sector_t lba,
 			   struct ppa_addr ppa);
 void pblk_update_map_dev(struct pblk *pblk, sector_t lba,

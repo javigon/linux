@@ -74,7 +74,7 @@ retry:
 		/* Try to read from write buffer. The address is later checked
 		 * on the write buffer to prevent retrieving overwritten data.
 		 */
-		if (pblk_addr_in_cache(p)) {
+		if (pblk->use_rwb && pblk_addr_in_cache(p)) {
 			if (!pblk_read_from_cache(pblk, bio, lba, p, i,
 								advanced_bio)) {
 				pblk_lookup_l2p_seq(pblk, &p, lba, 1);
@@ -411,7 +411,7 @@ retry:
 	/* Try to read from write buffer. The address is later checked on the
 	 * write buffer to prevent retrieving overwritten data.
 	 */
-	if (pblk_addr_in_cache(ppa)) {
+	if (pblk->use_rwb && pblk_addr_in_cache(ppa)) {
 		if (!pblk_read_from_cache(pblk, bio, lba, ppa, 0, 1)) {
 			pblk_lookup_l2p_seq(pblk, &ppa, lba, 1);
 			goto retry;

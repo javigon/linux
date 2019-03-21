@@ -85,7 +85,16 @@ static void pblk_complete_write(struct pblk *pblk, struct nvm_rq *rqd,
 #endif
 	pblk_up_rq(pblk, c_ctx->lun_bitmap);
 
-	if (!c_ctx->rwb) {
+	if (!pblk->use_rwb) {
+		int i;
+
+		/* Update L2P table. Unless a REQ_FLUSH / REQ_FUA is submitted,
+		 * this operation can be lockless
+		 */
+		for (i = 0; i < rqd->nr_ppas; i++)
+			pblk_update_map_test(pblk, c_ctx->lba + i,
+							rqd->ppa_list[i]);
+
 		bio_put(rqd->bio);
 		pblk_free_rqd(pblk, rqd, PBLK_WRITE);
 		return;
@@ -705,7 +714,7 @@ int pblk_write_to_media(struct pblk *pblk, struct bio *bio, unsigned long flags)
 	c_ctx->sentry = 0;
 	c_ctx->nr_valid = nr_secs;
 	c_ctx->nr_padded = 0;
-	c_ctx->rwb = false;
+	c_ctx->lba = pblk_get_lba(bio);
 
 	ret = pblk_submit_io_set(pblk, rqd);
 
