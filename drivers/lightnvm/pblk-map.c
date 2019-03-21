@@ -50,7 +50,6 @@ static int pblk_map_page_data(struct pblk *pblk, unsigned long slba,
 			pblk_pipeline_stop(pblk);
 			return -ENOSPC;
 		}
-
 	}
 
 	emeta = line->emeta;
