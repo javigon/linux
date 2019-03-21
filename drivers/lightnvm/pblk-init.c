@@ -65,7 +65,11 @@ static int pblk_rw_io(struct request_queue *q, struct pblk *pblk,
 	if (pblk_get_secs(*bio) > pblk_rl_max_io(&pblk->rl))
 		blk_queue_split(q, bio);
 
-	return pblk_write_to_cache(pblk, *bio, PBLK_IOTYPE_USER);
+	/* TODO: Define function pointers for the write method? */
+	if (pblk->use_rwb)
+		return pblk_write_to_cache(pblk, *bio, PBLK_IOTYPE_USER);
+	else
+		return pblk_write_to_media(pblk, *bio, PBLK_IOTYPE_USER);
 }
 
 static blk_qc_t pblk_make_rq(struct request_queue *q, struct bio *bio)
@@ -1093,6 +1097,9 @@ fail_free_meta:
 
 static int pblk_writer_init(struct pblk *pblk)
 {
+	if (!pblk->use_rwb)
+		return 0;
+
 	pblk->writer_ts = kthread_create(pblk_write_ts, pblk, "pblk-writer-t");
 	if (IS_ERR(pblk->writer_ts)) {
 		int err = PTR_ERR(pblk->writer_ts);
@@ -1111,6 +1118,10 @@ static int pblk_writer_init(struct pblk *pblk)
 
 static void pblk_writer_stop(struct pblk *pblk)
 {
+
+	if (!pblk->use_rwb)
+		return;
+
 	/* The pipeline must be stopped and the write buffer emptied before the
 	 * write thread is stopped
 	 */
@@ -1187,6 +1198,9 @@ static void *pblk_init(struct nvm_tgt_dev *dev, struct gendisk *tdisk,
 	trace_pblk_state(pblk_disk_name(pblk), pblk->state);
 	pblk->gc.gc_enabled = 0;
 
+	/* TODO: Write mechanism for this */
+	pblk->use_rwb = false;
+
 	if (!(geo->version == NVM_OCSSD_SPEC_12 ||
 					geo->version == NVM_OCSSD_SPEC_20)) {
 		pblk_err(pblk, "OCSSD version not supported (%u)\n",
@@ -1240,6 +1254,7 @@ static void *pblk_init(struct nvm_tgt_dev *dev, struct gendisk *tdisk,
 		goto fail_free_core;
 	}
 
+	//TODO REMOVE RWB ALLOCATIO IF NOT NEEDED
 	ret = pblk_rwb_init(pblk);
 	if (ret) {
 		pblk_err(pblk, "could not initialize write buffer\n");
@@ -1281,7 +1296,8 @@ static void *pblk_init(struct nvm_tgt_dev *dev, struct gendisk *tdisk,
 			(unsigned long long)pblk->rl.nr_secs,
 			pblk->rwb.nr_entries);
 
-	wake_up_process(pblk->writer_ts);
+	if (pblk->use_rwb)
+		wake_up_process(pblk->writer_ts);
 
 	/* Check if we need to start GC */
 	pblk_gc_should_kick(pblk);

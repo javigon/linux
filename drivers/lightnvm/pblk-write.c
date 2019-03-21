@@ -85,6 +85,12 @@ static void pblk_complete_write(struct pblk *pblk, struct nvm_rq *rqd,
 #endif
 	pblk_up_rq(pblk, c_ctx->lun_bitmap);
 
+	if (!c_ctx->rwb) {
+		bio_put(rqd->bio);
+		pblk_free_rqd(pblk, rqd, PBLK_WRITE);
+		return;
+	}
+
 	pos = pblk_rb_sync_init(&pblk->rwb, &flags);
 	if (pos == c_ctx->sentry) {
 		pos = pblk_end_w_bio(pblk, rqd, c_ctx);
@@ -228,7 +234,6 @@ static void pblk_submit_rec(struct work_struct *work)
 
 	atomic_dec(&pblk->inflight_io);
 }
-
 
 static void pblk_end_w_fail(struct pblk *pblk, struct nvm_rq *rqd)
 {
@@ -564,6 +569,7 @@ static void pblk_free_write_rqd(struct pblk *pblk, struct nvm_rq *rqd)
 							c_ctx->nr_padded);
 }
 
+/* Submit writes from write thread when using host-side cache */
 static int pblk_submit_write(struct pblk *pblk, int *secs_left)
 {
 	struct bio *bio;
@@ -674,4 +680,41 @@ int pblk_write_ts(void *data)
 	}
 
 	return 0;
+}
+
+/* Submit writes from request when not using host-side cache */
+// TODO: Implement RL functions
+int pblk_write_to_media(struct pblk *pblk, struct bio *bio, unsigned long flags)
+{
+	struct request_queue *q = pblk->dev->q;
+	struct nvm_rq *rqd;
+	struct pblk_c_ctx *c_ctx;
+	unsigned long start_time = jiffies;
+	int nr_secs = pblk_get_secs(bio);
+	int ret;
+
+	generic_start_io_acct(q, REQ_OP_WRITE, bio_sectors(bio),
+			      &pblk->disk->part0);
+
+	rqd = pblk_alloc_rqd(pblk, PBLK_WRITE);
+	rqd->bio = bio;
+
+	bio_get(bio);
+
+	c_ctx = nvm_rq_to_pdu(rqd);
+	c_ctx->sentry = 0;
+	c_ctx->nr_valid = nr_secs;
+	c_ctx->nr_padded = 0;
+	c_ctx->rwb = false;
+
+	ret = pblk_submit_io_set(pblk, rqd);
+
+	generic_end_io_acct(q, REQ_OP_WRITE, &pblk->disk->part0, start_time);
+
+#ifdef CONFIG_NVM_PBLK_DEBUG
+	atomic_long_add(nr_secs, &pblk->inflight_writes);
+	atomic_long_add(nr_secs, &pblk->req_writes);
+#endif
+
+	return ret;
 }

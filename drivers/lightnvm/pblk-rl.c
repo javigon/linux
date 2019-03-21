@@ -242,6 +242,9 @@ void pblk_rl_init(struct pblk_rl *rl, int budget, int threshold)
 	else
 		rl->rb_max_io = budget - pblk->min_write_pgs_data - 1;
 
+	if (pblk->use_rwb)
+		rl->rb_max_io = NVM_MAX_VLBA;
+
 	atomic_set(&rl->rb_user_cnt, 0);
 	atomic_set(&rl->rb_gc_cnt, 0);
 	atomic_set(&rl->rb_space, -1);

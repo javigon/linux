@@ -19,7 +19,8 @@
 
 #include "pblk.h"
 
-static int pblk_map_page_data(struct pblk *pblk, unsigned int sentry,
+static int pblk_map_page_data(struct pblk *pblk, unsigned long slba,
+			      unsigned int sentry,
 			      struct ppa_addr *ppa_list,
 			      unsigned long *lun_bitmap,
 			      void *meta_list,
@@ -73,10 +74,15 @@ static int pblk_map_page_data(struct pblk *pblk, unsigned int sentry,
 		 */
 		if (i < valid_secs) {
 			kref_get(&line->ref);
-			w_ctx = pblk_rb_w_ctx(&pblk->rwb, sentry + i);
-			w_ctx->ppa = ppa_list[i];
-			meta->lba = cpu_to_le64(w_ctx->lba);
-			lba_list[paddr] = cpu_to_le64(w_ctx->lba);
+			if (pblk->use_rwb) {
+				w_ctx = pblk_rb_w_ctx(&pblk->rwb, sentry + i);
+				w_ctx->ppa = ppa_list[i];
+				meta->lba = cpu_to_le64(w_ctx->lba);
+				lba_list[paddr] = cpu_to_le64(w_ctx->lba);
+			} else {
+				__le64 lba = cpu_to_le64(slba + i);
+				meta->lba = lba_list[paddr] = lba;
+			}
 			if (lba_list[paddr] != addr_empty)
 				line->nr_valid_lbas++;
 			else
@@ -97,8 +103,10 @@ int pblk_map_rq(struct pblk *pblk, struct nvm_rq *rqd, unsigned int sentry,
 		 unsigned int off)
 {
 	void *meta_list = pblk_get_meta_for_writes(pblk, rqd);
+	struct bio *bio = rqd->bio;
 	void *meta_buffer;
 	struct ppa_addr *ppa_list = nvm_rq_to_ppa_list(rqd);
+	sector_t slba = pblk_get_lba(bio);
 	unsigned int map_secs;
 	int min = pblk->min_write_pgs;
 	int i;
@@ -108,8 +116,8 @@ int pblk_map_rq(struct pblk *pblk, struct nvm_rq *rqd, unsigned int sentry,
 		map_secs = (i + min > valid_secs) ? (valid_secs % min) : min;
 		meta_buffer = pblk_get_meta(pblk, meta_list, i);
 
-		ret = pblk_map_page_data(pblk, sentry + i, &ppa_list[i],
-					lun_bitmap, meta_buffer, map_secs);
+		ret = pblk_map_page_data(pblk, slba + i, sentry + i,
+			&ppa_list[i], lun_bitmap, meta_buffer, map_secs);
 		if (ret)
 			return ret;
 	}
@@ -126,7 +134,9 @@ int pblk_map_erase_rq(struct pblk *pblk, struct nvm_rq *rqd,
 	struct nvm_geo *geo = &dev->geo;
 	struct pblk_line_meta *lm = &pblk->lm;
 	void *meta_list = pblk_get_meta_for_writes(pblk, rqd);
+	struct bio *bio = rqd->bio;
 	void *meta_buffer;
+	sector_t slba = pblk_get_lba(bio);
 	struct ppa_addr *ppa_list = nvm_rq_to_ppa_list(rqd);
 	struct pblk_line *e_line, *d_line;
 	unsigned int map_secs;
@@ -139,8 +149,8 @@ int pblk_map_erase_rq(struct pblk *pblk, struct nvm_rq *rqd,
 		map_secs = (i + min > valid_secs) ? (valid_secs % min) : min;
 		meta_buffer = pblk_get_meta(pblk, meta_list, i);
 
-		ret = pblk_map_page_data(pblk, sentry + i, &ppa_list[i],
-					lun_bitmap, meta_buffer, map_secs);
+		ret = pblk_map_page_data(pblk, slba + i, sentry + i,
+			&ppa_list[i], lun_bitmap, meta_buffer, map_secs);
 		if (ret)
 			return ret;
 

@@ -114,6 +114,7 @@ struct pblk_c_ctx {
 	unsigned int sentry;
 	unsigned int nr_valid;
 	unsigned int nr_padded;
+	bool rwb;
 };
 
 /* read context */
@@ -627,6 +628,7 @@ struct pblk {
 	struct pblk_addrf uaddrf;	/* Unaligned address format */
 	int addrf_len;
 
+	bool use_rwb;			/* Use host-side read-write buffer */
 	struct pblk_rb rwb;
 
 	int state;			/* pblk line state */
@@ -873,6 +875,8 @@ int pblk_write_to_cache(struct pblk *pblk, struct bio *bio,
 			unsigned long flags);
 int pblk_write_gc_to_cache(struct pblk *pblk, struct pblk_gc_rq *gc_rq);
 
+int pblk_write_to_media(struct pblk *pblk, struct bio *bio,
+			unsigned long flags);
 /*
  * pblk map
  */

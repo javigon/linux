@@ -360,6 +360,9 @@ err:
 
 void pblk_write_kick(struct pblk *pblk)
 {
+	if (!pblk->use_rwb)
+		return;
+
 	wake_up_process(pblk->writer_ts);
 	mod_timer(&pblk->wtimer, jiffies + msecs_to_jiffies(1000));
 }
