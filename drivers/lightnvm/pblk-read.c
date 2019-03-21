@@ -104,7 +104,6 @@ next:
 #endif
 }
 
-
 static void pblk_read_check_seq(struct pblk *pblk, struct nvm_rq *rqd,
 				sector_t blba)
 {
