@@ -2031,6 +2031,10 @@ void pblk_update_map_test(struct pblk *pblk, sector_t lba, struct ppa_addr ppa)
 
 	ppa_l2p = pblk_trans_map_get(pblk, lba);
 
+#ifdef CONFIG_NVM_PBLK_DEBUG
+	BUG_ON(pblk_addr_in_cache(ppa_l2p));
+#endif
+
 	if (!pblk_ppa_empty(ppa_l2p))
 		pblk_map_invalidate(pblk, ppa_l2p);
 
