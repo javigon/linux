@@ -161,18 +161,20 @@ struct nvm_chk_meta *pblk_chunk_get_off(struct pblk *pblk,
 	return meta + ch_off + lun_off + chk_off;
 }
 
+
+/* TODO: set invalidtion in WQ */
 void __pblk_map_invalidate(struct pblk *pblk, struct pblk_line *line,
 			   u64 paddr)
 {
-	struct pblk_line_mgmt *l_mg = &pblk->l_mg;
-	struct list_head *move_list = NULL;
+	/* struct pblk_line_mgmt *l_mg = &pblk->l_mg; */
+	/* struct list_head *move_list = NULL; */
 
 	/* Lines being reclaimed (GC'ed) cannot be invalidated. Before the L2P
 	 * table is modified with reclaimed sectors, a check is done to endure
 	 * that newer updates are not overwritten.
 	 */
-	spin_lock(&line->lock);
-	WARN_ON(line->state == PBLK_LINESTATE_FREE);
+	/* spin_lock(&line->lock); */
+	/* WARN_ON(line->state == PBLK_LINESTATE_FREE); */
 
 	if (test_and_set_bit(paddr, line->invalid_bitmap)) {
 		WARN_ONCE(1, "pblk: double invalidate\n");
@@ -181,24 +183,24 @@ void __pblk_map_invalidate(struct pblk *pblk, struct pblk_line *line,
 	}
 	le32_add_cpu(line->vsc, -1);
 
-	if (line->state == PBLK_LINESTATE_CLOSED)
-		move_list = pblk_line_gc_list(pblk, line);
-	spin_unlock(&line->lock);
+	/* if (line->state == PBLK_LINESTATE_CLOSED) */
+		/* move_list = pblk_line_gc_list(pblk, line); */
+	/* spin_unlock(&line->lock); */
 
-	if (move_list) {
-		spin_lock(&l_mg->gc_lock);
-		spin_lock(&line->lock);
+	/* if (move_list) { */
+		/* spin_lock(&l_mg->gc_lock); */
+		/* spin_lock(&line->lock); */
 		/* Prevent moving a line that has just been chosen for GC */
-		if (line->state == PBLK_LINESTATE_GC) {
-			spin_unlock(&line->lock);
-			spin_unlock(&l_mg->gc_lock);
-			return;
-		}
-		spin_unlock(&line->lock);
+		/* if (line->state == PBLK_LINESTATE_GC) { */
+			/* spin_unlock(&line->lock); */
+			/* spin_unlock(&l_mg->gc_lock); */
+			/* return; */
+		/* } */
+		/* spin_unlock(&line->lock); */
 
-		list_move_tail(&line->list, move_list);
-		spin_unlock(&l_mg->gc_lock);
-	}
+		/* list_move_tail(&line->list, move_list); */
+		/* spin_unlock(&l_mg->gc_lock); */
+	/* } */
 }
 
 void pblk_map_invalidate(struct pblk *pblk, struct ppa_addr ppa)
