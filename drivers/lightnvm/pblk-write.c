@@ -86,14 +86,14 @@ static void pblk_complete_write(struct pblk *pblk, struct nvm_rq *rqd,
 	pblk_up_rq(pblk, c_ctx->lun_bitmap);
 
 	if (!pblk->use_rwb) {
+		struct ppa_addr *ppa_list = nvm_rq_to_ppa_list(rqd);
 		int i;
 
 		/* Update L2P table. Unless a REQ_FLUSH / REQ_FUA is submitted,
 		 * this operation can be lockless
 		 */
 		for (i = 0; i < rqd->nr_ppas; i++)
-			pblk_update_map_test(pblk, c_ctx->lba + i,
-							rqd->ppa_list[i]);
+			pblk_update_map_test(pblk, c_ctx->lba + i, ppa_list[i]);
 
 		bio_put(rqd->bio);
 		pblk_free_rqd(pblk, rqd, PBLK_WRITE);
