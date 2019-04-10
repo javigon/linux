@@ -24,14 +24,14 @@ static int pblk_map_page_data(struct pblk *pblk, unsigned long slba,
 			      struct ppa_addr *ppa_list,
 			      unsigned long *lun_bitmap,
 			      void *meta_list,
-			      unsigned int valid_secs)
+			      unsigned int valid_secs,
+			      unsigned int total_secs)
 {
 	struct pblk_line *line = pblk_line_get_data(pblk);
 	struct pblk_emeta *emeta;
 	struct pblk_w_ctx *w_ctx;
 	__le64 *lba_list;
 	u64 paddr;
-	int nr_secs = pblk->min_write_pgs;
 	int i;
 
 	if (!line)
@@ -55,9 +55,9 @@ static int pblk_map_page_data(struct pblk *pblk, unsigned long slba,
 	emeta = line->emeta;
 	lba_list = emeta_to_lbas(pblk, emeta->buf);
 
-	paddr = pblk_alloc_page(pblk, line, nr_secs);
+	paddr = pblk_alloc_page(pblk, line, total_secs);
 
-	for (i = 0; i < nr_secs; i++, paddr++) {
+	for (i = 0; i < total_secs; i++, paddr++) {
 		struct pblk_sec_meta *meta = pblk_get_meta(pblk, meta_list, i);
 		__le64 addr_empty = cpu_to_le64(ADDR_EMPTY);
 
@@ -108,7 +108,7 @@ int pblk_map_rq(struct pblk *pblk, struct nvm_rq *rqd, unsigned int sentry,
 	struct ppa_addr *ppa_list = nvm_rq_to_ppa_list(rqd);
 	sector_t slba = pblk_get_lba(bio);
 	unsigned int map_secs;
-	int min = pblk->min_write_pgs;
+	int min = min((int)rqd->nr_ppas, (int)pblk->min_write_pgs);
 	int i;
 	int ret;
 
@@ -117,7 +117,8 @@ int pblk_map_rq(struct pblk *pblk, struct nvm_rq *rqd, unsigned int sentry,
 		meta_buffer = pblk_get_meta(pblk, meta_list, i);
 
 		ret = pblk_map_page_data(pblk, slba + i, sentry + i,
-			&ppa_list[i], lun_bitmap, meta_buffer, map_secs);
+			&ppa_list[i], lun_bitmap, meta_buffer,
+			map_secs, min);
 		if (ret)
 			return ret;
 	}
@@ -140,17 +141,17 @@ int pblk_map_erase_rq(struct pblk *pblk, struct nvm_rq *rqd,
 	struct ppa_addr *ppa_list = nvm_rq_to_ppa_list(rqd);
 	struct pblk_line *e_line, *d_line;
 	unsigned int map_secs;
-	int min = pblk->min_write_pgs;
+	int min = min((int)rqd->nr_ppas, (int)pblk->min_write_pgs);
 	int i, erase_lun;
 	int ret;
-
 
 	for (i = 0; i < rqd->nr_ppas; i += min) {
 		map_secs = (i + min > valid_secs) ? (valid_secs % min) : min;
 		meta_buffer = pblk_get_meta(pblk, meta_list, i);
 
 		ret = pblk_map_page_data(pblk, slba + i, sentry + i,
-			&ppa_list[i], lun_bitmap, meta_buffer, map_secs);
+			&ppa_list[i], lun_bitmap, meta_buffer,
+			map_secs, min);
 		if (ret)
 			return ret;
 
