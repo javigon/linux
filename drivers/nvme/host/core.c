@@ -120,13 +120,21 @@ static void nvme_queue_scan(struct nvme_ctrl *ctrl)
 		queue_work(nvme_wq, &ctrl->scan_work);
 }
 
-int nvme_reset_ctrl(struct nvme_ctrl *ctrl)
+int nvme_reset_continue(struct nvme_ctrl *ctrl)
 {
-	if (!nvme_change_ctrl_state(ctrl, NVME_CTRL_RESETTING))
+	if (ctrl->state != NVME_CTRL_RESETTING)
 		return -EBUSY;
 	if (!queue_work(nvme_reset_wq, &ctrl->reset_work))
 		return -EBUSY;
 	return 0;
+}
+EXPORT_SYMBOL_GPL(nvme_reset_continue);
+
+int nvme_reset_ctrl(struct nvme_ctrl *ctrl)
+{
+	if (!nvme_change_ctrl_state(ctrl, NVME_CTRL_RESETTING))
+		return -EBUSY;
+	return nvme_reset_continue(ctrl);
 }
 EXPORT_SYMBOL_GPL(nvme_reset_ctrl);
 
