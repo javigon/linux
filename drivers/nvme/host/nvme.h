@@ -433,6 +433,10 @@ struct nvme_ns {
 	struct kref kref;
 	struct nvme_ns_head *head;
 
+	struct device cdev_device;	/* char device */
+	struct cdev cdev;
+	int minor;
+
 	int lba_shift;
 	u16 ms;
 	u16 sgs;
@@ -805,6 +809,11 @@ static inline int nvme_nvm_ioctl(struct nvme_ns *ns, unsigned int cmd,
 static inline struct nvme_ns *nvme_get_ns_from_dev(struct device *dev)
 {
 	return dev_to_disk(dev)->private_data;
+}
+
+static inline struct nvme_ns *nvme_get_ns_from_cdev(struct device *dev)
+{
+	return dev_get_drvdata(dev);
 }
 
 #ifdef CONFIG_NVME_HWMON
