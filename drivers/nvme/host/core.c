@@ -1851,7 +1851,7 @@ static int nvme_ns_open(struct nvme_ns *ns)
 {
 #ifdef CONFIG_NVME_MULTIPATH
 	/* should never be called due to GENHD_FL_HIDDEN */
-	if (WARN_ON_ONCE(ns->head->disk))
+	if (WARN_ON_ONCE(!nvme_ns_is_generic(ns) && ns->head->disk))
 		goto fail;
 #endif
 	if (!kref_get_unless_zero(&ns->kref))
