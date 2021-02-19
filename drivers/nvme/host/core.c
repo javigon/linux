@@ -97,6 +97,16 @@ static void nvme_put_subsystem(struct nvme_subsystem *subsys);
 static void nvme_remove_invalid_namespaces(struct nvme_ctrl *ctrl,
 					   unsigned nsid);
 
+static inline bool nvme_dev_is_generic(struct device *dev)
+{
+	return dev->class == nvme_ns_class;
+}
+
+static inline bool nvme_ns_is_generic(struct nvme_ns *ns)
+{
+	return !!ns->minor;
+}
+
 /*
  * Prepare a queue for teardown.
  *
@@ -529,7 +539,7 @@ static void nvme_free_ns(struct kref *kref)
 
 	if (ns->ndev)
 		nvme_nvm_unregister(ns);
-	if (ns->minor)
+	if (nvme_ns_is_generic(ns))
 		ida_simple_remove(&nvme_gen_minor_ida, ns->minor - 1);
 
 	cdev_device_del(&ns->cdev, &ns->cdev_device);
@@ -3404,7 +3414,7 @@ static inline struct nvme_ns_head *dev_to_ns_head(struct device *dev)
 {
 	struct gendisk *disk = dev_to_disk(dev);
 
-	if (dev->class == nvme_ns_class)
+	if (nvme_dev_is_generic(dev))
 		return nvme_get_ns_from_cdev(dev)->head;
 
 	if (disk->fops == &nvme_bdev_ops)
@@ -3516,6 +3526,8 @@ static umode_t nvme_ns_id_attrs_are_visible(struct kobject *kobj,
 	}
 #ifdef CONFIG_NVME_MULTIPATH
 	if (a == &dev_attr_ana_grpid.attr || a == &dev_attr_ana_state.attr) {
+		if (nvme_dev_is_generic(dev))
+			return 0;
 		if (dev_to_disk(dev)->fops != &nvme_bdev_ops) /* per-path attr */
 			return 0;
 		if (!nvme_ctrl_use_ana(nvme_get_ns_from_dev(dev)->ctrl))
